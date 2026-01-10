@@ -1,0 +1,11 @@
+{
+  "domain": "smart_fan_controller",
+  "name": "Smart Fan Controller",
+  "documentation": "https://github.com/Gamso/smart_fan_controller",
+  "config_flow": true,
+  "dependencies": [],
+  "codeowners": [
+    "@Gamso"
+  ],
+  "version": "0.0.1"
+}

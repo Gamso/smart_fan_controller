@@ -1,0 +1,7 @@
+{
+    "name": "Smart Fan Controller",
+    "domain": "smart_fan_controller",
+    "content_in_root": false,
+    "render_readme": true,
+    "homeassistant": "2025.12.4"
+}
