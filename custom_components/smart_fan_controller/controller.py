@@ -1,6 +1,10 @@
 import logging
 import time
 
+from .const import (
+    DELTA_TIME_CONTROL_LOOP
+)
+
 _LOGGER = logging.getLogger(__name__)
 
 class SmartFanController:
@@ -33,15 +37,17 @@ class SmartFanController:
 
     def compute_temperature_projection(self, current_temp: float, vtherm_slope: float) -> float:
         """Estimate temperature projection in 10 min"""
-        d_thermal_acceleration = vtherm_slope - self._previous_slope
-        self._thermal_acceleration = (0.3 * d_thermal_acceleration) + (0.7 * self._thermal_acceleration)
+
+        dt_hours = DELTA_TIME_CONTROL_LOOP / 60 # h
+        d_slope = vtherm_slope - self._previous_slope if self._previous_slope is not None else 0.0 # °C/h
+        a_inst = d_slope / dt_hours  # °C/h²
+
+        # Low-pass filter on acceleration
+        self._thermal_acceleration = (0.3 * a_inst) + (0.7 * self._thermal_acceleration) # °C/h
 
         # Parabolic forecast (t = 10 min)
-        window_time = 10
-        velocity = vtherm_slope / 60
-        acceleration = self._thermal_acceleration / 60
-
-        temp_proj = current_temp + (velocity * window_time) + (0.5 * acceleration * (window_time**2))
+        window_time = 10 /60 # h
+        temp_proj = current_temp + (vtherm_slope * window_time) + (0.5 * self._thermal_acceleration * (window_time**2))
         return temp_proj
 
     def apply_deceleration_limit(self, current_index: int, new_index: int) -> int:
@@ -178,7 +184,7 @@ class SmartFanController:
         target_fan = self._fan_modes[final_index]
 
         # Update memory
-        self.save_states(target_fan, current_fan, vtherm_slope, slope_change)
+        self.save_states(target_fan, current_fan, effective_slope, slope_change)
 
         return {
             "fan_mode": target_fan,

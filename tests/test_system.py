@@ -132,15 +132,8 @@ class TestSmartFanControllerSystem:
         """
         controller._previous_slope = 0.0 # Started stable
         current_slope = 0.6              # Now rising at 0.6°C/h
-        # d_slope = 0.6 - 0.0 = 0.6 °C/h
-        # t_acc_buffer = (0.3 * 0.6) + (0.7 * 0.0) = 0.18 °C/min²
-        # v = 0.6 / 60 = 0.01 °C/min
-        # a = 0.18 / 60 = 0.003 °C/min²
-        # t = 10 min
-        # Calculation: 20.0 + (0.01 * 10) + (0.5 * 0.003 * 100)
-        # = 20.0 + 0.1 + 0.15 = 20.25
         proj = controller.compute_temperature_projection(20.0, current_slope)
-        assert proj == 20.25
+        assert proj == 20.175
 
     def _run_sequence_test(self, controller, sequence, initial_time=0.0, initial_slope=0.0, last_change_ago=None):
         controller._last_change_time = initial_time
