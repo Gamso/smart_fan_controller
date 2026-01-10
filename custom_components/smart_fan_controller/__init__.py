@@ -16,7 +16,8 @@ from .const import (
     DEFAULT_MIN_INTERVAL,
     DEFAULT_SOFT_ERROR,
     DEFAULT_HARD_ERROR,
-    DEFAULT_TEMPERATURE_PROJECTED_ERROR
+    DEFAULT_TEMPERATURE_PROJECTED_ERROR,
+    DELTA_TIME_CONTROL_LOOP
 )
 from .controller import SmartFanController
 
@@ -31,6 +32,7 @@ async def async_setup_entry(hass, entry):
 
     # 2. Instantiate the controller with dynamic parameters from Config Flow
     controller = SmartFanController(
+        fan_modes=None,
         deadband=conf.get(CONF_DEADBAND, DEFAULT_DEADBAND),
         min_interval=conf.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL),
         soft_error=conf.get(CONF_SOFT_ERROR, DEFAULT_SOFT_ERROR),
@@ -123,7 +125,7 @@ async def async_setup_entry(hass, entry):
                 sensor.update_from_controller(manual_data)
 
     # Schedule the loop and run it immediately once to initialize
-    remove_timer = async_track_time_interval(hass, run_control_loop, timedelta(minutes=2))
+    remove_timer = async_track_time_interval(hass, run_control_loop, timedelta(minutes=DELTA_TIME_CONTROL_LOOP))
     manual_change = async_track_state_change_event(hass, [climate_id], _handle_manual_change)
     # This ensures the timer stops if the integration is unloaded/removed
     entry.async_on_unload(remove_timer)
