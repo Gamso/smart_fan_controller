@@ -37,7 +37,7 @@ class TestSmartFanControllerHeat:
             hvac_mode="heat",
             current_fan="low"
         )
-        assert result["target_fan_mode"] == "turbo"
+        assert result["fan_mode"] == "turbo"
         assert "Emergency: High error" in result["reason"]
 
     def test_braking_anticipation(self, controller):
@@ -53,7 +53,7 @@ class TestSmartFanControllerHeat:
             hvac_mode="heat",
             current_fan="high"
         )
-        assert result["target_fan_mode"] == "medium"
+        assert result["fan_mode"] == "medium"
         assert "Braking: Target overshoot predicted" in result["reason"]
 
     def test_recovery_relance(self, controller):
@@ -68,7 +68,7 @@ class TestSmartFanControllerHeat:
             hvac_mode="heat",
             current_fan="low"
         )
-        assert result["target_fan_mode"] == "medium"
+        assert result["fan_mode"] == "medium"
         assert "Soft recovery: Drop predicted" in result["reason"]
 
     def test_comfort_drift(self, controller):
@@ -80,7 +80,7 @@ class TestSmartFanControllerHeat:
             hvac_mode="heat",
             current_fan="medium"
         )
-        assert result["target_fan_mode"] == "high"
+        assert result["fan_mode"] == "high"
         assert "Maintenance: Slow drift detected" in result["reason"]
 
     def test_over_target_reduction(self, controller):
@@ -92,7 +92,7 @@ class TestSmartFanControllerHeat:
             hvac_mode="heat",
             current_fan="medium"
         )
-        assert result["target_fan_mode"] == "low"
+        assert result["fan_mode"] == "low"
         assert "Over-target: Reducing speed" in result["reason"]
 
     def test_snapshot_stability(self, controller):
@@ -103,9 +103,9 @@ class TestSmartFanControllerHeat:
         assert first_snapshot == 0.5
 
         # 2. Minor change (0.05) should NOT update snapshot
-        controller.calculate_decision(19.1, 20.0, 0.55, "heat", result.get("target_fan_mode"))
+        controller.calculate_decision(19.1, 20.0, 0.55, "heat", result.get("fan_mode"))
         assert controller._previous_slope == first_snapshot
 
         # 3. Significant change (0.2) SHOULD update snapshot
-        controller.calculate_decision(19.2, 20.0, 0.75, "heat", result.get("target_fan_mode"))
+        controller.calculate_decision(19.2, 20.0, 0.75, "heat", result.get("fan_mode"))
         assert controller._previous_slope == 0.75

@@ -22,9 +22,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # Format: (Display Name, Data Key, Unit, Device Class)
     sensor_definitions = [
         ("Status", "reason", None, None),
-        ("Projected Temperature (10 min)", "temperature_projection", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
-        ("Projected Error (10 min)", "projected_temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
-        ("Last change", "minutes_since_last_change", UnitOfTime.MINUTES, SensorDeviceClass.DURATION),
+        ("Fan Mode", "fan_mode", None, SensorDeviceClass.ENUM, "mdi:fan"),
+        ("Fan Mode - Last change", "minutes_since_last_change", UnitOfTime.MINUTES, SensorDeviceClass.DURATION),
+        ("Temperature Projected (10 min)", "projected_temperature", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
+        ("Temperature Projected Error (10 min)", "projected_temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
+        ("Temperature Error", "temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
     ]
 
     entities = []

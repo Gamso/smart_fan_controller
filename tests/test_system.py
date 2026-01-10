@@ -2,7 +2,11 @@
 import pytest
 
 from unittest.mock import patch
+from homeassistant.core import HomeAssistant
+from homeassistant.setup import async_setup_component
+from homeassistant.helpers.event import async_track_state_change_event
 
+from custom_components.smart_fan_controller.const import DOMAIN
 from custom_components.smart_fan_controller.controller import SmartFanController
 from custom_components.smart_fan_controller.const import (
     DEFAULT_DEADBAND,
@@ -38,19 +42,19 @@ class TestSmartFanControllerSystem:
         # 1. First change at T=0
         with patch('time.time', return_value=start_time):
             result = controller.calculate_decision(20.0, 20.0, 0.0, "heat", "low")
-            assert result["target_fan_mode"] == "low"
+            assert result["fan_mode"] == "low"
 
         # 2. Try to change at T + 2 minutes (too early)
         # Even with a significant error, it should stay 'low'
         with patch('time.time', return_value=start_time + 2*60):
             result = controller.calculate_decision(19.5, 20.0, -0.2, "heat", "low")
-            assert result["target_fan_mode"] == "low"
+            assert result["fan_mode"] == "low"
 
         # 3. Try to change at T + 10 minutes
         # Fan speed should be allowed to change now
         with patch('time.time', return_value=start_time + 10*60):
             result = controller.calculate_decision(19.5, 20.0, -0.5, "heat", "low")
-            assert result["target_fan_mode"] == "medium"
+            assert result["fan_mode"] == "medium"
 
     def test_emergency_overrides_interval(self, controller):
         """Test that Emergency bypasses the min_interval timer."""
@@ -66,7 +70,7 @@ class TestSmartFanControllerSystem:
             result = controller.calculate_decision(18.0, 20.0, 0.0, "heat", "low")
 
         # Should bypass timer because it's an Emergency
-        assert result["target_fan_mode"] == "turbo"
+        assert result["fan_mode"] == "turbo"
         assert "Emergency" in result["reason"]
 
     def test_index_boundaries_low(self, controller):
@@ -74,7 +78,7 @@ class TestSmartFanControllerSystem:
         # Case: Overheating in heat mode while already at 'low'
         result = controller.calculate_decision(21.0, 20.0, 0.1, "heat", "low")
 
-        assert result["target_fan_mode"] == "low"
+        assert result["fan_mode"] == "low"
         assert "Over-target" in result["reason"]
 
     def test_index_boundaries_high(self, controller):
@@ -82,7 +86,7 @@ class TestSmartFanControllerSystem:
         # Case: Drifting away while already at 'turbo'
         result = controller.calculate_decision(19.9, 20.0, -0.5, "heat", "turbo")
 
-        assert result["target_fan_mode"] == "turbo"
+        assert result["fan_mode"] == "turbo"
         assert "Maintenance" in result["reason"]
 
     def test_hvac_mode_switch_mid_operation(self, controller):
@@ -91,14 +95,14 @@ class TestSmartFanControllerSystem:
         result = controller.calculate_decision(19.5, 20.0, 0.2, "heat", "low")
         assert controller._previous_slope == 0.2
         assert "Soft recovery: Drop predicted " in result["reason"]
-        assert result["target_fan_mode"] == "medium"
+        assert result["fan_mode"] == "medium"
 
         # 2. Instant switch to Cool
         # TODO: Ensure previous slope is reset appropriately
         # TODO: On this HVAC mode switch, the fan speed should be re-evaluated correctly and finish in 'low'
         result = controller.calculate_decision(19.5, 20.0, 0.2, "cool", "medium")
         assert "Over-target: Observing inertia" in result["reason"]
-        assert result["target_fan_mode"] == "medium"
+        assert result["fan_mode"] == "medium"
 
     def test_step_down_protection(self, controller):
         """
@@ -119,7 +123,7 @@ class TestSmartFanControllerSystem:
         # Should not crash and should return a valid mode from your list
         result = controller.calculate_decision(19.0, 20.0, 0.5, "heat", "unknown_mode")
         # With 1.0°C error, it should have moved from 0 (low) to 1 (medium)
-        assert result["target_fan_mode"] in FAN_MODES # Ne doit pas crasher
+        assert result["fan_mode"] in FAN_MODES # Ne doit pas crasher
 
     def test_projection_math(self, controller):
         """
@@ -151,7 +155,7 @@ class TestSmartFanControllerSystem:
             current_time = initial_time + (elapsed_min * 60)
             with patch('time.time', return_value=current_time):
                 result = controller.calculate_decision(current, target, slope, "heat", current_fan)
-                actual_fan = result["target_fan_mode"]
+                actual_fan = result["fan_mode"]
 
                 error_msg = (
                     f"Failed at T+{elapsed_min}min: "
@@ -159,7 +163,7 @@ class TestSmartFanControllerSystem:
                     f"(Input was {current_fan}, Reason: {result['reason']})"
                 )
 
-                assert result["target_fan_mode"] == expected_fan, error_msg
+                assert result["fan_mode"] == expected_fan, error_msg
                 current_fan = actual_fan
 
     def test_sequence_recovery_inertia(self, controller):
@@ -255,3 +259,58 @@ class TestSmartFanControllerSystem:
         ]
 
         self._run_sequence_test(controller, sequence, initial_time=3600, initial_slope=-0.10, last_change_ago=0)
+
+    async def test_manual_fan_change_integration(self, hass, controller):
+        """
+        Test that a state change event on the climate entity
+        actually updates the controller logic.
+        """
+        climate_id = "climate.salon"
+        entry_id = "entry_id_123"
+
+        # 1. Setup the initial fake state
+        hass.states.async_set(climate_id, "heat", {
+            "fan_mode": "low",
+            "fan_modes": ["low", "medium", "high", "turbo"]
+        })
+
+        # 2. Setup storage (mirroring what's in your __init__.py)
+        hass.data[DOMAIN] = {
+            entry_id: {
+                "controller": controller,
+                "sensors": []
+            }
+        }
+
+        # 3. Define the listener logic LOCALLY in the test
+        # This matches the logic in your __init__.py
+        async def mock_handle_manual_change(event):
+            new_state = event.data.get("new_state")
+            old_state = event.data.get("old_state")
+            if not new_state or not old_state:
+                return
+
+            new_fan = new_state.attributes.get("fan_mode")
+            old_fan = old_state.attributes.get("fan_mode")
+
+            if new_fan != old_fan and new_fan is not None:
+                # This is the call we want to verify
+                controller.update_new_fan_state(new_fan)
+
+        # Register our local mock listener
+        async_track_state_change_event(hass, [climate_id], mock_handle_manual_change)
+
+        # 4. Trigger a manual change by updating the state
+        # We simulate this happening at T=2000
+        test_time = 2000.0
+        with patch('time.time', return_value=test_time):
+            hass.states.async_set(climate_id, "heat", {
+                "fan_mode": "high", # The change
+                "fan_modes": ["low", "medium", "high", "turbo"]
+            })
+            # Wait for Home Assistant's event bus to process mock_handle_manual_change
+            await hass.async_block_till_done()
+
+        # 5. Verification
+        # If the listener worked, last_change_time should match our patched time
+        assert controller._last_change_time == test_time

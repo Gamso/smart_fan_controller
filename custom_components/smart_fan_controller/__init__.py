@@ -1,7 +1,7 @@
 """Initialisation of Smart Fan Controller."""
 import logging
 from datetime import timedelta
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_track_time_interval, async_track_state_change_event
 from homeassistant.const import Platform
 
 from .const import (
@@ -29,12 +29,8 @@ async def async_setup_entry(hass, entry):
     conf = entry.data
     climate_id = conf[CONF_CLIMATE_ENTITY]
 
-    # Get fan modes from the climate entity attributes
-    state = hass.states.get(climate_id)
-
     # 2. Instantiate the controller with dynamic parameters from Config Flow
     controller = SmartFanController(
-        fan_modes=None,
         deadband=conf.get(CONF_DEADBAND, DEFAULT_DEADBAND),
         min_interval=conf.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL),
         soft_error=conf.get(CONF_SOFT_ERROR, DEFAULT_SOFT_ERROR),
@@ -62,7 +58,9 @@ async def async_setup_entry(hass, entry):
 
         # Dynamically fetch fan modes if the controller doesn't have them yet
         if controller._fan_modes is None:
-            controller._fan_modes = current_state.attributes.get("fan_modes", [])
+            raw_modes = current_state.attributes.get("fan_modes", [])
+            # Remove "auto" from the list of modes
+            controller._fan_modes = [m for m in raw_modes if m.lower() not in ["auto", "off"]]
             _LOGGER.info("Detected fan modes for %s: %s", climate_id, controller._fan_modes)
 
         # Extract VTherm and Climate data
@@ -94,22 +92,43 @@ async def async_setup_entry(hass, entry):
                 sensor.update_from_controller(decision)
 
         # Apply the new fan speed if a change is required
-        if decision["target_fan_mode"] != current_fan:
+        if decision["fan_mode"] != current_fan:
             _LOGGER.info(
                 "Changing %s fan to %s. Reason: %s",
-                climate_id, decision["target_fan_mode"], decision["reason"]
+                climate_id, decision["fan_mode"], decision["reason"]
             )
             await hass.services.async_call("climate", "set_fan_mode", {
                 "entity_id": climate_id,
-                "fan_mode": decision["target_fan_mode"]
+                "fan_mode": decision["fan_mode"]
             })
+
+    async def _handle_manual_change(event):
+        new_state = event.data.get("new_state")
+        old_state = event.data.get("old_state")
+        if not new_state or not old_state:
+            return
+
+        new_fan = new_state.attributes.get("fan_mode")
+        old_fan = old_state.attributes.get("fan_mode")
+
+        if new_fan != old_fan:
+            _LOGGER.info("Manual fan_mode change detected, resetting timer")
+
+            # Reset internal controller timer
+            manual_data = controller.update_new_fan_state(new_fan)
+
+            # Instantly refresh sensors to show the change
+            sensors = hass.data[DOMAIN][entry.entry_id].get("sensors", [])
+            for sensor in sensors:
+                sensor.update_from_controller(manual_data)
 
     # Schedule the loop and run it immediately once to initialize
     remove_timer = async_track_time_interval(hass, run_control_loop, timedelta(minutes=2))
+    manual_change = async_track_state_change_event(hass, [climate_id], _handle_manual_change)
     # This ensures the timer stops if the integration is unloaded/removed
     entry.async_on_unload(remove_timer)
+    entry.async_on_unload(manual_change)
 
     # Trigger first run immediately after setup
     hass.async_create_task(run_control_loop(None))
-
     return True

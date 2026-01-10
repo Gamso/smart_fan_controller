@@ -14,7 +14,7 @@ class SmartFanController:
         projected_error_threshold: float
     ):
         # Initialize the attribute even if it is None initially
-        self._fan_modes: list | None = fan_modes # todo remove "auto"
+        self._fan_modes: list | None = fan_modes
 
         # Config Flow values
         self._deadband = deadband
@@ -31,7 +31,7 @@ class SmartFanController:
         self._limit_timeout: float = 15.0
         self._last_change_time: float = self._now - (self._limit_timeout * 60)
 
-    def compute_temperature_projection(self, current_temp: float, vtherm_slope: float):
+    def compute_temperature_projection(self, current_temp: float, vtherm_slope: float) -> float:
         """Estimate temperature projection in 10 min"""
         d_thermal_acceleration = vtherm_slope - self._previous_slope
         self._thermal_acceleration = (0.3 * d_thermal_acceleration) + (0.7 * self._thermal_acceleration)
@@ -44,7 +44,7 @@ class SmartFanController:
         temp_proj = current_temp + (velocity * window_time) + (0.5 * acceleration * (window_time**2))
         return temp_proj
 
-    def apply_deceleration_limit(self, current_index: int, new_index: int):
+    def apply_deceleration_limit(self, current_index: int, new_index: int) -> int:
         """
         Ensure the fan speed decreases by no more than one step at a time
         to maintain system stability.
@@ -53,7 +53,7 @@ class SmartFanController:
             return current_index - 1
         return new_index
 
-    def determine_final_index(self, current_index: int, new_index: int, minutes_since_change: float, force: bool):
+    def determine_final_index(self, current_index: int, new_index: int, minutes_since_change: float, force: bool) -> int:
         """Limit fan speed changes with safety guards."""
         if force or self._last_change_time == 0:
             return self.apply_deceleration_limit(current_index, new_index)
@@ -64,6 +64,15 @@ class SmartFanController:
 
         return self.apply_deceleration_limit(current_index, new_index)
 
+    def update_new_fan_state(self, new_fan: int) -> dict:
+        self._last_change_time = time.time()
+
+        return {
+            "fan_mode": new_fan,
+            "minutes_since_last_change": 0.0,
+            "reason": "Manual Override"
+        }
+
     def save_states(self, target_fan: int, current_fan: int, vtherm_slope: float, slope_change: bool):
         """Update states."""
         if target_fan != current_fan:
@@ -73,7 +82,7 @@ class SmartFanController:
         if target_fan != current_fan or slope_change:
             self._previous_slope = vtherm_slope
 
-    def calculate_decision(self, current_temp: float, target_temp: float, vtherm_slope: float, hvac_mode: str, current_fan: int):
+    def calculate_decision(self, current_temp: float, target_temp: float, vtherm_slope: float, hvac_mode: str, current_fan: int) -> dict:
         """Compute new fan speed."""
         self._now = time.time()
 
@@ -93,11 +102,11 @@ class SmartFanController:
         #-----------------------#
         # Effective slope: positive if moving towards target
         effective_slope = -vtherm_slope if hvac_mode == 'cool' else vtherm_slope
-        temperature_projection = self.compute_temperature_projection(current_temp, vtherm_slope)
+        projected_temperature = self.compute_temperature_projection(current_temp, vtherm_slope)
         # Current error (positive = need more heat/cool)
         current_temperature_error = (current_temp - target_temp) if hvac_mode == 'cool' else (target_temp - current_temp)
         # Projected error in 10 min (positive = will miss target)
-        projected_temperature_error = (temperature_projection - target_temp) if hvac_mode == 'cool' else (target_temp - temperature_projection)
+        projected_temperature_error = (projected_temperature - target_temp) if hvac_mode == 'cool' else (target_temp - projected_temperature)
 
         #-------------------------#
         # --- Logic indicators ---#
@@ -126,7 +135,7 @@ class SmartFanController:
         # B. BRAKING ANTICIPATION (Overshoot predicted)
         elif projected_temperature_error < -self._deadband and slope_change:
             new_index = max(0, current_index - 1)
-            reason = f"Braking: Target overshoot predicted ({round(temperature_projection, 2)}°C)"
+            reason = f"Braking: Target overshoot predicted ({round(projected_temperature, 2)}°C)"
 
         # C. RECOVERY ANTICIPATION (Under-target predicted)
         elif current_temperature_error > self._soft_error:
@@ -136,7 +145,7 @@ class SmartFanController:
                 else:
                     new_index = min(max_index, current_index + 1)
                     intensity = "Strong" if projected_temperature_error > self._projected_error_threshold else "Soft"
-                    reason = f"{intensity} recovery: Drop predicted to {round(temperature_projection, 2)}°C"
+                    reason = f"{intensity} recovery: Drop predicted to {round(projected_temperature, 2)}°C"
             else:
                 reason = f"Waiting: Observing inertia ({round(minutes_since_change)} min)"
 
@@ -172,10 +181,10 @@ class SmartFanController:
         self.save_states(target_fan, current_fan, vtherm_slope, slope_change)
 
         return {
-            "target_fan_mode": target_fan,
-            "temperature_projection": round(temperature_projection, 2),
-            "current_temperature_error": round(current_temperature_error, 2),
+            "fan_mode": target_fan,
+            "projected_temperature": round(projected_temperature, 2),
             "projected_temperature_error": round(projected_temperature_error, 2),
+            "temperature_error": round(current_temperature_error, 2),
             "minutes_since_last_change": round(minutes_since_change, 1),
             "reason": reason
         }
