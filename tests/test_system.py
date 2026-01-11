@@ -229,10 +229,21 @@ class TestSmartFanControllerSystem:
         is reached if the situation is stable.
         """
         sequence = [
-            (0,  19.7, 20.0, 1.40, "high", "medium"), # High slope triggers early brake to medium
-            (10, 19.9, 20.0, 0.40, "medium", "medium"), # Inertia blocks drop to low
-            (20, 20.0, 20.0, 0.20, "medium", "medium"), # Inertia still active
-            (30, 20.0, 20.0, 0.05, "medium", "medium"), # Target hit + Stable -> Maintain speed
+            # T+0: Below target with a strong slope. Stay in High.
+            (0,  19.5, 20.0, 1.40, "high", "high"),
+
+            # T+10: Temp is 19.95 (Still below target).
+            # Simple Projection: 19.95 + (1.55 * 10/60) = 20.208
+            # Projected Error: 20.0 - 20.208 = -0.208
+            # Since -0.208 < -deadband (-0.2), Block B triggers and reduces speed.
+            (10, 19.95, 20.0, 1.55, "high", "medium"),
+
+            # T+20: Reached target (20.0).
+            # Error is 0.0 -> Enters Block F (Comfort Zone/Stable). Maintain Medium.
+            (20, 20.0, 20.0, 0.20, "medium", "medium"),
+
+            # T+30: Stable on target with minimal slope.
+            (30, 20.0, 20.0, 0.05, "medium", "medium"),
         ]
 
         self._run_sequence_test(controller, sequence, initial_slope=-0.10)
