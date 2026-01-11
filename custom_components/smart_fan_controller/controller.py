@@ -61,7 +61,7 @@ class SmartFanController:
 
     def determine_final_index(self, current_index: int, new_index: int, minutes_since_change: float, force: bool) -> int:
         """Limit fan speed changes with safety guards."""
-        if force or self._last_change_time == 0:
+        if force:
             return self.apply_deceleration_limit(current_index, new_index)
 
         # Enforce the minimum time between two changes
@@ -79,11 +79,11 @@ class SmartFanController:
             "reason": "Manual Override"
         }
 
-    def save_states(self, target_fan: int, current_fan: int, vtherm_slope: float, slope_change: bool):
+    def save_states(self, target_fan: int, current_fan: int, vtherm_slope: float, effective_slope: float, slope_change: bool):
         """Update states."""
         if target_fan != current_fan:
             self._last_change_time = self._now
-            self._slope_at_last_change = vtherm_slope
+            self._slope_at_last_change = effective_slope
 
         if target_fan != current_fan or slope_change:
             self._previous_slope = vtherm_slope
@@ -187,7 +187,7 @@ class SmartFanController:
         target_fan = self._fan_modes[final_index]
 
         # Update memory
-        self.save_states(target_fan, current_fan, effective_slope, slope_change)
+        self.save_states(target_fan, current_fan, vtherm_slope, effective_slope, slope_change)
 
         return {
             "fan_mode": target_fan,

@@ -44,7 +44,7 @@ class TestSmartFanControllerHeat:
         """Test Scenario B: Reducing speed before over-heating (overshoot)."""
         # Setup: Temperature is close, but rising very fast
         # We need a slope change > 0.1 compared to the previous state
-        controller._previous_slope = 0.5
+        controller._previous_slope = 0.3
 
         result = controller.calculate_decision(
             current_temp=19.9,
