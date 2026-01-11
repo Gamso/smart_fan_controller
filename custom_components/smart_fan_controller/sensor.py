@@ -21,18 +21,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # Define all sensors clearly
     # Format: (Display Name, Data Key, Unit, Device Class)
     sensor_definitions = [
-        ("Status", "reason", None, None),
+        ("Status", "reason", None, None, "mdi:information-outline"),
         ("Fan Mode", "fan_mode", None, SensorDeviceClass.ENUM, "mdi:fan"),
-        ("Fan Mode - Last change", "minutes_since_last_change", UnitOfTime.MINUTES, SensorDeviceClass.DURATION),
-        ("Temperature Projected (10 min)", "projected_temperature", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
-        ("Temperature Projected Error (10 min)", "projected_temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
-        ("Temperature Error", "temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE),
+        ("Fan Mode - Last change", "minutes_since_last_change", UnitOfTime.MINUTES, SensorDeviceClass.DURATION, "mdi:clock-outline"),
+        ("Temperature Projected (10 min)", "projected_temperature", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:chart-bell-curve"),
+        ("Temperature Projected Error (10 min)", "projected_temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:chart-bell-curve"),
+        ("Temperature Error", "temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:thermometer-lines"),
     ]
 
     entities = []
-    for name, key, unit, device_class in sensor_definitions:
+    for name, key, unit, device_class, icon in sensor_definitions:
         entities.append(
-            SmartFanSensor(entry.entry_id, climate_id, name, key, unit, device_class)
+            SmartFanSensor(entry.entry_id, climate_id, name, key, unit, device_class, icon)
         )
 
     # Store the list in hass.data for the __init__.py update loop
@@ -45,7 +45,7 @@ class SmartFanSensor(SensorEntity):
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, entry_id, climate_id, name_suffix, data_key, unit, device_class) -> None:
+    def __init__(self, entry_id, climate_id, name_suffix, data_key, unit, device_class, icon) -> None:
         """Initialize the sensor."""
         self._entry_id = entry_id
         self._data_key = data_key
@@ -63,6 +63,7 @@ class SmartFanSensor(SensorEntity):
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = device_class
         self._attr_native_value = None
+        self._attr_icon = icon
 
     @property
     def device_info(self) -> DeviceInfo:
