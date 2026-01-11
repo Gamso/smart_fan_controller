@@ -98,7 +98,10 @@ class SmartFanController:
             self._slope_at_last_change = vtherm_slope
 
         if not self._fan_modes:
-            return {"target_fan_mode": current_fan, "reason": "No fan modes defined"}
+            return {
+                "fan_mode": current_fan,
+                "reason": "No fan modes defined"
+            }
 
         # Time since last fan change
         minutes_since_change = (self._now - self._last_change_time) / 60
