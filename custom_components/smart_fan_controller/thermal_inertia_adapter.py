@@ -1,6 +1,6 @@
-"""python
 """
-# Adaptive thermal inertia calibration and threshold management.
+Adaptive thermal inertia calibration and threshold management.
+"""
 import logging
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
@@ -75,7 +75,7 @@ class ThermalInertiaAdapter:
         self._adaptation_interval = 30 * 60  # 30 minutes in seconds
         
         # Thermal model
-        self._thermal_time_constant = 300. 0  # τ (seconds) - initial estimate
+        self._thermal_time_constant = 300.0  # τ (seconds) - initial estimate
         self._fan_change_markers: list[float] = []  # Track when fan speed changed
         
         # Current thresholds
@@ -210,7 +210,7 @@ class ThermalInertiaAdapter:
         # Find corresponding data point
         change_idx = None
         for i, metric in enumerate(self._learning_window):
-            if metric. timestamp >= last_change_time:
+            if metric.timestamp >= last_change_time:
                 change_idx = i
                 break
         
@@ -254,7 +254,7 @@ class ThermalInertiaAdapter:
         """
         overshoot = 0.0
         
-        for metric in self._learning_window[-100:]:  # Last ~3. 3 hours
+        for metric in self._learning_window[-100:]:  # Last ~3.3 hours
             error = metric.temperature - metric.target_temperature
             
             # In cool mode, error direction reverses
@@ -422,7 +422,7 @@ class ThermalInertiaAdapter:
         
         try:
             if "thresholds" in state: 
-                self._thresholds = AdaptiveThresholds. from_dict(state["thresholds"])
+                self._thresholds = AdaptiveThresholds.from_dict(state["thresholds"])
             
             if "history" in state:
                 self._threshold_history = [
