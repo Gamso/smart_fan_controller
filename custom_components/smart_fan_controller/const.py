@@ -23,3 +23,7 @@ DEFAULT_LEARNING_RATE = 0.1
 DEFAULT_LEARNING_SAVE_INTERVAL = 60  # minutes
 
 DELTA_TIME_CONTROL_LOOP = 2  # minutes between each control loop execution
+
+# Adaptive learning constants
+DEFAULT_PROFILE_LEARNING_RATE = 0.1  # For fan mode profiles
+DEFAULT_THERMAL_LEARNING_RATE = 0.05  # For global thermal parameters (slower)

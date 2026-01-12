@@ -1,8 +1,12 @@
 """Initialisation of Smart Fan Controller."""
 import logging
 from datetime import timedelta
+from typing import TYPE_CHECKING
 from homeassistant.helpers.event import async_track_time_interval, async_track_state_change_event
 from homeassistant.const import Platform
+
+if TYPE_CHECKING:
+    from .adaptive_learning import AdaptiveLearning
 
 from .const import (
     DOMAIN,

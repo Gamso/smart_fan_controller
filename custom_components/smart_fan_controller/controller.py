@@ -1,6 +1,10 @@
+"""Smart Fan Controller."""
 import logging
 import time
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from .adaptive_learning import AdaptiveLearning
 
 from .const import (
     DELTA_TIME_CONTROL_LOOP
@@ -17,7 +21,7 @@ class SmartFanController:
         soft_error: float,
         hard_error: float,
         projected_error_threshold: float,
-        adaptive_learning: Optional['AdaptiveLearning'] = None
+        adaptive_learning: Optional["AdaptiveLearning"] = None
     ):
         # Initialize the attribute even if it is None initially
         self._fan_modes: list | None = fan_modes

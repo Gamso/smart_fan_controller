@@ -17,6 +17,8 @@ MAX_LEARNING_RATE = 0.2  # Maximum allowed learning rate
 OVERSHOOT_TEMPERATURE_THRESHOLD = 0.2  # Temperature threshold for overshoot detection (°C)
 MIN_TEMP_CHANGE_RATE_THRESHOLD = 0.01  # Minimum temp change rate to avoid division errors (°C/h)
 MAX_THERMAL_INERTIA = 10.0  # Maximum reasonable thermal inertia value (safety bound)
+MIN_TEMP_CHANGE_RATE_FOR_INERTIA = 0.1  # More conservative threshold for inertia calculation (°C/h)
+SECONDS_PER_MINUTE = 60.0  # Conversion constant
 
 class AdaptiveLearning:
     """
@@ -96,7 +98,7 @@ class AdaptiveLearning:
         
         # Calculate learned parameters
         learned_inertia = thermal_params["learned_thermal_inertia"]
-        learned_response_time = thermal_params["avg_response_time"] / 60.0  # Convert to minutes
+        learned_response_time = thermal_params["avg_response_time"] / SECONDS_PER_MINUTE  # Convert to minutes
         
         # Calculate adaptive thresholds based on thermal inertia
         learned_soft_error = learned_inertia * 0.6
@@ -268,7 +270,8 @@ class AdaptiveLearning:
         # Update thermal inertia estimate
         # Thermal inertia = resistance to temperature change
         # Higher inertia = slower temperature response
-        if abs(temp_change_rate) > MIN_TEMP_CHANGE_RATE_THRESHOLD:
+        # Use more conservative threshold for inertia calculation to avoid extreme values
+        if abs(temp_change_rate) > MIN_TEMP_CHANGE_RATE_FOR_INERTIA:
             observed_inertia = abs(error_before) / abs(temp_change_rate)
             # Bound the inertia value to reasonable range
             observed_inertia = min(observed_inertia, MAX_THERMAL_INERTIA)
@@ -352,6 +355,10 @@ class AdaptiveLearning:
                 score -= overshoot_rate * 0.3
             
             scores[mode] = score
+        
+        # Ensure we have at least one scoreable mode
+        if not scores:
+            return None
         
         # Return mode with highest score
         best_mode = max(scores, key=scores.get)

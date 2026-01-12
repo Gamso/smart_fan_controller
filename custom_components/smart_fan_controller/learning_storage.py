@@ -5,11 +5,9 @@ import os
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-_LOGGER = logging.getLogger(__name__)
+from .const import DEFAULT_PROFILE_LEARNING_RATE, DEFAULT_THERMAL_LEARNING_RATE
 
-# Learning rate constants
-DEFAULT_PROFILE_LEARNING_RATE = 0.1  # For fan mode profiles
-DEFAULT_THERMAL_LEARNING_RATE = 0.05  # For global thermal parameters (slower)
+_LOGGER = logging.getLogger(__name__)
 
 class LearningStorage:
     """Manages persistent storage of learning data."""
