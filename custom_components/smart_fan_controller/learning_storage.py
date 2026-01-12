@@ -190,7 +190,7 @@ class LearningStorage:
         self.initialize_fan_mode_profile(fan_mode)
         
         profile = self._learning_state["fan_mode_profiles"][fan_mode]
-        alpha = DEFAULT_PROFILE_LEARNING_RATE  # Learning rate for exponential moving average
+        alpha = DEFAULT_PROFILE_LEARNING_RATE  # Exponential moving average weight for new observations
         
         if slope_change is not None:
             profile["avg_slope_change"] = (

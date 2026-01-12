@@ -12,6 +12,11 @@ CONFIDENCE_THRESHOLD_LOW = 0.3  # Below this: use static parameters only
 CONFIDENCE_THRESHOLD_HIGH = 0.7  # Above this: primarily use learned parameters
 MIN_ACTIVATIONS_FOR_RECOMMENDATION = 5  # Minimum fan mode activations before recommending
 MIN_OBSERVATION_TIME_SECONDS = 120  # Minimum time between observations for learning
+MIN_LEARNING_RATE = 0.05  # Minimum allowed learning rate
+MAX_LEARNING_RATE = 0.2  # Maximum allowed learning rate
+OVERSHOOT_TEMPERATURE_THRESHOLD = 0.2  # Temperature threshold for overshoot detection (°C)
+MIN_TEMP_CHANGE_RATE_THRESHOLD = 0.01  # Minimum temp change rate to avoid division errors (°C/h)
+MAX_THERMAL_INERTIA = 10.0  # Maximum reasonable thermal inertia value (safety bound)
 
 class AdaptiveLearning:
     """
@@ -39,7 +44,7 @@ class AdaptiveLearning:
         """
         self._storage = storage
         self._enable_learning = enable_learning
-        self._learning_rate = max(0.05, min(0.2, learning_rate))
+        self._learning_rate = max(MIN_LEARNING_RATE, min(MAX_LEARNING_RATE, learning_rate))
         
         # Observation tracking
         self._last_observation_time: float = time.time()
@@ -235,10 +240,10 @@ class AdaptiveLearning:
         undershoot = False
         
         if hvac_mode == "heat":
-            overshoot = temp_after > target_temp + 0.2
+            overshoot = temp_after > target_temp + OVERSHOOT_TEMPERATURE_THRESHOLD
             undershoot = temp_after < temp_before and temp_before < target_temp
         else:  # cool
-            overshoot = temp_after < target_temp - 0.2
+            overshoot = temp_after < target_temp - OVERSHOOT_TEMPERATURE_THRESHOLD
             undershoot = temp_after > temp_before and temp_before > target_temp
         
         # Calculate effectiveness score (0-1)
@@ -263,8 +268,10 @@ class AdaptiveLearning:
         # Update thermal inertia estimate
         # Thermal inertia = resistance to temperature change
         # Higher inertia = slower temperature response
-        if abs(temp_change_rate) > 0.01:  # Avoid division by zero
+        if abs(temp_change_rate) > MIN_TEMP_CHANGE_RATE_THRESHOLD:
             observed_inertia = abs(error_before) / abs(temp_change_rate)
+            # Bound the inertia value to reasonable range
+            observed_inertia = min(observed_inertia, MAX_THERMAL_INERTIA)
             self._storage.update_thermal_parameters(thermal_inertia=observed_inertia)
         
         # Track prediction success
