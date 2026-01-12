@@ -6,6 +6,7 @@ import tempfile
 from datetime import datetime
 
 from custom_components.smart_fan_controller.learning_storage import LearningStorage
+from custom_components.smart_fan_controller.const import DEFAULT_PROFILE_LEARNING_RATE
 
 
 @pytest.fixture
@@ -83,10 +84,10 @@ class TestLearningStorage:
         )
         
         profile = storage.get_fan_mode_profile("low")
-        # With alpha=0.1: 0.1 * 1.0 + 0.9 * 0.0 = 0.1
-        assert profile["avg_slope_change"] == pytest.approx(0.1)
-        # With alpha=0.1: 0.1 * 0.9 + 0.9 * 0.5 = 0.54
-        assert profile["effectiveness_score"] == pytest.approx(0.54)
+        # With alpha=DEFAULT_PROFILE_LEARNING_RATE: alpha * 1.0 + (1-alpha) * 0.0
+        assert profile["avg_slope_change"] == pytest.approx(DEFAULT_PROFILE_LEARNING_RATE)
+        # With alpha=DEFAULT_PROFILE_LEARNING_RATE: alpha * 0.9 + (1-alpha) * 0.5
+        assert profile["effectiveness_score"] == pytest.approx(DEFAULT_PROFILE_LEARNING_RATE * 0.9 + (1 - DEFAULT_PROFILE_LEARNING_RATE) * 0.5)
         assert profile["activation_count"] == 1
         
         # Second update
@@ -97,10 +98,9 @@ class TestLearningStorage:
         )
         
         profile = storage.get_fan_mode_profile("low")
-        # 0.1 * 0.5 + 0.9 * 0.1 = 0.14
-        assert profile["avg_slope_change"] == pytest.approx(0.14)
-        # 0.1 * 0.8 + 0.9 * 0.54 = 0.566
-        assert profile["effectiveness_score"] == pytest.approx(0.566)
+        # alpha * 0.5 + (1-alpha) * prev_value
+        expected_slope = DEFAULT_PROFILE_LEARNING_RATE * 0.5 + (1 - DEFAULT_PROFILE_LEARNING_RATE) * DEFAULT_PROFILE_LEARNING_RATE
+        assert profile["avg_slope_change"] == pytest.approx(expected_slope)
         assert profile["activation_count"] == 2
 
     def test_overshoot_undershoot_tracking(self, storage):
