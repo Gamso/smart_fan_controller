@@ -7,6 +7,12 @@ from .learning_storage import LearningStorage
 
 _LOGGER = logging.getLogger(__name__)
 
+# Learning thresholds and constants
+CONFIDENCE_THRESHOLD_LOW = 0.3  # Below this: use static parameters only
+CONFIDENCE_THRESHOLD_HIGH = 0.7  # Above this: primarily use learned parameters
+MIN_ACTIVATIONS_FOR_RECOMMENDATION = 5  # Minimum fan mode activations before recommending
+MIN_OBSERVATION_TIME_SECONDS = 120  # Minimum time between observations for learning
+
 class AdaptiveLearning:
     """
     Adaptive learning system that learns fan mode dynamics and thermal behavior.
@@ -95,12 +101,12 @@ class AdaptiveLearning:
         learned_min_interval = max(5, min(20, learned_response_time * 1.5))
         
         # Blend based on confidence
-        if confidence < 0.3:
+        if confidence < CONFIDENCE_THRESHOLD_LOW:
             # Low confidence: use static parameters
             blend_factor = 0.0
-        elif confidence < 0.7:
+        elif confidence < CONFIDENCE_THRESHOLD_HIGH:
             # Medium confidence: blend proportionally
-            blend_factor = (confidence - 0.3) / 0.4
+            blend_factor = (confidence - CONFIDENCE_THRESHOLD_LOW) / (CONFIDENCE_THRESHOLD_HIGH - CONFIDENCE_THRESHOLD_LOW)
         else:
             # High confidence: use learned parameters
             blend_factor = 1.0
@@ -154,7 +160,7 @@ class AdaptiveLearning:
             time_elapsed = current_time - self._last_observation_time
             
             # Only learn if enough time has passed (at least 2 minutes)
-            if time_elapsed >= 120:
+            if time_elapsed >= MIN_OBSERVATION_TIME_SECONDS:
                 self._learn_from_observation(
                     fan_mode=self._last_fan_mode,
                     temp_before=self._last_temp,
@@ -306,14 +312,14 @@ class AdaptiveLearning:
             return None
         
         confidence = self._storage.get_learning_confidence()
-        if confidence < 0.7:
+        if confidence < CONFIDENCE_THRESHOLD_HIGH:
             return None
         
         # Get profiles for all modes
         profiles = {}
         for mode in available_modes:
             profile = self._storage.get_fan_mode_profile(mode)
-            if profile["activation_count"] < 5:
+            if profile["activation_count"] < MIN_ACTIVATIONS_FOR_RECOMMENDATION:
                 # Not enough data for this mode
                 continue
             profiles[mode] = profile

@@ -7,6 +7,10 @@ from typing import Dict, Any, Optional
 
 _LOGGER = logging.getLogger(__name__)
 
+# Learning rate constants
+DEFAULT_PROFILE_LEARNING_RATE = 0.1  # For fan mode profiles
+DEFAULT_THERMAL_LEARNING_RATE = 0.05  # For global thermal parameters (slower)
+
 class LearningStorage:
     """Manages persistent storage of learning data."""
 
@@ -186,7 +190,7 @@ class LearningStorage:
         self.initialize_fan_mode_profile(fan_mode)
         
         profile = self._learning_state["fan_mode_profiles"][fan_mode]
-        alpha = 0.1  # Learning rate for exponential moving average
+        alpha = DEFAULT_PROFILE_LEARNING_RATE  # Learning rate for exponential moving average
         
         if slope_change is not None:
             profile["avg_slope_change"] = (
@@ -230,7 +234,7 @@ class LearningStorage:
     ) -> None:
         """Update thermal system parameters."""
         params = self._learning_state["thermal_parameters"]
-        alpha = 0.05  # Slower learning rate for global parameters
+        alpha = DEFAULT_THERMAL_LEARNING_RATE  # Slower learning rate for global parameters
         
         if thermal_inertia is not None:
             params["learned_thermal_inertia"] = (
