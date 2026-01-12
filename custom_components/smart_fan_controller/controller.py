@@ -1,5 +1,6 @@
 import logging
 import time
+from typing import Optional
 
 from .const import (
     DELTA_TIME_CONTROL_LOOP
@@ -15,12 +16,23 @@ class SmartFanController:
         min_interval: int,
         soft_error: float,
         hard_error: float,
-        projected_error_threshold: float
+        projected_error_threshold: float,
+        adaptive_learning: Optional['AdaptiveLearning'] = None
     ):
         # Initialize the attribute even if it is None initially
         self._fan_modes: list | None = fan_modes
 
-        # Config Flow values
+        # Config Flow values (static/fallback parameters)
+        self._static_deadband = deadband
+        self._static_min_interval = min_interval
+        self._static_soft_error = soft_error
+        self._static_hard_error = hard_error
+        self._static_projected_error_threshold = projected_error_threshold
+
+        # Adaptive learning system (optional)
+        self._adaptive_learning = adaptive_learning
+
+        # Active parameters (may be adaptive or static)
         self._deadband = deadband
         self._min_interval = min_interval
         self._soft_error = soft_error
@@ -34,6 +46,31 @@ class SmartFanController:
         self._now: float = time.time()
         self._limit_timeout: float = 15.0
         self._last_change_time: float = self._now - (self._limit_timeout * 60)
+
+    def _update_adaptive_parameters(self):
+        """Update active parameters from adaptive learning if available."""
+        if self._adaptive_learning is None:
+            return
+
+        adaptive_params = self._adaptive_learning.get_adaptive_parameters(
+            static_deadband=self._static_deadband,
+            static_soft_error=self._static_soft_error,
+            static_hard_error=self._static_hard_error,
+            static_min_interval=self._static_min_interval,
+            static_projected_error=self._static_projected_error_threshold
+        )
+
+        self._deadband = adaptive_params["deadband"]
+        self._soft_error = adaptive_params["soft_error"]
+        self._hard_error = adaptive_params["hard_error"]
+        self._min_interval = adaptive_params["min_interval"]
+        self._projected_error_threshold = adaptive_params["projected_error_threshold"]
+
+        _LOGGER.debug(
+            "Updated adaptive parameters: deadband=%.2f, soft_error=%.2f, "
+            "hard_error=%.2f, min_interval=%.1f",
+            self._deadband, self._soft_error, self._hard_error, self._min_interval
+        )
 
     def compute_temperature_projection(self, current_temp: float, vtherm_slope: float) -> float:
         """Estimate temperature projection in 10 min"""
@@ -91,6 +128,9 @@ class SmartFanController:
     def calculate_decision(self, current_temp: float, target_temp: float, vtherm_slope: float, hvac_mode: str, current_fan: int) -> dict:
         """Compute new fan speed."""
         self._now = time.time()
+
+        # Update adaptive parameters if learning is enabled
+        self._update_adaptive_parameters()
 
         # Init slope states
         if self._previous_slope is None:
@@ -188,6 +228,18 @@ class SmartFanController:
 
         # Update memory
         self.save_states(target_fan, current_fan, vtherm_slope, effective_slope, slope_change)
+
+        # Observe decision for adaptive learning
+        if self._adaptive_learning is not None:
+            self._adaptive_learning.observe_decision(
+                current_temp=current_temp,
+                target_temp=target_temp,
+                current_slope=vtherm_slope,
+                current_fan=current_fan,
+                new_fan=target_fan,
+                hvac_mode=hvac_mode,
+                decision_reason=reason
+            )
 
         return {
             "fan_mode": target_fan,

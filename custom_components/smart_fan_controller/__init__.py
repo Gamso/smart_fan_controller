@@ -12,14 +12,22 @@ from .const import (
     CONF_SOFT_ERROR,
     CONF_HARD_ERROR,
     CONF_TEMPERATURE_PROJECTED_ERROR,
+    CONF_ENABLE_ADAPTIVE_LEARNING,
+    CONF_LEARNING_RATE,
+    CONF_LEARNING_SAVE_INTERVAL,
     DEFAULT_DEADBAND,
     DEFAULT_MIN_INTERVAL,
     DEFAULT_SOFT_ERROR,
     DEFAULT_HARD_ERROR,
     DEFAULT_TEMPERATURE_PROJECTED_ERROR,
+    DEFAULT_ENABLE_ADAPTIVE_LEARNING,
+    DEFAULT_LEARNING_RATE,
+    DEFAULT_LEARNING_SAVE_INTERVAL,
     DELTA_TIME_CONTROL_LOOP
 )
 from .controller import SmartFanController
+from .learning_storage import LearningStorage
+from .adaptive_learning import AdaptiveLearning
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.SENSOR]
@@ -30,21 +38,52 @@ async def async_setup_entry(hass, entry):
     conf = entry.data
     climate_id = conf[CONF_CLIMATE_ENTITY]
 
-    # 2. Instantiate the controller with dynamic parameters from Config Flow
+    # 2. Setup adaptive learning if enabled
+    enable_learning = conf.get(CONF_ENABLE_ADAPTIVE_LEARNING, DEFAULT_ENABLE_ADAPTIVE_LEARNING)
+    learning_rate = conf.get(CONF_LEARNING_RATE, DEFAULT_LEARNING_RATE)
+    learning_save_interval = conf.get(CONF_LEARNING_SAVE_INTERVAL, DEFAULT_LEARNING_SAVE_INTERVAL)
+    
+    adaptive_learning = None
+    learning_storage = None
+    
+    if enable_learning:
+        # Create learning storage
+        storage_path = hass.config.path("smart_fan_controller")
+        learning_storage = LearningStorage(storage_path, climate_id)
+        
+        # Try to load existing learning state
+        if not learning_storage.load():
+            _LOGGER.info("Starting with fresh learning state for %s", climate_id)
+        
+        # Create adaptive learning system
+        adaptive_learning = AdaptiveLearning(
+            storage=learning_storage,
+            enable_learning=enable_learning,
+            learning_rate=learning_rate
+        )
+        
+        _LOGGER.info("Adaptive learning enabled for %s", climate_id)
+    else:
+        _LOGGER.info("Adaptive learning disabled for %s", climate_id)
+
+    # 3. Instantiate the controller with dynamic parameters from Config Flow
     controller = SmartFanController(
         fan_modes=None,
         deadband=conf.get(CONF_DEADBAND, DEFAULT_DEADBAND),
         min_interval=conf.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL),
         soft_error=conf.get(CONF_SOFT_ERROR, DEFAULT_SOFT_ERROR),
         hard_error=conf.get(CONF_HARD_ERROR, DEFAULT_HARD_ERROR),
-        projected_error_threshold=conf.get(CONF_TEMPERATURE_PROJECTED_ERROR, DEFAULT_TEMPERATURE_PROJECTED_ERROR)
+        projected_error_threshold=conf.get(CONF_TEMPERATURE_PROJECTED_ERROR, DEFAULT_TEMPERATURE_PROJECTED_ERROR),
+        adaptive_learning=adaptive_learning
     )
 
-    # 3. Store data for platforms and forward setup
+    # 4. Store data for platforms and forward setup
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "controller": controller,
         "climate_entity": climate_id,
-        "sensor": None # Reference will be set in sensor.py
+        "sensor": None,  # Reference will be set in sensor.py
+        "adaptive_learning": adaptive_learning,
+        "learning_storage": learning_storage,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -64,6 +103,11 @@ async def async_setup_entry(hass, entry):
             # Remove "auto" from the list of modes
             controller._fan_modes = [m for m in raw_modes if m.lower() not in ["auto", "off"]]
             _LOGGER.info("Detected fan modes for %s: %s", climate_id, controller._fan_modes)
+            
+            # Initialize learning profiles for all fan modes
+            if adaptive_learning is not None:
+                for fan_mode in controller._fan_modes:
+                    learning_storage.initialize_fan_mode_profile(fan_mode)
 
         # Extract VTherm and Climate data
         attrs = current_state.attributes
@@ -127,9 +171,32 @@ async def async_setup_entry(hass, entry):
     # Schedule the loop and run it immediately once to initialize
     remove_timer = async_track_time_interval(hass, run_control_loop, timedelta(minutes=DELTA_TIME_CONTROL_LOOP))
     manual_change = async_track_state_change_event(hass, [climate_id], _handle_manual_change)
+    
+    # Setup periodic learning state save
+    if learning_storage is not None:
+        async def save_learning_state(_):
+            """Periodically save learning state."""
+            await hass.async_add_executor_job(learning_storage.save)
+        
+        save_timer = async_track_time_interval(
+            hass, 
+            save_learning_state, 
+            timedelta(minutes=learning_save_interval)
+        )
+        entry.async_on_unload(save_timer)
+    
     # This ensures the timer stops if the integration is unloaded/removed
     entry.async_on_unload(remove_timer)
     entry.async_on_unload(manual_change)
+    
+    # Register shutdown handler to save learning state
+    if learning_storage is not None:
+        async def save_on_shutdown(event):
+            """Save learning state on Home Assistant shutdown."""
+            _LOGGER.info("Saving learning state on shutdown for %s", climate_id)
+            await hass.async_add_executor_job(learning_storage.save)
+        
+        hass.bus.async_listen_once("homeassistant_stop", save_on_shutdown)
 
     # Trigger first run immediately after setup
     hass.async_create_task(run_control_loop(None))

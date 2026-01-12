@@ -13,11 +13,17 @@ from .const import (
     CONF_SOFT_ERROR,
     CONF_HARD_ERROR,
     CONF_TEMPERATURE_PROJECTED_ERROR,
+    CONF_ENABLE_ADAPTIVE_LEARNING,
+    CONF_LEARNING_RATE,
+    CONF_LEARNING_SAVE_INTERVAL,
     DEFAULT_DEADBAND,
     DEFAULT_MIN_INTERVAL,
     DEFAULT_SOFT_ERROR,
     DEFAULT_HARD_ERROR,
-    DEFAULT_TEMPERATURE_PROJECTED_ERROR
+    DEFAULT_TEMPERATURE_PROJECTED_ERROR,
+    DEFAULT_ENABLE_ADAPTIVE_LEARNING,
+    DEFAULT_LEARNING_RATE,
+    DEFAULT_LEARNING_SAVE_INTERVAL
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -44,6 +50,11 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_SOFT_ERROR, default=DEFAULT_SOFT_ERROR): float,
                 vol.Optional(CONF_HARD_ERROR, default=DEFAULT_HARD_ERROR): float,
                 vol.Optional(CONF_TEMPERATURE_PROJECTED_ERROR, default=DEFAULT_TEMPERATURE_PROJECTED_ERROR): float,
+                vol.Optional(CONF_ENABLE_ADAPTIVE_LEARNING, default=DEFAULT_ENABLE_ADAPTIVE_LEARNING): bool,
+                vol.Optional(CONF_LEARNING_RATE, default=DEFAULT_LEARNING_RATE): vol.All(
+                    vol.Coerce(float), vol.Range(min=0.05, max=0.2)
+                ),
+                vol.Optional(CONF_LEARNING_SAVE_INTERVAL, default=DEFAULT_LEARNING_SAVE_INTERVAL): int,
             }
         )
 
