@@ -19,20 +19,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     climate_id = data["climate_entity"]
 
     # Define all sensors clearly
-    # Format: (Display Name, Data Key, Unit, Device Class)
+    # Format: (Display Name, Data Key, Unit, Device Class, Icon, Entity Category)
     sensor_definitions = [
-        ("Status", "reason", None, None, "mdi:information-outline"),
-        ("Fan Mode", "fan_mode", None, SensorDeviceClass.ENUM, "mdi:fan"),
-        ("Fan Mode - Last change", "minutes_since_last_change", UnitOfTime.MINUTES, SensorDeviceClass.DURATION, "mdi:clock-outline"),
-        ("Temperature Projected (10 min)", "projected_temperature", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:chart-bell-curve"),
-        ("Temperature Projected Error (10 min)", "projected_temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:chart-bell-curve"),
-        ("Temperature Error", "temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:thermometer-lines"),
+        ("Status", "reason", None, None, "mdi:information-outline", EntityCategory.DIAGNOSTIC),
+        ("Fan Mode", "fan_mode", None, SensorDeviceClass.ENUM, "mdi:fan", None),  # Not diagnostic
+        ("Fan Mode - Last change", "minutes_since_last_change", UnitOfTime.MINUTES, SensorDeviceClass.DURATION, "mdi:clock-outline", EntityCategory.DIAGNOSTIC),
+        ("Temperature Projected (10 min)", "projected_temperature", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:chart-bell-curve", EntityCategory.DIAGNOSTIC),
+        ("Temperature Projected Error (10 min)", "projected_temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:chart-bell-curve", EntityCategory.DIAGNOSTIC),
+        ("Temperature Error", "temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:thermometer-lines", EntityCategory.DIAGNOSTIC),
     ]
 
     entities = []
-    for name, key, unit, device_class, icon in sensor_definitions:
+    for name, key, unit, device_class, icon, entity_category in sensor_definitions:
         entities.append(
-            SmartFanSensor(entry.entry_id, climate_id, name, key, unit, device_class, icon)
+            SmartFanSensor(entry.entry_id, climate_id, name, key, unit, device_class, icon, entity_category)
         )
 
     # Store the list in hass.data for the __init__.py update loop
@@ -43,9 +43,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 class SmartFanSensor(SensorEntity):
     """A specific sensor for the Smart Fan integration."""
 
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, entry_id, climate_id, name_suffix, data_key, unit, device_class, icon) -> None:
+    def __init__(self, entry_id: str, climate_id: str, name_suffix: str, data_key: str, unit: str | None, device_class: SensorDeviceClass | None, icon: str, entity_category: EntityCategory | None = EntityCategory.DIAGNOSTIC) -> None:
         """Initialize the sensor."""
         self._entry_id = entry_id
         self._data_key = data_key
@@ -64,6 +62,7 @@ class SmartFanSensor(SensorEntity):
         self._attr_device_class = device_class
         self._attr_native_value = None
         self._attr_icon = icon
+        self._attr_entity_category = entity_category
 
     @property
     def device_info(self) -> DeviceInfo:

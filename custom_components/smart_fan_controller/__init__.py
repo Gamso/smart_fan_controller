@@ -26,10 +26,10 @@ from .controller import SmartFanController
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.SENSOR]
 
-async def async_setup_entry(hass, entry):
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the integration from a config entry."""
-    # 1. Retrieve settings from config entry
-    conf = entry.data
+    # 1. Retrieve settings from config entry (options override data)
+    conf = {**entry.data, **entry.options}
     climate_id = conf[CONF_CLIMATE_ENTITY]
 
     # 2. Instantiate the controller with dynamic parameters from Config Flow
