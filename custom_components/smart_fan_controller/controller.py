@@ -44,7 +44,9 @@ class SmartFanController:
         a_inst = d_slope / dt_hours  # °C/h²
 
         # Low-pass filter on acceleration
-        self._thermal_acceleration = (0.3 * a_inst) + (0.7 * self._thermal_acceleration) # °C/h
+        # Using 0.5/0.5 EMA to balance reactivity (VTherm already provides ~15-30min smoothing)
+        # This gives ~8 min integration window vs 20 min with 0.3/0.7
+        self._thermal_acceleration = (0.5 * a_inst) + (0.5 * self._thermal_acceleration) # °C/h
 
         # Parabolic forecast (t = 10 min)
         window_time = 10 /60 # h
