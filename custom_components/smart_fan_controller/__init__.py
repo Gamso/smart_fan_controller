@@ -78,9 +78,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hvac_mode = attrs.get("hvac_mode")
         current_fan = attrs.get("fan_mode")
 
-        if current_temp is None or target_temp is None:
-            _LOGGER.debug("Incomplete data for %s, skipping cycle", climate_id)
+        if vtherm_slope is None:
+            _LOGGER.warning("%s missing VTherm temperature_slope; skipping control cycle", climate_id)
             return
+
+        if current_temp is None or target_temp is None:
+            _LOGGER.debug("Incomplete temperature data for %s, skipping cycle", climate_id)
+            return
+
+        _LOGGER.debug(
+            "Cycle: temp=%.2f target=%.2f slope=%.3f fan=%s hvac=%s",
+            current_temp,
+            target_temp,
+            vtherm_slope,
+            current_fan,
+            hvac_mode,
+        )
 
         # Execute decision logic
         decision = controller.calculate_decision(

@@ -101,6 +101,7 @@ class SmartFanController:
             self._slope_at_last_change = vtherm_slope
 
         if not self._fan_modes:
+            _LOGGER.warning("Fan modes are not initialized; holding current mode %s", current_fan)
             return {
                 "fan_mode": current_fan,
                 "reason": "No fan modes defined"
@@ -109,9 +110,9 @@ class SmartFanController:
         # Time since last fan change
         minutes_since_change = (self._now - self._last_change_time) / 60
 
-        #-----------------------#
+        # -----------------------#
         # --- Error analysis ---#
-        #-----------------------#
+        # -----------------------#
         # Effective slope: positive if moving towards target
         effective_slope = -vtherm_slope if hvac_mode == 'cool' else vtherm_slope
         projected_temperature = self.compute_temperature_projection(current_temp, vtherm_slope)
@@ -120,17 +121,17 @@ class SmartFanController:
         # Projected error in 10 min (positive = will miss target)
         projected_temperature_error = (projected_temperature - target_temp) if hvac_mode == 'cool' else (target_temp - projected_temperature)
 
-        #-------------------------#
+        # -------------------------#
         # --- Logic indicators ---#
-        #-------------------------#
+        # -------------------------#
         interval_expired = minutes_since_change >= self._limit_timeout
         slope_change = abs(vtherm_slope - self._previous_slope) > 0.1
         is_slope_improving = effective_slope > (self._slope_at_last_change + 0.1)
 
-
         try:
             current_index = self._fan_modes.index(current_fan)
         except ValueError:
+            _LOGGER.debug("Current fan mode %s not in declared modes %s; defaulting to index 0", current_fan, self._fan_modes)
             current_index = 0
 
         max_index = len(self._fan_modes) - 1
@@ -191,6 +192,22 @@ class SmartFanController:
 
         # Update memory
         self.save_states(target_fan, current_fan, vtherm_slope, effective_slope, slope_change)
+
+        _LOGGER.debug(
+            "Decision: hvac=%s current=%.2f target=%.2f err=%.2f proj=%.2f proj_err=%.2f slope=%.3f eff_slope=%.3f accel=%.3f minutes=%.1f -> %s (%s)",
+            hvac_mode,
+            current_temp,
+            target_temp,
+            current_temperature_error,
+            projected_temperature,
+            projected_temperature_error,
+            vtherm_slope,
+            effective_slope,
+            self._thermal_acceleration,
+            minutes_since_change,
+            target_fan,
+            reason,
+        )
 
         return {
             "fan_mode": target_fan,

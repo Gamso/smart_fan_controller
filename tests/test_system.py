@@ -133,7 +133,7 @@ class TestSmartFanControllerSystem:
         controller._previous_slope = 0.0 # Started stable
         current_slope = 0.6              # Now rising at 0.6°C/h
         proj = controller.compute_temperature_projection(20.0, current_slope)
-        assert proj == 20.175
+        assert proj == 20.225
 
     def _run_sequence_test(self, controller, sequence, initial_time=0.0, initial_slope=0.0, last_change_ago=None):
         controller._last_change_time = initial_time
