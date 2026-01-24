@@ -145,6 +145,13 @@ class SmartFanController:
             force = True
             reason = f"Emergency: High error ({round(current_temperature_error, 2)}°C)"
 
+        # A-bis. SETPOINT DROP (Target lowered significantly) => lowest fan speed immediately
+        # Night mode: when target drops ≥1°C below current (heat) or rises ≥1°C above current (cool)
+        elif current_temperature_error < -1.0:
+            new_index = 0
+            force = True
+            reason = f"Setpoint drop: Target moved away ({round(current_temperature_error, 2)}°C)"
+
         # B. BRAKING ANTICIPATION (Overshoot predicted)
         elif projected_temperature_error < -self._deadband and slope_change:
             new_index = max(0, current_index - 1)
