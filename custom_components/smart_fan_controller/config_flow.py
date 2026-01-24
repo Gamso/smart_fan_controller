@@ -27,13 +27,13 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-def _filter_climate_with_fan_modes(entity: selector.EntitySelectorConfig) -> bool:
-    """Filter climate entities to only those with fan_modes."""
-    state = entity.hass.states.get(entity.entity_id)
-    if not state:
-        return False
-    fan_modes = state.attributes.get("fan_modes", [])
-    return bool(fan_modes)
+def _get_climates_with_fan_modes(hass) -> list[str]:
+    """Return climate entity_ids that expose fan_modes."""
+    return [
+        state.entity_id
+        for state in hass.states.async_all(CLIMATE_DOMAIN)
+        if state.attributes.get("fan_modes")
+    ]
 
 
 class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -45,16 +45,26 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle a flow initialized by the user."""
         errors: dict[str, str] = {}
 
+        available_climates = _get_climates_with_fan_modes(self.hass)
+
         if user_input is not None:
-            return self.async_create_entry(
-                title=f"{user_input[CONF_CLIMATE_ENTITY]}",
-                data=user_input
-            )
+            climate_id = user_input[CONF_CLIMATE_ENTITY]
+            state = self.hass.states.get(climate_id)
+            if not state or not state.attributes.get("fan_modes"):
+                errors[CONF_CLIMATE_ENTITY] = "no_fan_modes"
+            else:
+                return self.async_create_entry(
+                    title=f"{user_input[CONF_CLIMATE_ENTITY]}",
+                    data=user_input
+                )
 
         data_schema = vol.Schema(
             {
                 vol.Required(CONF_CLIMATE_ENTITY): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=CLIMATE_DOMAIN)
+                    selector.EntitySelectorConfig(
+                        domain=CLIMATE_DOMAIN,
+                        include_entities=available_climates or None,
+                    )
                 ),
                 vol.Optional(CONF_DEADBAND, default=DEFAULT_DEADBAND): float,
                 vol.Optional(CONF_MIN_INTERVAL, default=DEFAULT_MIN_INTERVAL): int,
@@ -63,6 +73,9 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_TEMPERATURE_PROJECTED_ERROR, default=DEFAULT_TEMPERATURE_PROJECTED_ERROR): float,
             }
         )
+
+        if not available_climates:
+            errors["base"] = "no_climate_with_fan_modes"
 
         return self.async_show_form(
             step_id="user", data_schema=data_schema, errors=errors
@@ -86,8 +99,16 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage the options."""
+        available_climates = _get_climates_with_fan_modes(self.hass)
+        errors: dict[str, str] = {}
+
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            climate_id = user_input[CONF_CLIMATE_ENTITY]
+            state = self.hass.states.get(climate_id)
+            if not state or not state.attributes.get("fan_modes"):
+                errors[CONF_CLIMATE_ENTITY] = "no_fan_modes"
+            else:
+                return self.async_create_entry(title="", data=user_input)
 
         current_data = self.config_entry.data
 
@@ -97,7 +118,10 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
                     CONF_CLIMATE_ENTITY,
                     default=current_data.get(CONF_CLIMATE_ENTITY)
                 ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=CLIMATE_DOMAIN)
+                    selector.EntitySelectorConfig(
+                        domain=CLIMATE_DOMAIN,
+                        include_entities=available_climates or None,
+                    )
                 ),
                 vol.Optional(
                     CONF_DEADBAND,
@@ -125,4 +149,7 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
             }
         )
 
-        return self.async_show_form(step_id="init", data_schema=options_schema)
+        if not available_climates:
+            errors["base"] = "no_climate_with_fan_modes"
+
+        return self.async_show_form(step_id="init", data_schema=options_schema, errors=errors)
