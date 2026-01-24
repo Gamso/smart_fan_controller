@@ -27,12 +27,12 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-def _get_climates_with_fan_modes(hass) -> list[str]:
-    """Return climate entity_ids that expose fan_modes."""
+def _get_climates_with_fan_modes_and_slope(hass) -> list[str]:
+    """Return climate entity_ids that expose fan_modes and temperature_slope (VTherm)."""
     return [
         state.entity_id
         for state in hass.states.async_all(CLIMATE_DOMAIN)
-        if state.attributes.get("fan_modes")
+        if state.attributes.get("fan_modes") and state.attributes.get("specific_states", {}).get("temperature_slope") is not None
     ]
 
 
@@ -45,13 +45,15 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle a flow initialized by the user."""
         errors: dict[str, str] = {}
 
-        available_climates = _get_climates_with_fan_modes(self.hass)
+        available_climates = _get_climates_with_fan_modes_and_slope(self.hass)
 
         if user_input is not None:
             climate_id = user_input[CONF_CLIMATE_ENTITY]
             state = self.hass.states.get(climate_id)
             if not state or not state.attributes.get("fan_modes"):
                 errors[CONF_CLIMATE_ENTITY] = "no_fan_modes"
+            elif state.attributes.get("specific_states", {}).get("temperature_slope") is None:
+                errors[CONF_CLIMATE_ENTITY] = "no_temperature_slope"
             else:
                 return self.async_create_entry(
                     title=f"{user_input[CONF_CLIMATE_ENTITY]}",
@@ -99,7 +101,7 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage the options."""
-        available_climates = _get_climates_with_fan_modes(self.hass)
+        available_climates = _get_climates_with_fan_modes_and_slope(self.hass)
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -107,6 +109,8 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
             state = self.hass.states.get(climate_id)
             if not state or not state.attributes.get("fan_modes"):
                 errors[CONF_CLIMATE_ENTITY] = "no_fan_modes"
+            elif state.attributes.get("specific_states", {}).get("temperature_slope") is None:
+                errors[CONF_CLIMATE_ENTITY] = "no_temperature_slope"
             else:
                 return self.async_create_entry(title="", data=user_input)
 
