@@ -17,11 +17,13 @@ from .const import (
     CONF_SOFT_ERROR,
     CONF_HARD_ERROR,
     CONF_TEMPERATURE_PROJECTED_ERROR,
+    CONF_LIMIT_TIMEOUT,
     DEFAULT_DEADBAND,
     DEFAULT_MIN_INTERVAL,
     DEFAULT_SOFT_ERROR,
     DEFAULT_HARD_ERROR,
-    DEFAULT_TEMPERATURE_PROJECTED_ERROR
+    DEFAULT_TEMPERATURE_PROJECTED_ERROR,
+    DEFAULT_LIMIT_TIMEOUT
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -73,6 +75,7 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_SOFT_ERROR, default=DEFAULT_SOFT_ERROR): float,
                 vol.Optional(CONF_HARD_ERROR, default=DEFAULT_HARD_ERROR): float,
                 vol.Optional(CONF_TEMPERATURE_PROJECTED_ERROR, default=DEFAULT_TEMPERATURE_PROJECTED_ERROR): float,
+                vol.Optional(CONF_LIMIT_TIMEOUT, default=DEFAULT_LIMIT_TIMEOUT): int,
             }
         )
 
@@ -150,6 +153,10 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
                         DEFAULT_TEMPERATURE_PROJECTED_ERROR
                     )
                 ): float,
+                vol.Optional(
+                    CONF_LIMIT_TIMEOUT,
+                    default=current_data.get(CONF_LIMIT_TIMEOUT, DEFAULT_LIMIT_TIMEOUT)
+                ): int,
             }
         )
 

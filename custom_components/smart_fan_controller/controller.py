@@ -15,7 +15,8 @@ class SmartFanController:
         min_interval: int,
         soft_error: float,
         hard_error: float,
-        projected_error_threshold: float
+        projected_error_threshold: float,
+        limit_timeout: int = 15
     ):
         # Initialize the attribute even if it is None initially
         self._fan_modes: list | None = fan_modes
@@ -26,13 +27,13 @@ class SmartFanController:
         self._soft_error = soft_error
         self._hard_error = hard_error
         self._projected_error_threshold = projected_error_threshold
+        self._limit_timeout = limit_timeout
 
         # State variables
-        self._previous_slope: float = None
+        self._previous_slope: float | None = None
         self._thermal_acceleration: float = 0.0
         self._slope_at_last_change: float = 0.0
         self._now: float = time.time()
-        self._limit_timeout: float = 15.0
         self._last_change_time: float = self._now - (self._limit_timeout * 60)
 
     def compute_temperature_projection(self, current_temp: float, vtherm_slope: float) -> float:
@@ -120,7 +121,7 @@ class SmartFanController:
         #-------------------------#
         # --- Logic indicators ---#
         #-------------------------#
-        interval_expired = minutes_since_change >= 15.0
+        interval_expired = minutes_since_change >= self._limit_timeout
         slope_change = abs(vtherm_slope - self._previous_slope) > 0.1
         is_slope_improving = effective_slope > (self._slope_at_last_change + 0.1)
 

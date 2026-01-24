@@ -14,11 +14,13 @@ from .const import (
     CONF_SOFT_ERROR,
     CONF_HARD_ERROR,
     CONF_TEMPERATURE_PROJECTED_ERROR,
+    CONF_LIMIT_TIMEOUT,
     DEFAULT_DEADBAND,
     DEFAULT_MIN_INTERVAL,
     DEFAULT_SOFT_ERROR,
     DEFAULT_HARD_ERROR,
     DEFAULT_TEMPERATURE_PROJECTED_ERROR,
+    DEFAULT_LIMIT_TIMEOUT,
     DELTA_TIME_CONTROL_LOOP
 )
 from .controller import SmartFanController
@@ -39,7 +41,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         min_interval=conf.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL),
         soft_error=conf.get(CONF_SOFT_ERROR, DEFAULT_SOFT_ERROR),
         hard_error=conf.get(CONF_HARD_ERROR, DEFAULT_HARD_ERROR),
-        projected_error_threshold=conf.get(CONF_TEMPERATURE_PROJECTED_ERROR, DEFAULT_TEMPERATURE_PROJECTED_ERROR)
+        projected_error_threshold=conf.get(CONF_TEMPERATURE_PROJECTED_ERROR, DEFAULT_TEMPERATURE_PROJECTED_ERROR),
+        limit_timeout=conf.get(CONF_LIMIT_TIMEOUT, DEFAULT_LIMIT_TIMEOUT)
     )
 
     # 3. Store data for platforms and forward setup
