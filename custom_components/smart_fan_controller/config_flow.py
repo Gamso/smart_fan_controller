@@ -62,13 +62,15 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     data=user_input
                 )
 
+        # Build selector config without include_entities when none are available
+        selector_config_kwargs = {"domain": CLIMATE_DOMAIN}
+        if available_climates:
+            selector_config_kwargs["include_entities"] = available_climates
+
         data_schema = vol.Schema(
             {
                 vol.Required(CONF_CLIMATE_ENTITY): selector.EntitySelector(
-                    selector.EntitySelectorConfig(
-                        domain=CLIMATE_DOMAIN,
-                        include_entities=available_climates or None,
-                    )
+                    selector.EntitySelectorConfig(**selector_config_kwargs)
                 ),
                 vol.Optional(CONF_DEADBAND, default=DEFAULT_DEADBAND): float,
                 vol.Optional(CONF_MIN_INTERVAL, default=DEFAULT_MIN_INTERVAL): int,
@@ -92,15 +94,12 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
         """Get the options flow for this handler."""
-        return SmartFanControllerOptionsFlow(config_entry)
+        # The core will attach the ConfigEntry to the OptionsFlow instance.
+        return SmartFanControllerOptionsFlow()
 
 
 class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
     """Handle options flow for Smart Fan Controller."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage the options."""
@@ -119,16 +118,18 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
 
         current_data = self.config_entry.data
 
+        # Build selector config for options flow
+        selector_config_kwargs = {"domain": CLIMATE_DOMAIN}
+        if available_climates:
+            selector_config_kwargs["include_entities"] = available_climates
+
+        # Required key, only set default if present to avoid None default
+        required_key = vol.Required(CONF_CLIMATE_ENTITY, default=current_data.get(CONF_CLIMATE_ENTITY)) if current_data.get(CONF_CLIMATE_ENTITY) is not None else vol.Required(CONF_CLIMATE_ENTITY)
+
         options_schema = vol.Schema(
             {
-                vol.Required(
-                    CONF_CLIMATE_ENTITY,
-                    default=current_data.get(CONF_CLIMATE_ENTITY)
-                ): selector.EntitySelector(
-                    selector.EntitySelectorConfig(
-                        domain=CLIMATE_DOMAIN,
-                        include_entities=available_climates or None,
-                    )
+                required_key: selector.EntitySelector(
+                    selector.EntitySelectorConfig(**selector_config_kwargs)
                 ),
                 vol.Optional(
                     CONF_DEADBAND,
