@@ -198,6 +198,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.services.async_register(DOMAIN, "apply_learned_settings", apply_learned_settings)
 
+    # Register service to reset learning data
+    async def reset_learning(_):
+        """Service to clear all learning data and restart learning."""
+        controller.learning.reset()
+
+        # Persist cleared data to config entry to avoid reloading old stats on restart
+        new_data = {**entry.data, "learning_data": controller.learning.to_dict()}
+        hass.config_entries.async_update_entry(entry, data=new_data)
+
+        # Refresh sensors immediately
+        sensors = hass.data[DOMAIN][entry.entry_id].get("sensors", [])
+        for sensor in sensors:
+            sensor.async_write_ha_state()
+
+        _LOGGER.info("Learning reset: all samples and stats cleared")
+
+    hass.services.async_register(DOMAIN, "reset_learning", reset_learning)
+
     return True
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
