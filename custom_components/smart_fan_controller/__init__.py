@@ -148,7 +148,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # Instantly refresh sensors to show the change
             sensors = hass.data[DOMAIN][entry.entry_id].get("sensors", [])
             for sensor in sensors:
-                sensor.update_from_controller(manual_data)
+                if hasattr(sensor, "update_from_controller"):
+                    sensor.update_from_controller(manual_data)
+                else:
+                    # Learning sensor updates itself via properties
+                    sensor.async_write_ha_state()
 
     # Schedule the loop and run it immediately once to initialize
     remove_timer = async_track_time_interval(hass, run_control_loop, timedelta(minutes=DELTA_TIME_CONTROL_LOOP))
