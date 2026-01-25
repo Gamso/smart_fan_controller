@@ -1,4 +1,3 @@
-import logging
 from typing import Any
 
 import voluptuous as vol
@@ -25,8 +24,6 @@ from .const import (
     DEFAULT_TEMPERATURE_PROJECTED_ERROR,
     DEFAULT_LIMIT_TIMEOUT
 )
-
-_LOGGER = logging.getLogger(__name__)
 
 
 def _get_climates_with_fan_modes_and_slope(hass) -> list[str]:
