@@ -115,9 +115,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             for sensor in sensors:
                 if hasattr(sensor, 'update_from_controller'):
                     sensor.update_from_controller(decision)
-                else:
-                    # Learning sensor updates itself via properties
-                    sensor.async_write_ha_state()
+                # Force update all sensors (including learning sensors)
+                sensor.async_write_ha_state()
 
         # Apply the new fan speed if a change is required
         if decision["fan_mode"] != current_fan:

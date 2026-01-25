@@ -280,7 +280,7 @@ class _BaseLearnedParameterSensor(SensorEntity):
         self._attr_device_class = device_class
         self._attr_icon = icon
         self._attr_native_value = None  # Initialize with None, will be updated
-        self._attr_entity_category = EntityCategory.CONFIG
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -295,11 +295,12 @@ class _BaseLearnedParameterSensor(SensorEntity):
         """Return the learned value, or current value if not ready yet."""
         optimal = self._controller.learning.compute_optimal_parameters()
         if optimal:
-            return optimal.get(self._key)
+            return round(optimal.get(self._key), 2)
         # Before learning is ready, show current value from controller if available
         if self._current_attr:
-            return getattr(self._controller, f"_{self._current_attr}", None)
-        return None
+            val = getattr(self._controller, f"_{self._current_attr}", 0)
+            return round(val, 2) if val else 0
+        return 0
 
     @property
     def extra_state_attributes(self) -> dict:
