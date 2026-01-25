@@ -25,20 +25,24 @@ class ThermalLearning:
         # Ignore data during setpoint drop/night mode (error < -1°C)
         # Accept positive errors and small negative errors (normal operation)
         if temperature_error < -1.0:
+            _LOGGER.debug("Learning: Skipped sample (setpoint drop, err=%.2f)", temperature_error)
             return  # Skip: Setpoint change, nuit, or emergency conditions
 
         # Ignore stagnation (no useful data)
-        if abs(slope) < 0.05:
+        if abs(slope) < 0.15:
+            _LOGGER.debug("Learning: Skipped sample (stagnation, slope=%.2f)", slope)
             return
 
         # Only collect meaningful transitions
         self._slope_samples.append((time.time(), fan_mode, slope))
+        _LOGGER.debug("Learning: Collected slope sample #%d (fan=%s, slope=%.2f, err=%.2f)", len(self._slope_samples), fan_mode, slope, temperature_error)
         if len(self._slope_samples) > 500:
             self._slope_samples.pop(0)
 
     def add_response_event(self, minutes_to_response: float):
         """Record time until slope changed significantly after fan change."""
         self._response_events.append((time.time(), minutes_to_response))
+        _LOGGER.debug("Learning: Recorded response time #%d: %.1f min", len(self._response_events), minutes_to_response)
         if len(self._response_events) > 200:
             self._response_events.pop(0)
 
