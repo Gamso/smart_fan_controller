@@ -23,7 +23,7 @@ class ThermalLearning:
         # Incremental statistics using Welford's algorithm
         self._slope_count = 0  # Number of slope samples processed
         self._slope_mean = 0.0  # Running mean of absolute slopes
-        self._slope_M2 = 0.0  # Sum of squared differences for variance
+        self._slope_m2 = 0.0  # Sum of squared differences for variance
         self._slope_max = 0.0  # Maximum absolute slope
 
     def reset(self) -> None:
@@ -32,7 +32,7 @@ class ThermalLearning:
         self._response_events.clear()
         self._slope_count = 0
         self._slope_mean = 0.0
-        self._slope_M2 = 0.0
+        self._slope_m2 = 0.0
         self._slope_max = 0.0
         self._ready_once = False
         _LOGGER.info("Learning: reset requested; data cleared")
@@ -59,7 +59,12 @@ class ThermalLearning:
 
         # Cleanup: keep only data within sliding window (7 days)
         cutoff_time = time.time() - (self._learning_window_hours * 3600)
+        before = len(self._slope_samples)
         self._slope_samples = [(ts, mode, sl) for ts, mode, sl in self._slope_samples if ts > cutoff_time]
+
+        # If some points were dropped → rebuild stats
+        if len(self._slope_samples) < before:
+            self.recompute_slope_stats()
 
     def _update_slope_stats(self, abs_slope: float) -> None:
         """Update slope statistics incrementally using Welford's algorithm."""
@@ -67,7 +72,7 @@ class ThermalLearning:
         delta = abs_slope - self._slope_mean
         self._slope_mean += delta / self._slope_count
         delta2 = abs_slope - self._slope_mean
-        self._slope_M2 += delta * delta2
+        self._slope_m2 += delta * delta2
         self._slope_max = max(self._slope_max, abs_slope)
         _LOGGER.debug("Learning: Updated stats (count=%d, mean=%.3f, max=%.3f)", self._slope_count, self._slope_mean, self._slope_max)
 
@@ -112,7 +117,7 @@ class ThermalLearning:
             return {}
 
         # Variance from Welford's algorithm
-        slope_variance = self._slope_M2 / (self._slope_count - 1) if self._slope_count > 1 else 0.01
+        slope_variance = self._slope_m2 / (self._slope_count - 1) if self._slope_count > 1 else 0.01
         slope_stdev = slope_variance**0.5  # Standard deviation
 
         # Analyze response times
@@ -120,12 +125,13 @@ class ThermalLearning:
         avg_response = statistics.mean(response_times) if response_times else 10.0
 
         # Compute optimal_limit_timeout based on response time
-        # Inertia-aware: ~3x response time, capped to a sensible range
-        optimal_limit_timeout = max(20, min(90, int(avg_response * 3)))
+        # Inertia-aware: ~1.5x observed response time (≈ 1–2 time constants),
+        # clamped to a practical range to avoid over-inertia or oscillations.
+        optimal_limit_timeout = max(8, min(25, int(avg_response * 1.5)))
 
         # Adapt thresholds to slope characteristics
         # High volatility → larger deadbands to avoid oscillations
-        volatility_factor = slope_stdev / max(self._slope_mean, 0.1)
+        volatility_factor = min(slope_stdev / max(self._slope_mean, 0.1), 3.0)
 
         optimal_deadband = 0.15 + (volatility_factor * 0.2)
         optimal_soft_error = 0.25 + (volatility_factor * 0.3)
@@ -158,9 +164,26 @@ class ThermalLearning:
             "response_events": self._response_events[-100:],
             "slope_count": self._slope_count,
             "slope_mean": self._slope_mean,
-            "slope_M2": self._slope_M2,
+            "slope_M2": self._slope_m2,
             "slope_max": self._slope_max,
         }
+
+    def recompute_slope_stats(self) -> None:
+        """Rebuild Welford statistics from current sliding window."""
+        self._slope_count = 0
+        self._slope_mean = 0.0
+        self._slope_m2 = 0.0
+        self._slope_max = 0.0
+
+        for _, _, sl in self._slope_samples:
+            self._update_slope_stats(abs(sl))
+
+        _LOGGER.debug(
+            "Learning: Recomputed stats from window (count=%d, mean=%.3f, max=%.3f)",
+            self._slope_count,
+            self._slope_mean,
+            self._slope_max,
+        )
 
     @classmethod
     def from_dict(cls, data: dict):
@@ -173,13 +196,16 @@ class ThermalLearning:
         # Restore incremental statistics
         instance._slope_count = data.get("slope_count", 0)
         instance._slope_mean = data.get("slope_mean", 0.0)
-        instance._slope_M2 = data.get("slope_M2", 0.0)
+        instance._slope_m2 = data.get("slope_M2", 0.0)
         instance._slope_max = data.get("slope_max", 0.0)
 
         # Apply sliding window cleanup on restore
         cutoff_time = time.time() - (instance._learning_window_hours * 3600)
         instance._slope_samples = [(ts, mode, sl) for ts, mode, sl in instance._slope_samples if ts > cutoff_time]
         instance._response_events = [(ts, t) for ts, t in instance._response_events if ts > cutoff_time]
+
+        # Rebuild stats from cleaned window
+        instance.recompute_slope_stats()
 
         # Mark as ready once if we have enough data
         if instance._slope_count >= instance._min_samples:
