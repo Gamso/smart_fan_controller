@@ -44,9 +44,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         min_interval=conf.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL),
         soft_error=conf.get(CONF_SOFT_ERROR, DEFAULT_SOFT_ERROR),
         hard_error=conf.get(CONF_HARD_ERROR, DEFAULT_HARD_ERROR),
-        projected_error_threshold=conf.get(CONF_TEMPERATURE_PROJECTED_ERROR, DEFAULT_TEMPERATURE_PROJECTED_ERROR),
         limit_timeout=conf.get(CONF_LIMIT_TIMEOUT, DEFAULT_LIMIT_TIMEOUT),
-        learning_data=learning_data
+        learning_data=learning_data,
     )
 
     # 3. Store data for platforms and forward setup
@@ -180,7 +179,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         new_data[CONF_DEADBAND] = optimal["deadband"]
         new_data[CONF_SOFT_ERROR] = optimal["soft_error"]
         new_data[CONF_HARD_ERROR] = optimal["hard_error"]
-        new_data[CONF_TEMPERATURE_PROJECTED_ERROR] = optimal["projected_error_threshold"]
         new_data[CONF_LIMIT_TIMEOUT] = optimal["limit_timeout"]
 
         hass.config_entries.async_update_entry(entry, data=new_data)

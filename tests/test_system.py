@@ -13,7 +13,6 @@ from custom_components.smart_fan_controller.const import (
     DEFAULT_MIN_INTERVAL,
     DEFAULT_SOFT_ERROR,
     DEFAULT_HARD_ERROR,
-    DEFAULT_TEMPERATURE_PROJECTED_ERROR
 )
 
 # Standard configuration for tests
@@ -23,7 +22,6 @@ DEFAULT_CONFIG = {
     "min_interval": DEFAULT_MIN_INTERVAL,
     "soft_error": DEFAULT_SOFT_ERROR,
     "hard_error": DEFAULT_HARD_ERROR,
-    "projected_error_threshold": DEFAULT_TEMPERATURE_PROJECTED_ERROR
 }
 
 @pytest.fixture
@@ -94,7 +92,7 @@ class TestSmartFanControllerSystem:
         # 1. Operating in Heat
         result = controller.calculate_decision(19.5, 20.0, 0.2, "heat", "low")
         assert controller._previous_slope == 0.2
-        assert "Soft recovery: Drop predicted " in result["reason"]
+        assert "Strong recovery: Drop predicted " in result["reason"]
         assert result["fan_mode"] == "medium"
 
         # 2. Instant switch to Cool

@@ -136,7 +136,6 @@ class ThermalLearning:
         optimal_deadband = 0.15 + (volatility_factor * 0.2)
         optimal_soft_error = 0.25 + (volatility_factor * 0.3)
         optimal_hard_error = 0.5 + (volatility_factor * 0.4)
-        optimal_proj_error = 0.4 + (volatility_factor * 0.3)
 
         _LOGGER.info(
             "Auto-calibration complete: avg_slope=%.2f std=%.2f max=%.2f | avg_response=%.1fmin | limit_timeout=%d",
@@ -151,7 +150,6 @@ class ThermalLearning:
             "deadband": round(optimal_deadband, 2),
             "soft_error": round(optimal_soft_error, 2),
             "hard_error": round(optimal_hard_error, 2),
-            "projected_error_threshold": round(optimal_proj_error, 2),
             "limit_timeout": optimal_limit_timeout,
             "samples_count": self._slope_count,
             "response_samples": len(response_times),
@@ -224,7 +222,6 @@ class SmartFanController:
         min_interval: int,
         soft_error: float,
         hard_error: float,
-        projected_error_threshold: float,
         limit_timeout: int = 15,
         learning_data: dict | None = None,
     ):
@@ -236,7 +233,6 @@ class SmartFanController:
         self._min_interval = min_interval
         self._soft_error = soft_error
         self._hard_error = hard_error
-        self._projected_error_threshold = projected_error_threshold
         self._limit_timeout = limit_timeout
         self._threshold_slope = 0.1
         self._threshold_target_drop = -1.0
@@ -264,6 +260,11 @@ class SmartFanController:
     def fan_modes(self, modes: list | None) -> None:
         """Set available fan modes."""
         self._fan_modes = modes
+
+    @property
+    def _projected_error_threshold(self) -> float:
+        """Calculate projected error threshold as midpoint between soft and hard error."""
+        return (self._soft_error + self._hard_error) / 2
 
     def compute_temperature_projection(self, current_temp: float, vtherm_slope: float) -> float:
         """Estimate temperature projection in 10 min"""

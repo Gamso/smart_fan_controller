@@ -38,7 +38,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     entities.append(SmartFanLearnedDeadbandSensor(entry.entry_id, controller))
     entities.append(SmartFanLearnedSoftErrorSensor(entry.entry_id, controller))
     entities.append(SmartFanLearnedHardErrorSensor(entry.entry_id, controller))
-    entities.append(SmartFanLearnedProjectedErrorSensor(entry.entry_id, controller))
     entities.append(SmartFanLearnedLimitTimeoutSensor(entry.entry_id, controller))
 
     # Store the list in hass.data for the __init__.py update loop
@@ -138,7 +137,6 @@ class SmartFanLearningSensor(SensorEntity):
             attrs["learned_deadband"] = optimal.get("deadband")
             attrs["learned_soft_error"] = optimal.get("soft_error")
             attrs["learned_hard_error"] = optimal.get("hard_error")
-            attrs["learned_projected_error"] = optimal.get("projected_error_threshold")
             attrs["learned_limit_timeout"] = optimal.get("limit_timeout")
             attrs["learned_samples_count"] = optimal.get("samples_count")
             attrs["learned_response_samples"] = optimal.get("response_samples")
@@ -361,23 +359,6 @@ class SmartFanLearnedHardErrorSensor(_BaseLearnedParameterSensor):
             key="hard_error",
             icon="mdi:alert",
             current_attr="hard_error",
-        )
-
-
-class SmartFanLearnedProjectedErrorSensor(_BaseLearnedParameterSensor):
-    """Learned projected_error_threshold parameter."""
-
-    def __init__(self, entry_id: str, controller) -> None:
-        super().__init__(
-            entry_id,
-            controller,
-            name="Learned Projected Error",
-            entity_id="sensor.smart_fan_learned_projected_error",
-            unit=UnitOfTemperature.CELSIUS,
-            device_class=SensorDeviceClass.TEMPERATURE,
-            key="projected_error_threshold",
-            icon="mdi:crystal-ball",
-            current_attr="projected_error_threshold",
         )
 
 
