@@ -238,6 +238,8 @@ class SmartFanController:
         self._hard_error = hard_error
         self._projected_error_threshold = projected_error_threshold
         self._limit_timeout = limit_timeout
+        self._threshold_slope = 0.1
+        self._threshold_target_drop = -1.0
 
         # State variables
         self._previous_slope: float | None = None
@@ -361,8 +363,8 @@ class SmartFanController:
         # --- Logic indicators ---#
         # -------------------------#
         interval_expired = minutes_since_change >= self._limit_timeout
-        slope_change = abs(vtherm_slope - self._previous_slope) > 0.1
-        is_slope_improving = effective_slope > (self._slope_at_last_change + 0.1)
+        slope_change = abs(vtherm_slope - self._previous_slope) > self._threshold_slope
+        is_slope_improving = effective_slope > (self._slope_at_last_change + self._threshold_slope)
 
         if current_fan is None:
             current_index = 0
@@ -386,7 +388,7 @@ class SmartFanController:
 
         # A-bis. SETPOINT DROP (Target lowered significantly) => lowest fan speed immediately
         # Night mode: when target drops ≥1°C below current (heat) or rises ≥1°C above current (cool)
-        elif current_temperature_error < -1.0:
+        elif current_temperature_error < self._threshold_target_drop:
             new_index = 0
             force = True
             reason = f"Setpoint drop: Target moved away ({round(current_temperature_error, 2)}°C)"
@@ -410,7 +412,7 @@ class SmartFanController:
 
         # D. DRIFT IN COMFORT ZONE
         elif current_temperature_error > 0:
-            if (effective_slope < -0.1 or projected_temperature_error > self._projected_error_threshold) and (slope_change or interval_expired):
+            if (effective_slope < -self._threshold_slope or projected_temperature_error > self._projected_error_threshold) and (slope_change or interval_expired):
                 new_index = min(max_index, current_index + 1)
                 reason = "Maintenance: Slow drift detected"
             else:
