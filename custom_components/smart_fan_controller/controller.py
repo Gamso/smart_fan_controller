@@ -417,9 +417,9 @@ class SmartFanController:
                 new_index = min(max_index, current_index + 1)
                 reason = "Maintenance: Slow drift detected"
             elif interval_expired:
-                # Proactive adjustment: stable below target but interval expired
+                # Proactive adjustment: stable away from target but interval expired
                 new_index = min(max_index, current_index + 1)
-                reason = "Maintenance: Stable below target, reaching setpoint"
+                reason = "Maintenance: Stable away from target, reaching setpoint"
             else:
                 reason = "Low Active: Observing inertia"
 
