@@ -107,3 +107,35 @@ class TestSmartFanControllerHeat:
         # 3. Significant change (0.2) SHOULD update snapshot
         controller.calculate_decision(19.2, 20.0, 0.75, "heat", result.get("fan_mode"))
         assert controller._previous_slope == 0.75
+
+    def test_stable_below_target_with_custom_deadband(self):
+        """Test issue: stable temperature below target should still heat to reach setpoint.
+        
+        Reproduces user scenario:
+        - Setpoint changed from 17.5°C to 18°C
+        - Current temp is 17.8°C (error = 0.2°C, within custom deadband of 0.4°C)
+        - Slope is near zero (stable)
+        - System should increase heating to reach target, not just maintain
+        """
+        controller = SmartFanController(
+            fan_modes=FAN_MODES,
+            deadband=0.4,  # User's custom deadband
+            min_interval=DEFAULT_MIN_INTERVAL,
+            soft_error=DEFAULT_SOFT_ERROR,
+            hard_error=DEFAULT_HARD_ERROR,
+        )
+        
+        # Simulate stable temperature below target
+        controller._previous_slope = -0.01
+        controller._last_change_time = controller._now - (20 * 60)  # 20 minutes ago
+        
+        result = controller.calculate_decision(
+            current_temp=17.8,
+            target_temp=18.0,
+            vtherm_slope=-0.0,  # Stable (not drifting)
+            hvac_mode="heat",
+            current_fan="low"
+        )
+        
+        # System should increase fan to reach target
+        assert result["fan_mode"] == "medium", f"Expected fan increase, got {result['fan_mode']} with reason: {result['reason']}"
