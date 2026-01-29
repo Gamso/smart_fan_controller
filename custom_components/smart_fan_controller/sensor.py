@@ -212,7 +212,7 @@ class SmartFanLearningSamplesSensor(SensorEntity):
         return {
             "min_samples_required": learning._min_samples,
             "slope_mean": round(learning._slope_mean, 3),
-            "slope_stdev": round(((learning._slope_M2 / (learning._slope_count - 1)) ** 0.5) if learning._slope_count > 1 else 0, 3),
+            "slope_stdev": round(((learning._slope_m2 / (learning._slope_count - 1)) ** 0.5) if learning._slope_count > 1 else 0, 3),
             "slope_max": round(learning._slope_max, 3),
             "samples_count": optimal.get("samples_count", 0),
         }
