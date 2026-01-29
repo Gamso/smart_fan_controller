@@ -339,13 +339,6 @@ class SmartFanController:
             self._previous_slope = vtherm_slope
             self._slope_at_last_change = vtherm_slope
 
-        if not self._fan_modes:
-            _LOGGER.warning("Fan modes are not initialized; holding current mode %s", current_fan)
-            return {
-                "fan_mode": current_fan,
-                "reason": "No fan modes defined"
-            }
-
         # Time since last fan change
         minutes_since_change = (self._now - self._last_change_time) / 60
 
@@ -359,6 +352,18 @@ class SmartFanController:
         current_temperature_error = (current_temp - target_temp) if hvac_mode == 'cool' else (target_temp - current_temp)
         # Projected error in 10 min (positive = will miss target)
         projected_temperature_error = (projected_temperature - target_temp) if hvac_mode == 'cool' else (target_temp - projected_temperature)
+
+        # Return early if fan modes not initialized, but include all sensor data
+        if not self._fan_modes:
+            _LOGGER.warning("Fan modes are not initialized; holding current mode %s", current_fan)
+            return {
+                "fan_mode": current_fan,
+                "projected_temperature": round(projected_temperature, 2),
+                "projected_temperature_error": round(projected_temperature_error, 2),
+                "temperature_error": round(current_temperature_error, 2),
+                "minutes_since_last_change": round(minutes_since_change, 1),
+                "reason": "No fan modes defined"
+            }
 
         # -------------------------#
         # --- Logic indicators ---#

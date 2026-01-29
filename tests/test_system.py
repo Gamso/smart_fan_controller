@@ -316,3 +316,39 @@ class TestSmartFanControllerSystem:
         # 5. Verification
         # If the listener worked, last_change_time should match our patched time
         assert controller._last_change_time == test_time
+
+    def test_uninitialized_fan_modes_returns_sensor_data(self):
+        """
+        Test that when fan_modes is None (not initialized), the controller
+        still returns all sensor data (temperature_error, projected_temperature, etc.)
+        instead of just fan_mode and reason. This prevents sensors from staying 'unknown'.
+        """
+        # Create controller without fan modes
+        controller_no_modes = SmartFanController(fan_modes=None, **DEFAULT_CONFIG)
+        
+        # Call calculate_decision with valid temperature data
+        result = controller_no_modes.calculate_decision(
+            current_temp=19.5,
+            target_temp=20.0,
+            vtherm_slope=0.2,
+            hvac_mode="heat",
+            current_fan="medium"
+        )
+        
+        # Verify all expected keys are present
+        assert "fan_mode" in result
+        assert "projected_temperature" in result
+        assert "projected_temperature_error" in result
+        assert "temperature_error" in result
+        assert "minutes_since_last_change" in result
+        assert "reason" in result
+        
+        # Verify fan_mode is preserved (not changed when modes not initialized)
+        assert result["fan_mode"] == "medium"
+        assert result["reason"] == "No fan modes defined"
+        
+        # Verify temperature calculations are performed
+        assert result["temperature_error"] == 0.5  # target - current for heat mode
+        assert isinstance(result["projected_temperature"], float)
+        assert isinstance(result["projected_temperature_error"], float)
+        assert isinstance(result["minutes_since_last_change"], float)
