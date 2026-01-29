@@ -352,3 +352,41 @@ class TestSmartFanControllerSystem:
         assert isinstance(result["projected_temperature"], float)
         assert isinstance(result["projected_temperature_error"], float)
         assert isinstance(result["minutes_since_last_change"], float)
+
+    def test_empty_fan_modes_list_retries(self):
+        """
+        Test that when fan_modes is set to empty list (race condition scenario),
+        the controller continues to accept fan_modes updates on subsequent attempts.
+        This simulates the startup race condition where VTherm hasn't initialized yet.
+        """
+        # Create controller without fan modes
+        controller_no_modes = SmartFanController(fan_modes=None, **DEFAULT_CONFIG)
+        
+        # Verify initial state is None
+        assert controller_no_modes.fan_modes is None
+        
+        # Simulate race condition: set to empty list (what happens when VTherm not ready)
+        controller_no_modes.fan_modes = []
+        
+        # Verify it's empty
+        assert controller_no_modes.fan_modes == []
+        assert not controller_no_modes.fan_modes  # Should be falsy
+        
+        # Now simulate VTherm becoming available with proper modes
+        controller_no_modes.fan_modes = ["low", "medium", "high"]
+        
+        # Verify modes are now set
+        assert controller_no_modes.fan_modes == ["low", "medium", "high"]
+        
+        # Verify controller now works properly
+        result = controller_no_modes.calculate_decision(
+            current_temp=19.5,
+            target_temp=20.0,
+            vtherm_slope=0.2,
+            hvac_mode="heat",
+            current_fan="low"
+        )
+        
+        # Should now be able to make decisions
+        assert result["fan_mode"] in ["low", "medium", "high"]
+        assert "No fan modes defined" not in result["reason"]
