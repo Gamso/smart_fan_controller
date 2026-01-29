@@ -416,6 +416,10 @@ class SmartFanController:
             if (effective_slope < -self._threshold_slope or projected_temperature_error > self._projected_error_threshold) and (slope_change or interval_expired):
                 new_index = min(max_index, current_index + 1)
                 reason = "Maintenance: Slow drift detected"
+            elif interval_expired:
+                # Proactive adjustment: stable below target but interval expired
+                new_index = min(max_index, current_index + 1)
+                reason = "Maintenance: Stable below target, reaching setpoint"
             else:
                 reason = "Low Active: Observing inertia"
 
