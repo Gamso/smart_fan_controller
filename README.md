@@ -69,3 +69,14 @@ The controller maps the thermal environment into 6 operational zones:
 | `soft_error`                | 0.3°C   | Trigger point for active thermal correction        |
 | `hard_error`                | 0.6°C   | Safety threshold for maximum cooling/heating power |
 | `projected_error_threshold` | 0.5°C   | Prediction sensitivity for proactive boosting      |
+
+### 🔄 Reconfiguration Without Restart
+
+The integration supports **hot reload** — you can modify any configuration parameter through the Home Assistant UI without restarting Home Assistant:
+
+1. Go to **Settings** → **Devices & Services**
+2. Find **Smart Fan Controller** and click **Configure**
+3. Adjust parameters as needed
+4. Click **Submit** — changes apply instantly
+
+The integration will automatically reload with the new settings, preserving learned data and continuing operation seamlessly.
