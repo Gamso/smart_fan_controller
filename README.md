@@ -72,7 +72,7 @@ The controller maps the thermal environment into 6 operational zones:
 
 ### 🔄 Reconfiguration Without Restart
 
-The integration supports **hot reload** — you can modify any configuration parameter through the Home Assistant UI without restarting Home Assistant:
+The integration supports **configuration hot reload** — you can modify any configuration parameter through the Home Assistant UI without restarting Home Assistant:
 
 1. Go to **Settings** → **Devices & Services**
 2. Find **Smart Fan Controller** and click **Configure**
@@ -80,3 +80,5 @@ The integration supports **hot reload** — you can modify any configuration par
 4. Click **Submit** — changes apply instantly
 
 The integration will automatically reload with the new settings, preserving learned data and continuing operation seamlessly.
+
+> **Note about HACS updates:** When updating to a new version via HACS, a Home Assistant restart is required. This is a limitation of Home Assistant's architecture—Python code changes cannot be hot-reloaded. The reload feature above applies only to configuration parameter changes.
