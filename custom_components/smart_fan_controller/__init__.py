@@ -218,6 +218,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.services.async_register(DOMAIN, "reset_learning", reset_learning)
 
+    # Register update listener to reload when options are changed
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+
     return True
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
