@@ -210,10 +210,10 @@ class SmartFanLearningSamplesSensor(SensorEntity):
         optimal = learning.compute_optimal_parameters()
 
         return {
-            "min_samples_required": learning._min_samples,
-            "slope_mean": round(learning._slope_mean, 3),
-            "slope_stdev": round(((learning._slope_m2 / (learning._slope_count - 1)) ** 0.5) if learning._slope_count > 1 else 0, 3),
-            "slope_max": round(learning._slope_max, 3),
+            "min_samples_required": learning.min_samples,
+            "slope_mean": round(learning.slope_mean, 3),
+            "slope_stdev": round(((learning.slope_m2 / (learning.slope_count - 1)) ** 0.5) if learning.slope_count > 1 else 0, 3),
+            "slope_max": round(learning.slope_max, 3),
             "samples_count": optimal.get("samples_count", 0),
         }
 
@@ -252,7 +252,7 @@ class SmartFanLearningResponseSensor(SensorEntity):
         learning = self._controller.learning
         optimal = learning.compute_optimal_parameters()
 
-        response_times = [t for _, t in learning._response_events if t > 0]
+        response_times = [t for _, t in learning.response_events if t > 0]
         avg_response = sum(response_times) / len(response_times) if response_times else 0
 
         return {
@@ -340,7 +340,7 @@ class SmartFanLearnedSoftErrorSensor(_BaseLearnedParameterSensor):
             unit=UnitOfTemperature.CELSIUS,
             device_class=SensorDeviceClass.TEMPERATURE,
             key="soft_error",
-            icon="mdi:alert-circle-outline",
+            icon="mdi:speedometer-slow",
             current_attr="soft_error",
         )
 
@@ -357,7 +357,7 @@ class SmartFanLearnedHardErrorSensor(_BaseLearnedParameterSensor):
             unit=UnitOfTemperature.CELSIUS,
             device_class=SensorDeviceClass.TEMPERATURE,
             key="hard_error",
-            icon="mdi:alert",
+            icon="mdi:speedometer",
             current_attr="hard_error",
         )
 

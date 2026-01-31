@@ -14,14 +14,12 @@ from .const import (
     CONF_MIN_INTERVAL,
     CONF_SOFT_ERROR,
     CONF_HARD_ERROR,
-    CONF_TEMPERATURE_PROJECTED_ERROR,
     CONF_LIMIT_TIMEOUT,
     DEFAULT_DEADBAND,
     DEFAULT_MIN_INTERVAL,
     DEFAULT_SOFT_ERROR,
     DEFAULT_HARD_ERROR,
-    DEFAULT_TEMPERATURE_PROJECTED_ERROR,
-    DEFAULT_LIMIT_TIMEOUT
+    DEFAULT_LIMIT_TIMEOUT,
 )
 
 
@@ -70,9 +68,7 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         data_schema = vol.Schema(
             {
-                vol.Required(CONF_CLIMATE_ENTITY): selector.EntitySelector(
-                    selector.EntitySelectorConfig(**selector_config_kwargs)
-                ),
+                vol.Required(CONF_CLIMATE_ENTITY): selector.EntitySelector(selector.EntitySelectorConfig(**selector_config_kwargs)),
                 vol.Optional(CONF_DEADBAND, default=DEFAULT_DEADBAND): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=0.0, max=5.0, step=0.05, mode=selector.NumberSelectorMode.BOX)
                 ),
@@ -83,9 +79,6 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     selector.NumberSelectorConfig(min=0.0, max=10.0, step=0.05, mode=selector.NumberSelectorMode.BOX)
                 ),
                 vol.Optional(CONF_HARD_ERROR, default=DEFAULT_HARD_ERROR): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=0.0, max=10.0, step=0.05, mode=selector.NumberSelectorMode.BOX)
-                ),
-                vol.Optional(CONF_TEMPERATURE_PROJECTED_ERROR, default=DEFAULT_TEMPERATURE_PROJECTED_ERROR): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=0.0, max=10.0, step=0.05, mode=selector.NumberSelectorMode.BOX)
                 ),
                 vol.Optional(CONF_LIMIT_TIMEOUT, default=DEFAULT_LIMIT_TIMEOUT): selector.NumberSelector(
@@ -143,46 +136,20 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
 
         options_schema = vol.Schema(
             {
-                required_key: selector.EntitySelector(
-                    selector.EntitySelectorConfig(**selector_config_kwargs)
-                ),
-                vol.Optional(
-                    CONF_DEADBAND,
-                    default=current_data.get(CONF_DEADBAND, DEFAULT_DEADBAND)
-                ): selector.NumberSelector(
+                required_key: selector.EntitySelector(selector.EntitySelectorConfig(**selector_config_kwargs)),
+                vol.Optional(CONF_DEADBAND, default=current_data.get(CONF_DEADBAND, DEFAULT_DEADBAND)): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=0.0, max=5.0, step=0.05, mode=selector.NumberSelectorMode.BOX)
                 ),
-                vol.Optional(
-                    CONF_MIN_INTERVAL,
-                    default=current_data.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL)
-                ): selector.NumberSelector(
+                vol.Optional(CONF_MIN_INTERVAL, default=current_data.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL)): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=1, max=60, step=1, mode=selector.NumberSelectorMode.BOX)
                 ),
-                vol.Optional(
-                    CONF_SOFT_ERROR,
-                    default=current_data.get(CONF_SOFT_ERROR, DEFAULT_SOFT_ERROR)
-                ): selector.NumberSelector(
+                vol.Optional(CONF_SOFT_ERROR, default=current_data.get(CONF_SOFT_ERROR, DEFAULT_SOFT_ERROR)): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=0.0, max=10.0, step=0.05, mode=selector.NumberSelectorMode.BOX)
                 ),
-                vol.Optional(
-                    CONF_HARD_ERROR,
-                    default=current_data.get(CONF_HARD_ERROR, DEFAULT_HARD_ERROR)
-                ): selector.NumberSelector(
+                vol.Optional(CONF_HARD_ERROR, default=current_data.get(CONF_HARD_ERROR, DEFAULT_HARD_ERROR)): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=0.0, max=10.0, step=0.05, mode=selector.NumberSelectorMode.BOX)
                 ),
-                vol.Optional(
-                    CONF_TEMPERATURE_PROJECTED_ERROR,
-                    default=current_data.get(
-                        CONF_TEMPERATURE_PROJECTED_ERROR,
-                        DEFAULT_TEMPERATURE_PROJECTED_ERROR
-                    )
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=0.0, max=10.0, step=0.05, mode=selector.NumberSelectorMode.BOX)
-                ),
-                vol.Optional(
-                    CONF_LIMIT_TIMEOUT,
-                    default=current_data.get(CONF_LIMIT_TIMEOUT, DEFAULT_LIMIT_TIMEOUT)
-                ): selector.NumberSelector(
+                vol.Optional(CONF_LIMIT_TIMEOUT, default=current_data.get(CONF_LIMIT_TIMEOUT, DEFAULT_LIMIT_TIMEOUT)): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=10, max=120, step=5, mode=selector.NumberSelectorMode.BOX)
                 ),
             }

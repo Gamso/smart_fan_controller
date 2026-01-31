@@ -4,6 +4,8 @@
   "documentation": "https://github.com/Gamso/smart_fan_controller",
   "config_flow": true,
   "dependencies": [],
+  "integration_type": "service",
+  "iot_class": "calculated",
   "codeowners": [
     "@Gamso"
   ],

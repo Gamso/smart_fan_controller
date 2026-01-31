@@ -1,0 +1,44 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Configure Smart Fan Controller",
+                "description": "Select a climate entity with fan modes. Auto-calibration will run for 48h to optimize settings.",
+                "data": {
+                    "climate_entity": "Climate Entity (with fan modes)",
+                    "deadband": "Deadband (°C)",
+                    "min_interval": "Min Interval (minutes)",
+                    "soft_error": "Soft Error Threshold (°C)",
+                    "hard_error": "Hard Error Threshold (°C)",
+                    "limit_timeout": "Interval Before Forcing Change (minutes)"
+                },
+                "error": {
+                    "no_fan_modes": "Cette entite climate n'expose pas de fan_mode.",
+                    "no_temperature_slope": "Cette entite climate n'expose pas specific_states.temperature_slope (VTherm).",
+                    "no_climate_with_fan_modes": "Aucune entite climate avec fan_mode et temperature_slope trouvee."
+                }
+            }
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Edit Smart Fan Controller",
+                "description": "Update the Smart Fan Controller settings",
+                "data": {
+                    "climate_entity": "Climate Entity (with fan modes)",
+                    "deadband": "Deadband (°C)",
+                    "min_interval": "Min Interval (minutes)",
+                    "soft_error": "Soft Error Threshold (°C)",
+                    "hard_error": "Hard Error Threshold (°C)",
+                    "limit_timeout": "Interval Before Forcing Change (minutes)"
+                },
+                "error": {
+                    "no_fan_modes": "Cette entite climate n'expose pas de fan_mode.",
+                    "no_temperature_slope": "Cette entite climate n'expose pas specific_states.temperature_slope (VTherm).",
+                    "no_climate_with_fan_modes": "Aucune entite climate avec fan_mode et temperature_slope trouvee."
+                }
+            }
+        }
+    }
+}

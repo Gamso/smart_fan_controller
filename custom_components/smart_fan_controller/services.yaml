@@ -1,0 +1,4 @@
+apply_learned_settings:
+  name: Apply learned settings
+  description: Apply optimal parameters discovered by the auto-calibration system after 48h of learning
+  fields: {}

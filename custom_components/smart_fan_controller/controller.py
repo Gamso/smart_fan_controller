@@ -100,6 +100,36 @@ class ThermalLearning:
         progress = min(100, (sample_count / self._min_samples) * 100)
         return progress
 
+    @property
+    def slope_count(self) -> int:
+        """Return the number of slope samples processed."""
+        return self._slope_count
+
+    @property
+    def slope_mean(self) -> float:
+        """Return the running mean of absolute slopes."""
+        return self._slope_mean
+
+    @property
+    def slope_m2(self) -> float:
+        """Return the sum of squared differences for variance."""
+        return self._slope_m2
+
+    @property
+    def slope_max(self) -> float:
+        """Return the maximum absolute slope."""
+        return self._slope_max
+
+    @property
+    def min_samples(self) -> int:
+        """Return the minimum samples required for readiness."""
+        return self._min_samples
+
+    @property
+    def response_events(self) -> list:
+        """Return the list of response events."""
+        return self._response_events
+
     def is_ready(self) -> bool:
         """Check if enough data has been collected."""
         if not self._ready_once and len(self._slope_samples) >= self._min_samples:
