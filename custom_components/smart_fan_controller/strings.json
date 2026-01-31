@@ -12,6 +12,14 @@
                     "hard_error": "Hard Error Threshold (°C)",
                     "limit_timeout": "Interval Before Forcing Change (minutes)"
                 },
+                "data_description": {
+                    "climate_entity": "Must expose fan_modes and specific_states.temperature_slope.",
+                    "deadband": "Range: 0.0–5.0 °C (step 0.05). Default: 0.2 °C.",
+                    "min_interval": "Range: 1–60 min (step 1). Default: 10 min.",
+                    "soft_error": "Range: 0.0–10.0 °C (step 0.05). Default: 0.3 °C.",
+                    "hard_error": "Range: 0.0–10.0 °C (step 0.05). Default: 0.6 °C.",
+                    "limit_timeout": "Range: 10–120 min (step 5). Default: 15 min."
+                },
                 "error": {
                     "no_fan_modes": "Cette entite climate n'expose pas de fan_mode.",
                     "no_temperature_slope": "Cette entite climate n'expose pas specific_states.temperature_slope (VTherm).",
@@ -32,6 +40,14 @@
                     "soft_error": "Soft Error Threshold (°C)",
                     "hard_error": "Hard Error Threshold (°C)",
                     "limit_timeout": "Interval Before Forcing Change (minutes)"
+                },
+                "data_description": {
+                    "climate_entity": "Must expose fan_modes and specific_states.temperature_slope.",
+                    "deadband": "Range: 0.0–5.0 °C (step 0.05). Default: 0.2 °C.",
+                    "min_interval": "Range: 1–60 min (step 1). Default: 10 min.",
+                    "soft_error": "Range: 0.0–10.0 °C (step 0.05). Default: 0.3 °C.",
+                    "hard_error": "Range: 0.0–10.0 °C (step 0.05). Default: 0.6 °C.",
+                    "limit_timeout": "Range: 10–120 min (step 5). Default: 15 min."
                 },
                 "error": {
                     "no_fan_modes": "Cette entite climate n'expose pas de fan_mode.",
