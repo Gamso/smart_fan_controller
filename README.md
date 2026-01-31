@@ -17,7 +17,21 @@ Click the button below to add this repository to HACS:
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Gamso&bouton&repository=smart_fan_controller&category=integration)
 
+### Integration Icon
 
+The integration icon files (`icon.png` and `logo.png`) are included in the repository root. However, **to display the icon in Home Assistant's Integrations UI**, the icon must be submitted to the [Home Assistant Brands repository](https://github.com/home-assistant/brands).
+
+**Why?** Home Assistant loads integration icons from the centralized Brands repository rather than from local files to ensure consistency and reduce package size.
+
+**To submit the icon:**
+1. Fork the [home-assistant/brands](https://github.com/home-assistant/brands) repository
+2. Add your icon files to `custom_integrations/smart_fan_controller/`
+3. Follow the [Brands repository guidelines](https://github.com/home-assistant/brands#readme):
+   - Icon must be 256x256 pixels, PNG format
+   - Logo must be 256x256 pixels, PNG format
+4. Submit a Pull Request
+
+Until the icon is merged into the Brands repository, the integration will display with a default placeholder icon in the Home Assistant UI. **Note:** PR review and approval in the Brands repository typically takes a few days to a few weeks depending on maintainer availability.
 
 ## ✨ Overview
 
