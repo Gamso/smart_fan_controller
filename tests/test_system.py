@@ -316,3 +316,77 @@ class TestSmartFanControllerSystem:
         # 5. Verification
         # If the listener worked, last_change_time should match our patched time
         assert controller._last_change_time == test_time
+
+    def test_uninitialized_fan_modes_returns_sensor_data(self):
+        """
+        Test that when fan_modes is None (not initialized), the controller
+        still returns all sensor data (temperature_error, projected_temperature, etc.)
+        instead of just fan_mode and reason. This prevents sensors from staying 'unknown'.
+        """
+        # Create controller without fan modes
+        controller_no_modes = SmartFanController(fan_modes=None, **DEFAULT_CONFIG)
+        
+        # Call calculate_decision with valid temperature data
+        result = controller_no_modes.calculate_decision(
+            current_temp=19.5,
+            target_temp=20.0,
+            vtherm_slope=0.2,
+            hvac_mode="heat",
+            current_fan="medium"
+        )
+        
+        # Verify all expected keys are present
+        assert "fan_mode" in result
+        assert "projected_temperature" in result
+        assert "projected_temperature_error" in result
+        assert "temperature_error" in result
+        assert "minutes_since_last_change" in result
+        assert "reason" in result
+        
+        # Verify fan_mode is preserved (not changed when modes not initialized)
+        assert result["fan_mode"] == "medium"
+        assert result["reason"] == "No fan modes defined"
+        
+        # Verify temperature calculations are performed
+        assert result["temperature_error"] == 0.5  # target - current for heat mode
+        assert isinstance(result["projected_temperature"], float)
+        assert isinstance(result["projected_temperature_error"], float)
+        assert isinstance(result["minutes_since_last_change"], float)
+
+    def test_empty_fan_modes_list_retries(self):
+        """
+        Test that when fan_modes is set to empty list (race condition scenario),
+        the controller continues to accept fan_modes updates on subsequent attempts.
+        This simulates the startup race condition where VTherm hasn't initialized yet.
+        """
+        # Create controller without fan modes
+        controller_no_modes = SmartFanController(fan_modes=None, **DEFAULT_CONFIG)
+        
+        # Verify initial state is None
+        assert controller_no_modes.fan_modes is None
+        
+        # Simulate race condition: set to empty list (what happens when VTherm not ready)
+        controller_no_modes.fan_modes = []
+        
+        # Verify it's empty
+        assert controller_no_modes.fan_modes == []
+        assert not controller_no_modes.fan_modes  # Should be falsy
+        
+        # Now simulate VTherm becoming available with proper modes
+        controller_no_modes.fan_modes = ["low", "medium", "high"]
+        
+        # Verify modes are now set
+        assert controller_no_modes.fan_modes == ["low", "medium", "high"]
+        
+        # Verify controller now works properly
+        result = controller_no_modes.calculate_decision(
+            current_temp=19.5,
+            target_temp=20.0,
+            vtherm_slope=0.2,
+            hvac_mode="heat",
+            current_fan="low"
+        )
+        
+        # Should now be able to make decisions
+        assert result["fan_mode"] in ["low", "medium", "high"]
+        assert "No fan modes defined" not in result["reason"]

@@ -65,11 +65,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
 
         # Dynamically fetch fan modes if the controller doesn't have them yet
-        if controller.fan_modes is None:
+        # Check for both None and empty list to handle race condition at startup
+        if not controller.fan_modes:
             raw_modes = current_state.attributes.get("fan_modes", [])
             # Remove "auto" from the list of modes
-            controller.fan_modes = [m for m in raw_modes if m.lower() not in ["auto", "off"]]
-            _LOGGER.info("Detected fan modes for %s: %s", climate_id, controller.fan_modes)
+            filtered_modes = [m for m in raw_modes if m.lower() not in ["auto", "off"]]
+            if filtered_modes:
+                controller.fan_modes = filtered_modes
+                _LOGGER.info("Detected fan modes for %s: %s", climate_id, controller.fan_modes)
+            else:
+                _LOGGER.debug("Climate entity %s has no valid fan modes yet, will retry on next cycle", climate_id)
 
         # Extract VTherm and Climate data
         attrs = current_state.attributes

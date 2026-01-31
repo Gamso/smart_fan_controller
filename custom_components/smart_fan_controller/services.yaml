@@ -1,4 +1,7 @@
 apply_learned_settings:
   name: Apply learned settings
-  description: Apply optimal parameters discovered by the auto-calibration system after 48h of learning
-  fields: {}
+  description: Apply optimal parameters computed from the learning algorithm. The integration automatically learns the best settings for deadband, soft_error, hard_error, and limit_timeout based on observed system behavior. This service applies those learned parameters and reloads the integration.
+
+reset_learning:
+  name: Reset learning
+  description: Clear all learning data and restart the learning process from scratch. This removes all collected samples and statistics, allowing the integration to begin learning optimal parameters again.
