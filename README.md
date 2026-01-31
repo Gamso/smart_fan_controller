@@ -31,7 +31,7 @@ The integration icon files (`icon.png` and `logo.png`) are included in the repos
    - Logo must be 256x256 pixels, PNG format
 4. Submit a Pull Request
 
-Until the icon is merged into the Brands repository, the integration will display with a default placeholder icon in the Home Assistant UI.
+Until the icon is merged into the Brands repository, the integration will display with a default placeholder icon in the Home Assistant UI. **Note:** PR review and approval in the Brands repository typically takes a few days to a few weeks depending on maintainer availability.
 
 ## ✨ Overview
 

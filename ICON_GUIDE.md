@@ -78,7 +78,13 @@ Or use online tools like:
 
 ### Step 4: Wait for Approval
 
-Once your PR is merged:
+Once your PR is submitted:
+- The Home Assistant Brands team will review your submission
+- **Review timeline**: Typically takes a few days to a few weeks depending on maintainer availability
+- You may be asked to make adjustments to meet the guidelines
+- Once merged, changes typically propagate within 24 hours
+
+After your PR is merged:
 - Home Assistant will automatically fetch the icon from the Brands CDN
 - The icon will appear in the Integrations page for all users
 - No changes to your integration code are needed
