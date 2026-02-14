@@ -1,0 +1,13 @@
+{
+  "domain": "smart_fan_controller",
+  "name": "Smart Fan Controller",
+  "documentation": "https://github.com/Gamso/smart_fan_controller",
+  "config_flow": true,
+  "dependencies": [],
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "codeowners": [
+    "@Gamso"
+  ],
+  "version": "1.0.0"
+}

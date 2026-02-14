@@ -1,0 +1,20 @@
+{
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter",
+        "editor.formatOnSave": true,
+        "editor.formatOnSaveMode": "modifications"
+    },
+    "files.associations": {
+        "*.yaml": "home-assistant"
+    },
+    "python.testing.pytestArgs": [
+        "-vv"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true,
+    "python.analysis.extraPaths": [
+        //    "/home/vscode/core",
+        "/workspaces/smart_fan_controller/custom_components/smart_fan_controller",
+        "/home/vscode/.local/lib/python3.13/site-packages/homeassistant"
+    ]
+}

@@ -1,0 +1,127 @@
+# Loads default set of integrations. Do not remove.
+default_config:
+python_script:
+
+logger:
+  default: warning
+  logs:
+    custom_components.smart_fan_controller: debug
+
+# If you need to debug uncommment the line below (doc: https://www.home-assistant.io/integrations/debugpy/)
+debugpy:
+  start: true
+  wait: false
+  port: 5678
+
+smart_fan_controller:
+  deadband: 0.2
+  min_interval: 10
+  soft_error: 0.3
+  hard_error: 0.6
+  temperature_projected_error: 0.5
+
+# 1. On crée des helpers (input_number) pour simuler la température
+input_number:
+  fake_room_temp:
+    name: "Simulated Room Temp"
+    initial: 19.5
+    min: 15
+    max: 25
+    step: 0.1
+    unit_of_measurement: "°C"
+  fake_target_temp:
+    name: "Simulated Target"
+    initial: 20.0
+    min: 15
+    max: 25
+    step: 0.1
+    unit_of_measurement: "°C"
+  fake_slope:
+    name: "Simulated Slope"
+    initial: 0.0
+    min: -2.0
+    max: 2.0
+    step: 0.01
+
+input_select:
+  fake_hvac_mode:
+    name: "Fake HVAC Mode"
+    options: ["auto", "cool", "fan_only", "dry", "heat", "off"]
+    initial: "heat"
+  fake_fan_mode:
+    name: "Fake HVAC Fan Mode"
+    options: ["auto", "silent", "low", "medium", "high", "turbo"]
+    initial: "auto"
+
+# 2. On crée un Climate Template qui utilise ces helpers
+
+climate:
+  - platform: climate_template
+    name: VTherm Mock HVAC Unit
+    unique_id: vtherm_mock_hvac_unit
+    modes:
+      - "auto"
+      - "cool"
+      - "fan_only"
+      - "dry"
+      - "heat"
+      - "off"
+    fan_modes:
+      - "auto"
+      - "silent"
+      - "low"
+      - "medium"
+      - "high"
+      - "turbo"
+    min_temp: 16
+    max_temp: 30
+    precision: 0.1
+    temp_step: 0.1
+
+    # Liaisons avec les sensors de simulation
+    current_temperature_template: "{{ states('sensor.fake_room_temp_sensor') }}"
+    target_temperature_template: "{{ states('input_number.fake_target_temp') | float(20) }}"
+    hvac_mode_template: "{{ states('input_select.fake_hvac_mode') }}"
+    fan_mode_template: "{{ states('input_select.fake_fan_mode') }}"
+
+    # Actions (Services)
+    set_temperature:
+      service: input_number.set_value
+      data:
+        entity_id: input_number.fake_target_temp
+        value: "{{ temperature }}"
+
+    set_hvac_mode:
+      service: input_select.select_option
+      data:
+        entity_id: input_select.fake_hvac_mode
+        option: "{{ hvac_mode }}"
+
+    set_fan_mode:
+      service: input_select.select_option
+      data:
+        entity_id: input_select.fake_fan_mode
+        option: "{{ fan_mode }}"
+
+template:
+  - sensor:
+      # Sensor de température pour le climatiseur
+      - name: "Fake Room Temp Sensor"
+        unique_id: fake_room_temp_sensor
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state: "{{ states('input_number.fake_room_temp') | float(19.5) }}"
+
+# Automation to simulate VTherm attributes : state_attr('climate.vtherm_mock_hvac_unit', 'specific_states')['temperature_slope']
+automation:
+  - alias: "Force VTherm Attributes on Climate"
+    trigger:
+      - platform: state
+        entity_id: input_number.fake_slope
+      - platform: homeassistant
+        event: start
+    action:
+      - service: python_script.set_vtherm_attr
+        data:
+          entity_id: climate.vtherm_mock_hvac_unit
+          slope: "{{ states('input_number.fake_slope') | float(0) }}"

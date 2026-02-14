@@ -1,0 +1,61 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Configurer Smart Fan Controller",
+                "description": "Sélectionnez une entité climate avec des modes de ventilation. L'auto-calibration tourne 48 h pour optimiser les paramètres.",
+                "data": {
+                    "climate_entity": " ",
+                    "deadband": "Bande morte (°C)",
+                    "min_interval": "Intervalle minimum (minutes)",
+                    "soft_error": "Seuil d'erreur faible (°C)",
+                    "hard_error": "Seuil d'erreur élevée (°C)",
+                    "limit_timeout": "Intervalle avant de forcer un changement (minutes)",
+                    "learning_enabled": "Activer l'apprentissage automatique"
+                },
+                "data_description": {
+                    "climate_entity": "Doit provenir de Versatile Thermostat.",
+                    "deadband": "Plage : 0.0-5.0 °C. Défaut : 0.2 °C.",
+                    "min_interval": "Plage : 1-60 min. Défaut : 10 min.",
+                    "soft_error": "Plage : 0.0-10.0 °C. Défaut : 0.3 °C.",
+                    "hard_error": "Plage : 0.0-10.0 °C. Défaut : 0.6 °C.",
+                    "limit_timeout": "Plage : 10-120 min. Défaut : 15 min.",
+                    "learning_enabled": "Activer l'apprentissage automatique des paramètres optimaux. Quand prêt, les paramètres seront appliqués automatiquement."
+                },
+                "error": {
+                    "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",
+                    "no_versatile_thermostat": "Aucune entité Versatile Thermostat trouvée."
+                }
+            }
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Modifier Smart Fan Controller",
+                "data": {
+                    "climate_entity": " ",
+                    "deadband": "Bande morte (°C)",
+                    "min_interval": "Intervalle minimum (minutes)",
+                    "soft_error": "Seuil d'erreur faible (°C)",
+                    "hard_error": "Seuil d'erreur élevée (°C)",
+                    "limit_timeout": "Intervalle avant de forcer un changement (minutes)",
+                    "learning_enabled": "Activer l'apprentissage automatique"
+                },
+                "data_description": {
+                    "climate_entity": "Doit provenir de Versatile Thermostat.",
+                    "deadband": "Plage : 0.0-5.0 °C. Défaut : 0.2 °C.",
+                    "min_interval": "Plage : 1-60 min. Défaut : 10 min.",
+                    "soft_error": "Plage : 0.0-10.0 °C. Défaut : 0.3 °C.",
+                    "hard_error": "Plage : 0.0-10.0 °C. Défaut : 0.6 °C.",
+                    "limit_timeout": "Plage : 10-120 min. Défaut : 15 min.",
+                    "learning_enabled": "Activer l'apprentissage automatique des paramètres optimaux. Quand prêt, les paramètres seront appliqués automatiquement."
+                },
+                "error": {
+                    "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",
+                    "no_versatile_thermostat": "Aucune entité Versatile Thermostat trouvée."
+                }
+            }
+        }
+    }
+}
