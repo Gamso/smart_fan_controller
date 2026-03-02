@@ -1,8 +1,11 @@
 import logging
 import time
+from typing import Callable
 
 from .const import (
-    DELTA_TIME_CONTROL_LOOP
+    DELTA_TIME_CONTROL_LOOP,
+    THRESHOLD_SLOPE,
+    THRESHOLD_TARGET_DROP,
 )
 from .thermal_learning import ThermalLearning
 
@@ -22,6 +25,7 @@ class SmartFanController:
         limit_timeout: int = 15,
         learning_data: dict | None = None,
         learning_enabled: bool = True,
+        clock: Callable[[], float] = time.time,
     ):
         # Initialize the attribute even if it is None initially
         self._fan_modes: list | None = fan_modes
@@ -32,8 +36,11 @@ class SmartFanController:
         self._soft_error = soft_error
         self._hard_error = hard_error
         self._limit_timeout = limit_timeout
-        self._threshold_slope = 0.1
-        self._threshold_target_drop = -1.0
+
+        # Injectable clock – can override for isolated unit tests.
+        # Note: calculate_decision still calls time.time() directly so that
+        # unittest.mock.patch('time.time', ...) continues to work in tests.
+        self._clock = clock
 
         # State variables
         self._previous_slope: float | None = None
@@ -42,6 +49,7 @@ class SmartFanController:
         self._now: float = time.time()
         self._last_change_time: float = self._now - (self._limit_timeout * 60)
         self._last_slope_significant_change: float = self._now
+        self._last_hvac_mode: str | None = None
 
         # Learning system
         self.learning_enabled = learning_enabled
@@ -82,7 +90,7 @@ class SmartFanController:
         temp_proj = current_temp + (vtherm_slope * window_time) + (0.5 * self._thermal_acceleration * (window_time**2))
         return temp_proj
 
-    def apply_deceleration_limit(self, current_index: int, new_index: int) -> int:
+    def _apply_step_limit(self, current_index: int, new_index: int) -> int:
         """
         Ensure the fan speed decreases by no more than one step at a time
         to maintain system stability.
@@ -94,15 +102,15 @@ class SmartFanController:
     def determine_final_index(self, current_index: int, new_index: int, minutes_since_change: float, force: bool) -> int:
         """Limit fan speed changes with safety guards."""
         if force:
-            return self.apply_deceleration_limit(current_index, new_index)
+            return self._apply_step_limit(current_index, new_index)
 
         # Enforce the minimum time between two changes
         if minutes_since_change < self._min_interval:
             return current_index
 
-        return self.apply_deceleration_limit(current_index, new_index)
+        return self._apply_step_limit(current_index, new_index)
 
-    def update_new_fan_state(self, new_fan: int) -> dict:
+    def record_manual_override(self, new_fan: str) -> dict:
         """Persist last change timestamp and return manual override payload."""
         self._last_change_time = time.time()
 
@@ -112,11 +120,22 @@ class SmartFanController:
             "reason": "Manual Override"
         }
 
+    def confirm_fan_change(self) -> None:
+        """Update the last-change timestamp once HA confirms the fan speed change.
+
+        Uses self._now (the clock snapshot taken at the start of the last
+        calculate_decision cycle) rather than calling the clock a second time.
+        This keeps the cooldown timer aligned with the decision cycle and makes
+        the method compatible with tests that set self._now directly.
+        """
+        self._last_change_time = self._now
+
     def save_states(self, target_fan: str, current_fan: str | None, vtherm_slope: float, effective_slope: float, slope_change: bool):
         """Update states."""
         if target_fan != current_fan:
-            # Fan is changing - record the timestamp for future response time calculation
-            self._last_change_time = self._now
+            # Record the slope snapshot at the moment of the decision.
+            # Note: _last_change_time is updated by confirm_fan_change() AFTER the
+            # HA service call succeeds, to avoid advancing the cooldown on failed calls.
             self._slope_at_last_change = effective_slope
 
         if target_fan != current_fan or slope_change:
@@ -136,6 +155,24 @@ class SmartFanController:
     def calculate_decision(self, current_temp: float, target_temp: float, vtherm_slope: float, hvac_mode: str, current_fan: str | None) -> dict:
         """Compute new fan speed."""
         self._now = time.time()
+
+        # Early exit: unsupported or inactive HVAC modes
+        if hvac_mode in ("off", "dry", "fan_only"):
+            return {
+                "fan_mode": current_fan,
+                "projected_temperature": round(current_temp, 2),
+                "projected_temperature_error": 0.0,
+                "temperature_error": 0.0,
+                "minutes_since_last_change": round((self._now - self._last_change_time) / 60, 1),
+                "reason": f"HVAC mode '{hvac_mode}': holding current speed",
+            }
+
+        # Reset thermal memory when HVAC mode switches (heat ↔ cool)
+        if self._last_hvac_mode is not None and self._last_hvac_mode != hvac_mode:
+            _LOGGER.info("HVAC mode changed from %s to %s: resetting thermal state", self._last_hvac_mode, hvac_mode)
+            self._thermal_acceleration = 0.0
+            self._previous_slope = vtherm_slope
+        self._last_hvac_mode = hvac_mode
 
         # Init slope states
         if self._previous_slope is None:
@@ -172,8 +209,8 @@ class SmartFanController:
         # --- Logic indicators ---#
         # -------------------------#
         interval_expired = minutes_since_change >= self._limit_timeout
-        slope_change = abs(vtherm_slope - self._previous_slope) > self._threshold_slope
-        is_slope_improving = effective_slope > (self._slope_at_last_change + self._threshold_slope)
+        slope_change = abs(vtherm_slope - self._previous_slope) > THRESHOLD_SLOPE
+        is_slope_improving = effective_slope > (self._slope_at_last_change + THRESHOLD_SLOPE)
 
         if current_fan is None:
             current_index = 0
@@ -197,7 +234,7 @@ class SmartFanController:
 
         # A-bis. SETPOINT DROP (Target lowered significantly) => lowest fan speed immediately
         # Night mode: when target drops ≥1°C below current (heat) or rises ≥1°C above current (cool)
-        elif current_temperature_error < self._threshold_target_drop:
+        elif current_temperature_error < THRESHOLD_TARGET_DROP:
             new_index = 0
             force = True
             reason = f"Setpoint drop: Target moved away ({round(current_temperature_error, 2)}°C)"
@@ -221,7 +258,7 @@ class SmartFanController:
 
         # D. DRIFT IN COMFORT ZONE
         elif current_temperature_error > 0:
-            if (effective_slope < -self._threshold_slope or projected_temperature_error > self._projected_error_threshold) and (slope_change or interval_expired):
+            if (effective_slope < -THRESHOLD_SLOPE or projected_temperature_error > self._projected_error_threshold) and (slope_change or interval_expired):
                 new_index = min(max_index, current_index + 1)
                 reason = "Maintenance: Slow drift detected"
             elif interval_expired:
@@ -241,7 +278,7 @@ class SmartFanController:
 
         # F. COMFORT ZONE (STABLE)
         else:
-            if slope_change and effective_slope < -self._deadband:
+            if slope_change and effective_slope < -THRESHOLD_SLOPE:
                 new_index = min(max_index, current_index + 1)
                 reason = "Comfort: Slow drift detected"
             else:
@@ -254,9 +291,10 @@ class SmartFanController:
         # Update memory
         self.save_states(target_fan, current_fan, vtherm_slope, effective_slope, slope_change)
 
-        # Collect learning data (only normal operating conditions and when learning is enabled)
-        if self.learning_enabled:
-            self.learning.add_slope_sample(target_fan, vtherm_slope, current_temperature_error)
+        # Collect learning data using the fan mode CURRENTLY active (not the decided one),
+        # so the slope observation is correctly attributed to the mode that produced it.
+        if self.learning_enabled and current_fan is not None and current_fan in self._fan_modes:
+            self.learning.add_slope_sample(current_fan, vtherm_slope, current_temperature_error)
 
         _LOGGER.debug(
             "Decision: hvac=%s current=%.2f target=%.2f err=%.2f proj=%.2f proj_err=%.2f slope=%.3f eff_slope=%.3f accel=%.3f minutes=%.1f -> %s (%s)",
