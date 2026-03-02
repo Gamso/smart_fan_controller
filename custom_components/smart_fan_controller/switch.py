@@ -14,11 +14,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     """Set up the switch platform from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
     controller = data["controller"]
-    
+
     entities = [
         SmartFanLearningSwitch(entry.entry_id, controller, entry, hass),
     ]
-    
+
     async_add_entities(entities)
 
 
@@ -31,7 +31,7 @@ class SmartFanLearningSwitch(SwitchEntity):
         self._controller = controller
         self._entry = entry
         self._hass = hass
-        
+
         self._attr_name = "Learning Enabled"
         self._attr_unique_id = f"smart_fan_learning_enabled_{entry_id}"
         self._attr_icon = "mdi:brain"
@@ -50,22 +50,30 @@ class SmartFanLearningSwitch(SwitchEntity):
         """Return true if learning is enabled."""
         return self._controller.learning_enabled
 
+    def turn_on(self, **kwargs) -> None:
+        """Turn on learning mode (sync — HA calls async_turn_on when available)."""
+        self._controller.learning_enabled = True
+
+    def turn_off(self, **kwargs) -> None:
+        """Turn off learning mode (sync — HA calls async_turn_off when available)."""
+        self._controller.learning_enabled = False
+
     async def async_turn_on(self, **kwargs) -> None:
         """Turn on learning mode."""
         self._controller.learning_enabled = True
-        
+
         # Update config entry to persist the setting
         new_options = {**self._entry.options, CONF_LEARNING_ENABLED: True}
         self._hass.config_entries.async_update_entry(self._entry, options=new_options)
-        
+
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs) -> None:
         """Turn off learning mode."""
         self._controller.learning_enabled = False
-        
+
         # Update config entry to persist the setting
         new_options = {**self._entry.options, CONF_LEARNING_ENABLED: False}
         self._hass.config_entries.async_update_entry(self._entry, options=new_options)
-        
+
         self.async_write_ha_state()
