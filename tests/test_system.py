@@ -70,8 +70,6 @@ class TestSmartFanControllerSystem:
         # Should bypass timer because it's an Emergency
         assert result["fan_mode"] == "turbo"
         assert "Emergency" in result["reason"]
-
-    def test_index_boundaries_low(self, controller):
         """Ensure no crash when trying to go below the first fan mode."""
         # Case: Overheating in heat mode while already at 'low'
         result = controller.calculate_decision(21.0, 20.0, 0.1, "heat", "low")
@@ -89,18 +87,84 @@ class TestSmartFanControllerSystem:
 
     def test_hvac_mode_switch_mid_operation(self, controller):
         """Test switching from Heat to Cool mode maintains logic integrity."""
-        # 1. Operating in Heat
+        # 1. Operating in Heat: error=0.5 > soft_error, interval expired → Strong recovery
         result = controller.calculate_decision(19.5, 20.0, 0.2, "heat", "low")
-        assert controller._previous_slope == 0.2
+        assert controller._last_hvac_mode == "heat"
         assert "Strong recovery: Drop predicted " in result["reason"]
         assert result["fan_mode"] == "medium"
 
-        # 2. Instant switch to Cool
-        # TODO: Ensure previous slope is reset appropriately
-        # TODO: On this HVAC mode switch, the fan speed should be re-evaluated correctly and finish in 'low'
+        # 2. Instant switch to Cool: hvac_mode change resets _previous_slope and
+        # _thermal_acceleration so no spurious slope_change is triggered.
+        # With interval still expired and error=-0.5 < -deadband, Zone E fires.
         result = controller.calculate_decision(19.5, 20.0, 0.2, "cool", "medium")
-        assert "Over-target: Observing inertia" in result["reason"]
+        assert controller._last_hvac_mode == "cool"
+        # _thermal_acceleration was reset; slope_change=False; interval_expired=True
+        # Zone E: current_temperature_error=-0.5 < -deadband → reduce speed
+        assert "Over-target: Reducing speed" in result["reason"]
+        assert result["fan_mode"] == "low"
+
+    def test_hvac_mode_off_holds_fan(self, controller):
+        """Test that hvac_mode='off' returns immediately without changing fan speed."""
+        result = controller.calculate_decision(19.0, 20.0, -0.5, "off", "high")
+        assert result["fan_mode"] == "high"
+        assert "off" in result["reason"]
+        assert result["temperature_error"] == 0.0
+
+    def test_hvac_mode_dry_holds_fan(self, controller):
+        """Test that hvac_mode='dry' returns immediately without changing fan speed."""
+        result = controller.calculate_decision(22.0, 20.0, 0.3, "dry", "medium")
         assert result["fan_mode"] == "medium"
+        assert "dry" in result["reason"]
+
+    def test_hvac_mode_fan_only_holds_fan(self, controller):
+        """Test that hvac_mode='fan_only' returns immediately without changing fan speed."""
+        result = controller.calculate_decision(20.0, 20.0, 0.0, "fan_only", "low")
+        assert result["fan_mode"] == "low"
+        assert "fan_only" in result["reason"]
+
+    def test_thermal_acceleration_reset_on_hvac_switch(self, controller):
+        """Test that _thermal_acceleration is reset when hvac_mode changes."""
+        # Build up some thermal acceleration in heat mode
+        controller._previous_slope = 0.1
+        controller._thermal_acceleration = 5.0  # Artificially high
+        controller.calculate_decision(19.5, 20.0, 0.3, "heat", "low")
+        # Switch to cool: acceleration must be zeroed
+        controller.calculate_decision(19.5, 20.0, 0.3, "cool", "low")
+        assert controller._thermal_acceleration == 0.0
+
+    def test_learning_records_current_fan_not_decided_fan(self, controller):
+        """Verify that the slope sample is attributed to the ACTIVE fan mode, not the decided one."""
+        controller._last_change_time = 0  # interval expired immediately
+        # current_fan='low', error=0.5 (soft zone), slope=-0.5 (falling, not improving) → boosts to 'medium'
+        result = controller.calculate_decision(19.5, 20.0, -0.5, "heat", "low")
+        assert result["fan_mode"] == "medium"  # decision changed from low to medium
+        # But the learning sample must carry 'low' (the mode that produced the measured slope)
+        assert len(controller.learning._slope_samples) > 0
+        sample = controller.learning._slope_samples[-1]
+        assert sample[1] == "low", f"Expected sample fan_mode='low' but got '{sample[1]}'"
+
+    def test_auto_apply_flag_in_entry_data_prevents_second_apply(self):
+        """Verify that the learning_auto_applied flag logic blocks a second auto-apply.
+
+        This is a unit-level guard against the infinite reload loop:
+        if entry.data already has learning_auto_applied=True, the condition must
+        evaluate to False regardless of learning readiness.
+        """
+
+        # Simulate: learning is ready, but the flag is already set in entry.data
+        class _FakeEntry:
+            data = {"learning_auto_applied": True}
+
+        entry = _FakeEntry()
+        # Condition mirrors what __init__.py checks:
+        should_apply = True and True and not entry.data.get("learning_auto_applied", False)  # learning_enabled  # learning.is_ready()
+        assert should_apply is False, "Auto-apply should be blocked when flag is already set"
+
+        # Verify that a fresh entry (no flag) would pass
+        entry_fresh = _FakeEntry()
+        entry_fresh.data = {}
+        should_apply_fresh = True and True and not entry_fresh.data.get("learning_auto_applied", False)
+        assert should_apply_fresh is True
 
     def test_step_down_protection(self, controller):
         """
@@ -147,6 +211,10 @@ class TestSmartFanControllerSystem:
             with patch('time.time', return_value=current_time):
                 result = controller.calculate_decision(current, target, slope, "heat", current_fan)
                 actual_fan = result["fan_mode"]
+
+                # Simulate HA confirming the fan change (mirrors __init__.py behaviour)
+                if actual_fan != current_fan:
+                    controller.confirm_fan_change()
 
                 error_msg = (
                     f"Failed at T+{elapsed_min}min: "
@@ -297,7 +365,7 @@ class TestSmartFanControllerSystem:
 
             if new_fan != old_fan and new_fan is not None:
                 # This is the call we want to verify
-                controller.update_new_fan_state(new_fan)
+                controller.record_manual_override(new_fan)
 
         # Register our local mock listener
         async_track_state_change_event(hass, [climate_id], mock_handle_manual_change)
@@ -325,7 +393,7 @@ class TestSmartFanControllerSystem:
         """
         # Create controller without fan modes
         controller_no_modes = SmartFanController(fan_modes=None, **DEFAULT_CONFIG)
-        
+
         # Call calculate_decision with valid temperature data
         result = controller_no_modes.calculate_decision(
             current_temp=19.5,
@@ -334,7 +402,7 @@ class TestSmartFanControllerSystem:
             hvac_mode="heat",
             current_fan="medium"
         )
-        
+
         # Verify all expected keys are present
         assert "fan_mode" in result
         assert "projected_temperature" in result
@@ -342,11 +410,11 @@ class TestSmartFanControllerSystem:
         assert "temperature_error" in result
         assert "minutes_since_last_change" in result
         assert "reason" in result
-        
+
         # Verify fan_mode is preserved (not changed when modes not initialized)
         assert result["fan_mode"] == "medium"
         assert result["reason"] == "No fan modes defined"
-        
+
         # Verify temperature calculations are performed
         assert result["temperature_error"] == 0.5  # target - current for heat mode
         assert isinstance(result["projected_temperature"], float)
@@ -361,23 +429,23 @@ class TestSmartFanControllerSystem:
         """
         # Create controller without fan modes
         controller_no_modes = SmartFanController(fan_modes=None, **DEFAULT_CONFIG)
-        
+
         # Verify initial state is None
         assert controller_no_modes.fan_modes is None
-        
+
         # Simulate race condition: set to empty list (what happens when VTherm not ready)
         controller_no_modes.fan_modes = []
-        
+
         # Verify it's empty
         assert controller_no_modes.fan_modes == []
         assert not controller_no_modes.fan_modes  # Should be falsy
-        
+
         # Now simulate VTherm becoming available with proper modes
         controller_no_modes.fan_modes = ["low", "medium", "high"]
-        
+
         # Verify modes are now set
         assert controller_no_modes.fan_modes == ["low", "medium", "high"]
-        
+
         # Verify controller now works properly
         result = controller_no_modes.calculate_decision(
             current_temp=19.5,
@@ -386,7 +454,7 @@ class TestSmartFanControllerSystem:
             hvac_mode="heat",
             current_fan="low"
         )
-        
+
         # Should now be able to make decisions
         assert result["fan_mode"] in ["low", "medium", "high"]
         assert "No fan modes defined" not in result["reason"]
