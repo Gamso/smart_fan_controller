@@ -10,6 +10,26 @@ from homeassistant.helpers.entity import DeviceInfo
 
 from .const import DOMAIN
 
+
+class _SmartFanEntity(SensorEntity):
+    """Base sensor that wires every subclass to the Smart Fan Controller device.
+
+    All concrete sensor classes only need to set ``self._entry_id`` and they
+    automatically appear grouped under the same device in the HA UI, without
+    each class having to repeat the ``device_info`` property.
+    """
+
+    _entry_id: str  # Must be set by every subclass __init__
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Link the entity to the Smart Fan Controller device."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._entry_id)},
+            name="Smart Fan Controller",
+        )
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     """Set up the sensor platform from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
@@ -45,7 +65,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     async_add_entities(entities)
 
 
-class SmartFanSensor(SensorEntity):
+class SmartFanSensor(_SmartFanEntity):
     """A specific sensor for the Smart Fan integration."""
 
     def __init__(
@@ -65,11 +85,7 @@ class SmartFanSensor(SensorEntity):
         # This name is what appears in the UI
         self._attr_name = name_suffix
 
-        # This ID is what appears in developer-tools/state
-        # We force the format: sensor.smart_fan_projected_error
-        self.entity_id = f"sensor.smart_fan_{data_key}"
-
-        # Unique ID for internal HA database
+        # Unique ID for internal HA database; HA assigns entity_id from this
         self._attr_unique_id = f"smart_fan_{data_key}_{entry_id}"
 
         self._attr_native_unit_of_measurement = unit
@@ -78,23 +94,15 @@ class SmartFanSensor(SensorEntity):
         self._attr_icon = icon
         self._attr_entity_category = entity_category
 
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Link the sensor to the main Smart Fan device."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._entry_id)},
-            name="Smart Fan Controller",
-        )
-
     def update_from_controller(self, data: dict) -> None:
         """Update the sensor value with data from the controller."""
         new_value = data.get(self._data_key)
         if new_value is not None:
             self._attr_native_value = new_value
-            self.async_write_ha_state()
+            # Caller (the control loop) is responsible for calling async_write_ha_state()
 
 
-class SmartFanLearningSensor(SensorEntity):
+class SmartFanLearningSensor(_SmartFanEntity):
     """Sensor showing learning progress and optimal parameters."""
 
     def __init__(self, entry_id: str, controller) -> None:
@@ -103,19 +111,10 @@ class SmartFanLearningSensor(SensorEntity):
         self._controller = controller
 
         self._attr_name = "Learning Progress"
-        self.entity_id = "sensor.smart_fan_learning_progress"
         self._attr_unique_id = f"smart_fan_learning_progress_{entry_id}"
         self._attr_native_unit_of_measurement = PERCENTAGE
         self._attr_icon = "mdi:school"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Link to the Smart Fan device."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._entry_id)},
-            name="Smart Fan Controller",
-        )
 
     @property
     def native_value(self) -> float:
@@ -143,7 +142,8 @@ class SmartFanLearningSensor(SensorEntity):
 
         return attrs
 
-class SmartFanLearningStatusSensor(SensorEntity):
+
+class SmartFanLearningStatusSensor(_SmartFanEntity):
     """Sensor showing learning readiness status."""
 
     def __init__(self, entry_id: str, controller) -> None:
@@ -152,18 +152,9 @@ class SmartFanLearningStatusSensor(SensorEntity):
         self._controller = controller
 
         self._attr_name = "Learning Status"
-        self.entity_id = "sensor.smart_fan_learning_status"
         self._attr_unique_id = f"smart_fan_learning_status_{entry_id}"
         self._attr_icon = "mdi:school-outline"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Link to the Smart Fan device."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._entry_id)},
-            name="Smart Fan Controller",
-        )
 
     @property
     def native_value(self) -> str:
@@ -175,7 +166,7 @@ class SmartFanLearningStatusSensor(SensorEntity):
             return f"Learning ({progress:.0f}%)"
 
 
-class SmartFanLearningSamplesSensor(SensorEntity):
+class SmartFanLearningSamplesSensor(_SmartFanEntity):
     """Sensor showing number of slope samples collected."""
 
     def __init__(self, entry_id: str, controller) -> None:
@@ -184,19 +175,10 @@ class SmartFanLearningSamplesSensor(SensorEntity):
         self._controller = controller
 
         self._attr_name = "Learning Samples"
-        self.entity_id = "sensor.smart_fan_learning_samples"
         self._attr_unique_id = f"smart_fan_learning_samples_{entry_id}"
         self._attr_native_unit_of_measurement = "samples"
         self._attr_icon = "mdi:chart-box-outline"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Link to the Smart Fan device."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._entry_id)},
-            name="Smart Fan Controller",
-        )
 
     @property
     def native_value(self) -> int:
@@ -218,7 +200,7 @@ class SmartFanLearningSamplesSensor(SensorEntity):
         }
 
 
-class SmartFanLearningResponseSensor(SensorEntity):
+class SmartFanLearningResponseSensor(_SmartFanEntity):
     """Sensor showing number of response events recorded."""
 
     def __init__(self, entry_id: str, controller) -> None:
@@ -227,19 +209,10 @@ class SmartFanLearningResponseSensor(SensorEntity):
         self._controller = controller
 
         self._attr_name = "Learning Response Events"
-        self.entity_id = "sensor.smart_fan_learning_response_events"
         self._attr_unique_id = f"smart_fan_learning_response_events_{entry_id}"
         self._attr_native_unit_of_measurement = "events"
         self._attr_icon = "mdi:timer-outline"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Link to the Smart Fan device."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._entry_id)},
-            name="Smart Fan Controller",
-        )
 
     @property
     def native_value(self) -> int:
@@ -262,31 +235,22 @@ class SmartFanLearningResponseSensor(SensorEntity):
         }
 
 
-class _BaseLearnedParameterSensor(SensorEntity):
+class _BaseLearnedParameterSensor(_SmartFanEntity):
     """Base class for learned parameter sensors."""
 
-    def __init__(self, entry_id: str, controller, name: str, entity_id: str, unit, device_class, key: str, icon: str = "mdi:brain", current_attr: str | None = None) -> None:
+    def __init__(self, entry_id: str, controller, name: str, unit, device_class, key: str, icon: str = "mdi:brain", current_attr: str | None = None) -> None:
         self._entry_id = entry_id
         self._controller = controller
         self._key = key
         self._current_attr = current_attr  # Attribute to fetch current value from controller
 
         self._attr_name = name
-        self.entity_id = entity_id
         self._attr_unique_id = f"smart_fan_{self._key}_{entry_id}"
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = device_class
         self._attr_icon = icon
         self._attr_native_value = None  # Initialize with None, will be updated
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Link to the Smart Fan device."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._entry_id)},
-            name="Smart Fan Controller",
-        )
 
     @property
     def native_value(self):
@@ -319,7 +283,6 @@ class SmartFanLearnedDeadbandSensor(_BaseLearnedParameterSensor):
             entry_id,
             controller,
             name="Learned Deadband",
-            entity_id="sensor.smart_fan_learned_deadband",
             unit=UnitOfTemperature.CELSIUS,
             device_class=SensorDeviceClass.TEMPERATURE,
             key="deadband",
@@ -336,7 +299,6 @@ class SmartFanLearnedSoftErrorSensor(_BaseLearnedParameterSensor):
             entry_id,
             controller,
             name="Learned Soft Error",
-            entity_id="sensor.smart_fan_learned_soft_error",
             unit=UnitOfTemperature.CELSIUS,
             device_class=SensorDeviceClass.TEMPERATURE,
             key="soft_error",
@@ -353,7 +315,6 @@ class SmartFanLearnedHardErrorSensor(_BaseLearnedParameterSensor):
             entry_id,
             controller,
             name="Learned Hard Error",
-            entity_id="sensor.smart_fan_learned_hard_error",
             unit=UnitOfTemperature.CELSIUS,
             device_class=SensorDeviceClass.TEMPERATURE,
             key="hard_error",
@@ -370,7 +331,6 @@ class SmartFanLearnedLimitTimeoutSensor(_BaseLearnedParameterSensor):
             entry_id,
             controller,
             name="Learned Limit Timeout",
-            entity_id="sensor.smart_fan_learned_limit_timeout",
             unit=UnitOfTime.MINUTES,
             device_class=SensorDeviceClass.DURATION,
             key="limit_timeout",

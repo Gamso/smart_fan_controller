@@ -23,16 +23,46 @@ from .const import (
     DEFAULT_LIMIT_TIMEOUT,
     DEFAULT_LEARNING_ENABLED,
     DELTA_TIME_CONTROL_LOOP,
+    STORAGE_VERSION,
+    STORAGE_KEY,
+    LEARNING_DATA_SAVE_INTERVAL,
 )
 from .controller import SmartFanController
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.SENSOR, Platform.SWITCH]
 
-# Storage version for learning data persistence
-STORAGE_VERSION = 1
-STORAGE_KEY = "smart_fan_controller.learning_data"
-LEARNING_DATA_SAVE_INTERVAL = timedelta(minutes=5)
+
+async def _apply_optimal_parameters(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    optimal: dict,
+) -> None:
+    """Apply learned optimal parameters to the config entry and trigger a reload.
+
+    This is a standalone helper factorised from both the auto-apply block and the
+    apply_learned_settings service, so the logic lives in exactly one place.
+    Sets the learning_auto_applied flag in entry.data so that a subsequent reload
+    does not trigger a second auto-apply (breaking the infinite-reload loop).
+    """
+    new_data = {**entry.data}
+    new_data["learning_auto_applied"] = True
+    new_data[CONF_DEADBAND] = optimal["deadband"]
+    new_data[CONF_SOFT_ERROR] = optimal["soft_error"]
+    new_data[CONF_HARD_ERROR] = optimal["hard_error"]
+    new_data[CONF_LIMIT_TIMEOUT] = optimal["limit_timeout"]
+
+    _LOGGER.info(
+        "Applying learned settings: deadband=%.2f soft_error=%.2f hard_error=%.2f limit_timeout=%d",
+        optimal["deadband"],
+        optimal["soft_error"],
+        optimal["hard_error"],
+        optimal["limit_timeout"],
+    )
+
+    hass.config_entries.async_update_entry(entry, data=new_data)
+    await hass.config_entries.async_reload(entry.entry_id)
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the integration from a config entry."""
@@ -42,7 +72,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Set up persistent storage for learning data
     store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY}.{entry.entry_id}")
-    
+
     # Try to restore learning data from persistent storage first, then fall back to config entry
     learning_data = await store.async_load()
     if not learning_data:
@@ -65,9 +95,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "controller": controller,
         "climate_entity": climate_id,
-        "sensor": None, # Reference will be set in sensor.py
+        "sensor": None,  # Reference will be set in sensor.py
         "store": store,  # Store the storage object for periodic saves
-        "learning_auto_applied": False,  # Track if we've auto-applied learned parameters
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -137,37 +166,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 # Force update all sensors (including learning sensors)
                 sensor.async_write_ha_state()
 
-        # Auto-apply learned parameters when learning becomes ready (only once)
-        entry_data = hass.data[DOMAIN][entry.entry_id]
-        if (controller.learning_enabled and 
-            controller.learning.is_ready() and 
-            not entry_data.get("learning_auto_applied", False)):
-            
+        # Auto-apply learned parameters when learning becomes ready (only once per installation).
+        # The flag is persisted in entry.data so it survives reloads and avoids an infinite loop
+        # where the reload itself triggers another auto-apply.
+        if controller.learning_enabled and controller.learning.is_ready() and not entry.data.get("learning_auto_applied", False):
+
             optimal = controller.learning.compute_optimal_parameters()
             if optimal:
-                _LOGGER.info(
-                    "Learning is ready! Auto-applying learned settings: deadband=%.2f soft_error=%.2f hard_error=%.2f limit_timeout=%d",
-                    optimal["deadband"],
-                    optimal["soft_error"],
-                    optimal["hard_error"],
-                    optimal["limit_timeout"],
-                )
-                
-                # Update config entry with new values
-                new_data = {**entry.data}
-                new_data[CONF_DEADBAND] = optimal["deadband"]
-                new_data[CONF_SOFT_ERROR] = optimal["soft_error"]
-                new_data[CONF_HARD_ERROR] = optimal["hard_error"]
-                new_data[CONF_LIMIT_TIMEOUT] = optimal["limit_timeout"]
-                
-                entry_data["learning_auto_applied"] = True
-                
-                # Update entry and reload after the control loop completes
-                async def _apply_and_reload():
-                    hass.config_entries.async_update_entry(entry, data=new_data)
-                    await hass.config_entries.async_reload(entry.entry_id)
-                
-                hass.async_create_task(_apply_and_reload())
+                _LOGGER.info("Learning is ready! Scheduling auto-apply of learned parameters.")
+                hass.async_create_task(_apply_optimal_parameters(hass, entry, optimal))
 
         # Apply the new fan speed if a change is required
         if decision["fan_mode"] != current_fan:
@@ -179,6 +186,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "entity_id": climate_id,
                 "fan_mode": decision["fan_mode"]
             })
+            # Advance the cooldown timer only after the service call succeeds
+            controller.confirm_fan_change()
 
     async def _handle_manual_change(event):
         new_state = event.data.get("new_state")
@@ -189,20 +198,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         new_fan = new_state.attributes.get("fan_mode")
         old_fan = old_state.attributes.get("fan_mode")
 
-        if new_fan != old_fan:
-            _LOGGER.info("Manual fan_mode change detected, resetting timer")
+        # Ignore transitions where the fan mode disappears (entity going unavailable)
+        if new_fan is None or new_fan == old_fan:
+            return
 
-            # Reset internal controller timer
-            manual_data = controller.update_new_fan_state(new_fan)
+        _LOGGER.info("Manual fan_mode change detected, resetting timer")
 
-            # Instantly refresh sensors to show the change
-            sensors = hass.data[DOMAIN][entry.entry_id].get("sensors", [])
-            for sensor in sensors:
-                if hasattr(sensor, "update_from_controller"):
-                    sensor.update_from_controller(manual_data)
-                else:
-                    # Learning sensor updates itself via properties
-                    sensor.async_write_ha_state()
+        # Reset internal controller timer
+        manual_data = controller.record_manual_override(new_fan)
+
+        # Instantly refresh sensors to show the change
+        sensors = hass.data[DOMAIN][entry.entry_id].get("sensors", [])
+        for sensor in sensors:
+            if hasattr(sensor, "update_from_controller"):
+                sensor.update_from_controller(manual_data)
+            else:
+                # Learning sensor updates itself via properties
+                sensor.async_write_ha_state()
 
     # Schedule the loop and run it immediately once to initialize
     remove_timer = async_track_time_interval(hass, run_control_loop, timedelta(minutes=DELTA_TIME_CONTROL_LOOP))
@@ -238,24 +250,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.error("Failed to compute optimal parameters")
             return
 
-        # Update config entry with new values
-        new_data = {**entry.data}
-        new_data[CONF_DEADBAND] = optimal["deadband"]
-        new_data[CONF_SOFT_ERROR] = optimal["soft_error"]
-        new_data[CONF_HARD_ERROR] = optimal["hard_error"]
-        new_data[CONF_LIMIT_TIMEOUT] = optimal["limit_timeout"]
-
-        hass.config_entries.async_update_entry(entry, data=new_data)
-        _LOGGER.info(
-            "Applied learned settings: deadband=%.2f soft_error=%.2f hard_error=%.2f limit_timeout=%d",
-            optimal["deadband"],
-            optimal["soft_error"],
-            optimal["hard_error"],
-            optimal["limit_timeout"],
-        )
-
-        # Reload to apply new parameters
-        await hass.config_entries.async_reload(entry.entry_id)
+        await _apply_optimal_parameters(hass, entry, optimal)
 
     hass.services.async_register(DOMAIN, "apply_learned_settings", apply_learned_settings)
 

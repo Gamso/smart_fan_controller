@@ -24,7 +24,8 @@
                 },
                 "error": {
                     "invalid_climate_entity": "This entity must come from Versatile Thermostat.",
-                    "no_versatile_thermostat": "No Versatile Thermostat entity found."
+                    "no_versatile_thermostat": "No Versatile Thermostat entity found.",
+                    "invalid_thresholds": "Deadband must be less than Soft Error, which must be less than Hard Error."
                 }
             }
         }
@@ -53,7 +54,8 @@
                 },
                 "error": {
                     "invalid_climate_entity": "This entity must come from Versatile Thermostat.",
-                    "no_versatile_thermostat": "No Versatile Thermostat entity found."
+                    "no_versatile_thermostat": "No Versatile Thermostat entity found.",
+                    "invalid_thresholds": "Deadband must be less than Soft Error, which must be less than Hard Error."
                 }
             }
         }
