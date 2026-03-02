@@ -297,7 +297,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await store.async_save(learning_data)
                 _LOGGER.debug("Learning data saved on unload")
 
-    unload_ok = await hass.config_entries.async_forward_entry_unload(entry, Platform.SENSOR)
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
     return unload_ok
