@@ -24,7 +24,8 @@
                 },
                 "error": {
                     "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",
-                    "no_versatile_thermostat": "Aucune entité Versatile Thermostat trouvée."
+                    "no_versatile_thermostat": "Aucune entité Versatile Thermostat trouvée.",
+                    "invalid_thresholds": "La bande morte doit être inférieure au seuil faible, lui-même inférieur au seuil élevé."
                 }
             }
         }
@@ -53,7 +54,8 @@
                 },
                 "error": {
                     "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",
-                    "no_versatile_thermostat": "Aucune entité Versatile Thermostat trouvée."
+                    "no_versatile_thermostat": "Aucune entité Versatile Thermostat trouvée.",
+                    "invalid_thresholds": "La bande morte doit être inférieure au seuil faible, lui-même inférieur au seuil élevé."
                 }
             }
         }
