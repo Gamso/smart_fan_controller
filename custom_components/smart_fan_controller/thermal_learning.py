@@ -185,7 +185,7 @@ class ThermalLearning:
     def to_dict(self) -> dict:
         """Serialize for storage."""
         return {
-            "slope_samples": self._slope_samples[-200:],
+            "slope_samples": list(self._slope_samples),
             "response_events": self._response_events[-100:],
             "slope_count": self._slope_count,
             "slope_mean": self._slope_mean,
