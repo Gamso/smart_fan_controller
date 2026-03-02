@@ -88,6 +88,26 @@ class TestLearningPersistence:
         assert data["slope_mean"] == 0.0
         assert data["slope_max"] == 0.0
 
+    def test_learning_persistence_above_min_samples(self):
+        """Test that all samples above 200 are persisted so 100% can be reached."""
+        learning = ThermalLearning()
+
+        # Add 240 samples (== _min_samples, needed for 100% progress)
+        for _ in range(240):
+            learning.add_slope_sample("medium", 0.5, 0.3)
+
+        assert learning.slope_sample_count() == 240
+
+        # Serialize and restore
+        data = learning.to_dict()
+        restored = ThermalLearning.from_dict(data)
+
+        # All 240 samples must survive the round-trip
+        assert len(data["slope_samples"]) == 240
+        assert restored.slope_sample_count() == 240
+        assert restored.get_progress() == 100.0
+        assert restored.is_ready()
+
     def test_learning_sliding_window_cleanup(self):
         """Test that old samples are cleaned up from serialization."""
         import time
