@@ -130,6 +130,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hvac_mode = attrs.get("hvac_mode")
         current_fan = attrs.get("fan_mode")
 
+        # Detect window-open state from VTherm attributes
+        # VTherm exposes window_manager.window_state ("on"/"off") and
+        # hvac_off_reason ("Window" when heating is cut due to open window)
+        window_mgr = attrs.get("window_manager", {})
+        is_window_open = (
+            window_mgr.get("window_state") == "on" or window_mgr.get("window_auto_state") == "on" or attrs.get("specific_states", {}).get("hvac_off_reason") == "Window"
+        )
+
         if vtherm_slope is None:
             _LOGGER.warning("%s missing VTherm temperature_slope; skipping control cycle", climate_id)
             return
@@ -153,7 +161,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             float(target_temp),
             float(vtherm_slope),
             str(hvac_mode),
-            current_fan
+            current_fan,
+            is_window_open,
         )
 
         # Update all sensors stored in the list
