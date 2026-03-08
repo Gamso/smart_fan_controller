@@ -29,7 +29,7 @@ LEARNING_DATA_SAVE_INTERVAL = timedelta(minutes=5)
 # Controller thresholds
 THRESHOLD_SLOPE = 0.1  # °C/h – minimum slope delta to trigger re-evaluation
 THRESHOLD_TARGET_DROP = -1.0  # °C  – setpoint drop that triggers immediate speed cut
-MAX_PROJECTION_DELTA = 2.0  # °C – maximum temperature change projected in 10 min
+MAX_PROJECTION_DELTA = 1.0  # °C – maximum temperature change projected in 10 min
 DEFAULT_DEAD_TIME = 10.0  # minutes – fallback dead time before learning is ready
 DEAD_TIME_SAFETY_FACTOR = 1.5  # multiplier applied to learned dead time for effective timeout
 
