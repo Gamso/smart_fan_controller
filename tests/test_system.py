@@ -122,15 +122,13 @@ class TestSmartFanControllerSystem:
         assert result["fan_mode"] == "low"
         assert "fan_only" in result["reason"]
 
-    def test_thermal_acceleration_reset_on_hvac_switch(self, controller):
-        """Test that _thermal_acceleration is reset when hvac_mode changes."""
-        # Build up some thermal acceleration in heat mode
+    def test_hvac_mode_switch_resets_slope(self, controller):
+        """Test that _previous_slope is reset when hvac_mode changes."""
         controller._previous_slope = 0.1
-        controller._thermal_acceleration = 5.0  # Artificially high
         controller.calculate_decision(19.5, 20.0, 0.3, "heat", "low")
-        # Switch to cool: acceleration must be zeroed
+        # Switch to cool: previous_slope must be reset to the current slope
         controller.calculate_decision(19.5, 20.0, 0.3, "cool", "low")
-        assert controller._thermal_acceleration == 0.0
+        assert controller._previous_slope == 0.3
 
     def test_learning_records_current_fan_not_decided_fan(self, controller):
         """Verify that the slope sample is attributed to the ACTIVE fan mode, not the decided one."""
@@ -189,13 +187,14 @@ class TestSmartFanControllerSystem:
 
     def test_projection_math(self, controller):
         """
-        Scenario: High thermal acceleration.
-        Goal: Verify the parabolic math: temp_proj = current + (v*t) + (0.5*a*t^2).
+        Scenario: Linear projection with clamp.
+        Goal: Verify the linear math: temp_proj = current + (v * 10/60), clamped.
         """
-        controller._previous_slope = 0.0 # Started stable
-        current_slope = 0.6              # Now rising at 0.6°C/h
+        controller._previous_slope = 0.0  # Started stable
+        current_slope = 0.6  # Now rising at 0.6°C/h
         proj = controller.compute_temperature_projection(20.0, current_slope)
-        assert proj == 20.225
+        # 20.0 + 0.6 * (10/60) = 20.0 + 0.1 = 20.1
+        assert proj == 20.1
 
     def _run_sequence_test(self, controller, sequence, initial_time=0.0, initial_slope=0.0, last_change_ago=None):
         controller._last_change_time = initial_time

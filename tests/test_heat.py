@@ -39,17 +39,16 @@ class TestSmartFanControllerHeat:
         assert "Emergency: High error" in result["reason"]
 
     def test_braking_anticipation(self, controller):
-        """Test Scenario B: Reducing speed before over-heating (overshoot)."""
-        # Setup: Temperature is close, but rising very fast
-        # We need a slope change > 0.1 compared to the previous state
+        """Test Scenario B: Reducing speed before over-heating (overshoot).
+
+        With linear projection, braking requires the projected temperature to
+        overshoot target by more than deadband.  Use a strong slope and a
+        current_temp very close to target.
+        """
         controller._previous_slope = 0.3
 
         result = controller.calculate_decision(
-            current_temp=19.9,
-            target_temp=20.0,
-            vtherm_slope=1.2, # Significant acceleration
-            hvac_mode="heat",
-            current_fan="high"
+            current_temp=19.95, target_temp=20.0, vtherm_slope=3.0, hvac_mode="heat", current_fan="high"  # Very strong heating → proj = 19.95 + 0.5 = 20.45
         )
         assert result["fan_mode"] == "medium"
         assert "Braking: Target overshoot predicted" in result["reason"]
@@ -110,7 +109,7 @@ class TestSmartFanControllerHeat:
 
     def test_stable_below_target_with_custom_deadband(self):
         """Test issue: stable temperature below target should still heat to reach setpoint.
-        
+
         Reproduces user scenario:
         - Setpoint changed from 17.5°C to 18°C
         - Current temp is 17.8°C (error = 0.2°C, within custom deadband of 0.4°C)
@@ -124,11 +123,11 @@ class TestSmartFanControllerHeat:
             soft_error=DEFAULT_SOFT_ERROR,
             hard_error=DEFAULT_HARD_ERROR,
         )
-        
+
         # Simulate stable temperature below target
         controller._previous_slope = -0.01
         controller._last_change_time = controller._now - (20 * 60)  # 20 minutes ago
-        
+
         result = controller.calculate_decision(
             current_temp=17.8,
             target_temp=18.0,
@@ -136,6 +135,6 @@ class TestSmartFanControllerHeat:
             hvac_mode="heat",
             current_fan="low"
         )
-        
+
         # System should increase fan to reach target
         assert result["fan_mode"] == "medium", f"Expected fan increase, got {result['fan_mode']} with reason: {result['reason']}"
