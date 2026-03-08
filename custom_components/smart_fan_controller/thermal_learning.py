@@ -142,9 +142,29 @@ class ThermalLearning:
         return self._min_samples
 
     @property
+    def slope_samples(self) -> list:
+        """Return the list of slope samples."""
+        return self._slope_samples
+
+    @slope_samples.setter
+    def slope_samples(self, value: list) -> None:
+        self._slope_samples = value
+        self._optimal_cache = None
+
+    @property
     def response_events(self) -> list:
         """Return the list of response events."""
         return self._response_events
+
+    @response_events.setter
+    def response_events(self, value: list) -> None:
+        self._response_events = value
+        self._optimal_cache = None
+
+    @property
+    def optimal_cache(self) -> dict | None:
+        """Return the cached optimal parameters, or None if not yet computed."""
+        return self._optimal_cache
 
     def is_ready(self) -> bool:
         """Check if enough data has been collected."""

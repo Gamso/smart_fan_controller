@@ -73,6 +73,43 @@ class SmartFanController:
         self._fan_modes = modes
 
     @property
+    def previous_slope(self) -> float | None:
+        """Last recorded slope snapshot (set before each fan-speed change)."""
+        return self._previous_slope
+
+    @previous_slope.setter
+    def previous_slope(self, value: float | None) -> None:
+        self._previous_slope = value
+
+    @property
+    def last_change_time(self) -> float:
+        """Timestamp of the last confirmed fan-speed change."""
+        return self._last_change_time
+
+    @last_change_time.setter
+    def last_change_time(self, value: float) -> None:
+        self._last_change_time = value
+
+    @property
+    def now(self) -> float:
+        """Clock snapshot captured at the start of the last calculate_decision cycle."""
+        return self._now
+
+    @now.setter
+    def now(self, value: float) -> None:
+        self._now = value
+
+    @property
+    def last_hvac_mode(self) -> str | None:
+        """HVAC mode observed during the previous cycle."""
+        return self._last_hvac_mode
+
+    @property
+    def limit_timeout(self) -> int:
+        """Configured static limit timeout (minutes)."""
+        return self._limit_timeout
+
+    @property
     def _projected_error_threshold(self) -> float:
         """Calculate projected error threshold as midpoint between soft and hard error."""
         return (self._soft_error + self._hard_error) / 2
@@ -92,7 +129,7 @@ class SmartFanController:
         temp_proj = max(current_temp - MAX_PROJECTION_DELTA, min(current_temp + MAX_PROJECTION_DELTA, temp_proj))
         return temp_proj
 
-    def _get_effective_timeout(self) -> float:
+    def get_effective_timeout(self) -> float:
         """Return the adaptive timeout (minutes) based on learned dead time.
 
         Uses the learned median response time × safety factor so the system
@@ -104,7 +141,7 @@ class SmartFanController:
             return max(self._min_interval, learned_dead_time * DEAD_TIME_SAFETY_FACTOR)
         return self._limit_timeout
 
-    def _detect_phase(self, minutes_since_change: float) -> str:
+    def detect_phase(self, minutes_since_change: float) -> str:
         """Classify the current control phase relative to the last fan change.
 
         - DEAD_TIME:    Too early for the sensor to see the effect of the change.
@@ -130,7 +167,9 @@ class SmartFanController:
     def determine_final_index(self, current_index: int, new_index: int, minutes_since_change: float, force: bool) -> int:
         """Limit fan speed changes with safety guards."""
         if force:
-            return self._apply_step_limit(current_index, new_index)
+            # Emergency and setpoint-drop bypass all guards (timer + step limit).
+            # If temperature then drops too fast, Emergency (Zone A) will react.
+            return new_index
 
         # Enforce the minimum time between two changes
         if minutes_since_change < self._min_interval:
@@ -235,11 +274,11 @@ class SmartFanController:
         # -------------------------#
         # --- Logic indicators ---#
         # -------------------------#
-        effective_timeout = self._get_effective_timeout()
+        effective_timeout = self.get_effective_timeout()
         interval_expired = minutes_since_change >= effective_timeout
         slope_change = abs(vtherm_slope - self._previous_slope) > THRESHOLD_SLOPE
         is_slope_improving = effective_slope > (self._slope_at_last_change + THRESHOLD_SLOPE)
-        phase = self._detect_phase(minutes_since_change)
+        phase = self.detect_phase(minutes_since_change)
 
         if current_fan is None:
             current_index = 0
