@@ -36,25 +36,25 @@ class TestPhaseDetection:
 
     def test_dead_time_phase_default(self, controller):
         """Within default dead time (10 min), phase should be DEAD_TIME."""
-        assert controller._detect_phase(5.0) == PHASE_DEAD_TIME
+        assert controller.detect_phase(5.0) == PHASE_DEAD_TIME
 
     def test_transient_phase_default(self, controller):
         """Between dead time and dead_time * 1.5, phase should be TRANSIENT."""
-        assert controller._detect_phase(12.0) == PHASE_TRANSIENT
+        assert controller.detect_phase(12.0) == PHASE_TRANSIENT
 
     def test_established_phase_default(self, controller):
         """After dead_time * 1.5, phase should be ESTABLISHED."""
-        assert controller._detect_phase(16.0) == PHASE_ESTABLISHED
+        assert controller.detect_phase(16.0) == PHASE_ESTABLISHED
 
     def test_phase_boundary_dead_to_transient(self, controller):
         """At exactly the dead time boundary, phase transitions to TRANSIENT."""
         # DEFAULT_DEAD_TIME = 10.0; at 10.0 it's no longer < 10 → TRANSIENT
-        assert controller._detect_phase(DEFAULT_DEAD_TIME) == PHASE_TRANSIENT
+        assert controller.detect_phase(DEFAULT_DEAD_TIME) == PHASE_TRANSIENT
 
     def test_phase_boundary_transient_to_established(self, controller):
         """At exactly dead_time * 1.5, phase transitions to ESTABLISHED."""
         threshold = DEFAULT_DEAD_TIME * DEAD_TIME_SAFETY_FACTOR
-        assert controller._detect_phase(threshold) == PHASE_ESTABLISHED
+        assert controller.detect_phase(threshold) == PHASE_ESTABLISHED
 
     def test_phase_with_learned_dead_time(self):
         """When learning provides a dead time, phases use that value."""
@@ -68,11 +68,11 @@ class TestPhaseDetection:
         assert controller.learning.is_ready()
 
         # 4 min < 6 → DEAD_TIME
-        assert controller._detect_phase(4.0) == PHASE_DEAD_TIME
+        assert controller.detect_phase(4.0) == PHASE_DEAD_TIME
         # 7 min → between 6 and 9 → TRANSIENT
-        assert controller._detect_phase(7.0) == PHASE_TRANSIENT
+        assert controller.detect_phase(7.0) == PHASE_TRANSIENT
         # 10 min → > 9 → ESTABLISHED
-        assert controller._detect_phase(10.0) == PHASE_ESTABLISHED
+        assert controller.detect_phase(10.0) == PHASE_ESTABLISHED
 
 
 class TestAdaptiveTimeout:
@@ -80,7 +80,7 @@ class TestAdaptiveTimeout:
 
     def test_default_timeout_without_learning(self, controller):
         """Without learning data, timeout falls back to _limit_timeout."""
-        assert controller._get_effective_timeout() == controller._limit_timeout
+        assert controller.get_effective_timeout() == controller.limit_timeout
 
     def test_adaptive_timeout_with_learning(self):
         """With learning data, timeout = max(min_interval, dead_time * 1.5)."""
@@ -92,7 +92,7 @@ class TestAdaptiveTimeout:
         assert controller.learning.is_ready()
 
         expected = max(DEFAULT_MIN_INTERVAL, 8.0 * DEAD_TIME_SAFETY_FACTOR)  # max(10, 12) = 12
-        assert controller._get_effective_timeout() == expected
+        assert controller.get_effective_timeout() == expected
 
     def test_adaptive_timeout_floors_to_min_interval(self):
         """When learned dead_time * 1.5 < min_interval, min_interval wins."""
@@ -103,14 +103,14 @@ class TestAdaptiveTimeout:
             controller.learning.add_response_event(4.0)  # dead time = 4 min; 4*1.5=6 < 10
         assert controller.learning.is_ready()
 
-        assert controller._get_effective_timeout() == DEFAULT_MIN_INTERVAL
+        assert controller.get_effective_timeout() == DEFAULT_MIN_INTERVAL
 
     def test_adaptive_timeout_disabled_when_learning_off(self):
         """When learning is disabled, always use static limit_timeout."""
         controller = SmartFanController(
             fan_modes=FAN_MODES, learning_enabled=False, **DEFAULT_CONFIG
         )
-        assert controller._get_effective_timeout() == controller._limit_timeout
+        assert controller.get_effective_timeout() == controller.limit_timeout
 
 
 class TestDeadTimePatienceInZoneC:
@@ -120,8 +120,8 @@ class TestDeadTimePatienceInZoneC:
         """During DEAD_TIME, zone C should report patience, not boost."""
         controller = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
         start_time = 1000.0
-        controller._last_change_time = start_time
-        controller._previous_slope = 0.0
+        controller.last_change_time = start_time
+        controller.previous_slope = 0.0
 
         # 5 minutes after change → DEAD_TIME (< DEFAULT_DEAD_TIME=10)
         with patch("time.time", return_value=start_time + 5 * 60):
@@ -139,8 +139,8 @@ class TestDeadTimePatienceInZoneC:
         """After dead time expires and slope hasn't improved, zone C should boost."""
         controller = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
         start_time = 1000.0
-        controller._last_change_time = start_time
-        controller._previous_slope = 0.0
+        controller.last_change_time = start_time
+        controller.previous_slope = 0.0
 
         # 16 minutes → ESTABLISHED phase, interval_expired
         with patch("time.time", return_value=start_time + 16 * 60):
@@ -161,8 +161,8 @@ class TestDescentPathZoneD:
     def test_descent_with_favorable_slope(self, controller):
         """In zone D, strong favorable slope in established phase → reduce."""
         start_time = 1000.0
-        controller._last_change_time = start_time - 20 * 60  # 20 min ago
-        controller._previous_slope = 0.5
+        controller.last_change_time = start_time - 20 * 60  # 20 min ago
+        controller.previous_slope = 0.5
 
         with patch("time.time", return_value=start_time):
             result = controller.calculate_decision(
@@ -179,8 +179,8 @@ class TestDescentPathZoneD:
         """Zone D descent must not fire during dead time, even with favorable slope."""
         controller = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
         start_time = 1000.0
-        controller._last_change_time = start_time  # just changed
-        controller._previous_slope = 0.5
+        controller.last_change_time = start_time  # just changed
+        controller.previous_slope = 0.5
 
         # 3 min → DEAD_TIME
         with patch("time.time", return_value=start_time + 3 * 60):
@@ -199,8 +199,8 @@ class TestDescentPathZoneD:
         """Zone D proactive increase ('Stable away from target') requires ESTABLISHED phase."""
         controller = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
         start_time = 1000.0
-        controller._last_change_time = start_time
-        controller._previous_slope = -0.01
+        controller.last_change_time = start_time
+        controller.previous_slope = -0.01
 
         # 12 minutes → TRANSIENT (between 10 and 15), effective_timeout = 15
         with patch("time.time", return_value=start_time + 12 * 60):
@@ -214,6 +214,64 @@ class TestDescentPathZoneD:
         # TRANSIENT phase + interval not expired → observing inertia
         assert result["fan_mode"] == "low"
         assert "Observing inertia" in result["reason"]
+
+
+class TestCoolModePhaseDetection:
+    """Cool-mode equivalents for phase-gated zone behavior."""
+
+    def test_zone_c_patience_during_dead_time_cool(self):
+        """In cool mode, zone C should report patience during DEAD_TIME."""
+        controller = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
+        start_time = 1000.0
+        controller.last_change_time = start_time
+        controller.previous_slope = 0.0
+
+        # 5 minutes → DEAD_TIME, error = 0.4 > soft_error (cool: 20.4 - 20.0 = 0.4)
+        with patch("time.time", return_value=start_time + 5 * 60):
+            result = controller.calculate_decision(
+                current_temp=20.4,
+                target_temp=20.0,
+                vtherm_slope=0.0,
+                hvac_mode="cool",
+                current_fan="low",
+            )
+        assert result["fan_mode"] == "low"
+        assert "Patience: Waiting for thermal response" in result["reason"]
+
+    def test_zone_d_descent_cool(self):
+        """In cool mode, strong negative slope (favorable) in established phase → reduce."""
+        controller = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
+        controller.last_change_time = controller.now - 20 * 60  # 20 min ago
+        controller.previous_slope = -0.5
+
+        result = controller.calculate_decision(
+            current_temp=20.1,  # error 0.1 in cool (zone D)
+            target_temp=20.0,
+            vtherm_slope=-0.8,  # effective_slope = 0.8 (negated for cool) > 0.2
+            hvac_mode="cool",
+            current_fan="high",
+        )
+        assert result["fan_mode"] == "medium"
+        assert "Strong favorable slope" in result["reason"]
+
+    def test_zone_c_boosts_after_dead_time_cool(self):
+        """In cool mode, zone C boosts after dead time with no improvement."""
+        controller = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
+        start_time = 1000.0
+        controller.last_change_time = start_time
+        controller.previous_slope = 0.0
+
+        # 16 minutes → ESTABLISHED phase, interval_expired
+        with patch("time.time", return_value=start_time + 16 * 60):
+            result = controller.calculate_decision(
+                current_temp=20.5,  # error 0.5 > soft_error
+                target_temp=20.0,
+                vtherm_slope=0.0,
+                hvac_mode="cool",
+                current_fan="low",
+            )
+        assert result["fan_mode"] == "medium"
+        assert "recovery" in result["reason"].lower()
 
 
 class TestWindowOpenFiltering:
@@ -263,29 +321,29 @@ class TestLinearProjectionClamp:
 
     def test_linear_projection_positive_slope(self, controller):
         """Positive slope projects temperature increase."""
-        controller._previous_slope = 0.0
+        controller.previous_slope = 0.0
         proj = controller.compute_temperature_projection(20.0, 1.2)
         # 20.0 + 1.2 * (10/60) = 20.0 + 0.2 = 20.2
         assert proj == pytest.approx(20.2, abs=0.01)
 
     def test_linear_projection_negative_slope(self, controller):
         """Negative slope projects temperature decrease."""
-        controller._previous_slope = 0.0
+        controller.previous_slope = 0.0
         proj = controller.compute_temperature_projection(20.0, -1.8)
         # 20.0 + (-1.8) * (10/60) = 20.0 - 0.3 = 19.7
         assert proj == pytest.approx(19.7, abs=0.01)
 
     def test_projection_clamp_maximum(self, controller):
-        """Extreme positive slope is clamped to +2°C."""
+        """Extreme positive slope is clamped to +1°C."""
         proj = controller.compute_temperature_projection(20.0, 30.0)
-        # Raw: 20.0 + 30 * 0.1667 = 25.0 → clamped to 22.0
-        assert proj == 22.0
+        # Raw: 20.0 + 30 * 0.1667 = 25.0 → clamped to 21.0
+        assert proj == 21.0
 
     def test_projection_clamp_minimum(self, controller):
-        """Extreme negative slope is clamped to -2°C."""
+        """Extreme negative slope is clamped to -1°C."""
         proj = controller.compute_temperature_projection(20.0, -30.0)
-        # Raw: 20.0 - 5.0 = 15.0 → clamped to 18.0
-        assert proj == 18.0
+        # Raw: 20.0 - 5.0 = 15.0 → clamped to 19.0
+        assert proj == 19.0
 
 
 class TestPerModeLearningProfile:
@@ -362,9 +420,9 @@ class TestBackwardCompatibility:
         }
         restored = ThermalLearning.from_dict(old_data)
 
-        assert len(restored._slope_samples) == 2
+        assert len(restored.slope_samples) == 2
         # Each sample should now be a 4-tuple
-        for sample in restored._slope_samples:
+        for sample in restored.slope_samples:
             assert len(sample) == 4
             assert sample[3] == "unknown"
 
@@ -382,9 +440,9 @@ class TestBackwardCompatibility:
         }
         restored = ThermalLearning.from_dict(new_data)
 
-        assert len(restored._slope_samples) == 2
-        assert restored._slope_samples[0][3] == "heat"
-        assert restored._slope_samples[1][3] == "cool"
+        assert len(restored.slope_samples) == 2
+        assert restored.slope_samples[0][3] == "heat"
+        assert restored.slope_samples[1][3] == "cool"
 
     def test_round_trip_preserves_hvac_mode(self):
         """to_dict → from_dict preserves the 4-tuple format."""
@@ -395,6 +453,6 @@ class TestBackwardCompatibility:
         data = learning.to_dict()
         restored = ThermalLearning.from_dict(data)
 
-        for original, restored_s in zip(learning._slope_samples, restored._slope_samples):
+        for original, restored_s in zip(learning.slope_samples, restored.slope_samples):
             assert len(restored_s) == 4
             assert original[3] == restored_s[3]  # hvac_mode preserved

@@ -45,7 +45,7 @@ class TestSmartFanControllerCool:
         already overshoot target by more than deadband.  Use a strong slope and
         a current_temp that is already very close to (or past) target.
         """
-        controller._previous_slope = -0.3
+        controller.previous_slope = -0.3
 
         result = controller.calculate_decision(
             current_temp=20.05, target_temp=20.0, vtherm_slope=-3.0, hvac_mode="cool", current_fan="high"  # Very strong cooling → proj = 20.05 - 0.5 = 19.55
@@ -56,7 +56,7 @@ class TestSmartFanControllerCool:
     def test_recovery_relance(self, controller):
         """Test Scenario C: Error persists (too warm) and cooling is stagnant."""
         # Setup: Last slope was 0.0, current is 0.0 (no progress)
-        controller._previous_slope = 0.0
+        controller.previous_slope = 0.0
 
         result = controller.calculate_decision(
             current_temp=20.4, # Error 0.4 > soft_error
@@ -96,16 +96,16 @@ class TestSmartFanControllerCool:
         """Test the snapshot mechanism in cool mode."""
         # 1. First change sets the snapshot
         result = controller.calculate_decision(21.0, 20.0, -0.5, "cool", "low")
-        first_snapshot = controller._previous_slope
+        first_snapshot = controller.previous_slope
         assert first_snapshot == -0.5
 
         # 2. Minor change (0.05) should NOT update snapshot
         controller.calculate_decision(20.9, 20.0, -0.55, "cool", result.get("fan_mode"))
-        assert controller._previous_slope == first_snapshot
+        assert controller.previous_slope == first_snapshot
 
         # 3. Significant change (0.2) SHOULD update snapshot
         controller.calculate_decision(20.8, 20.0, -0.75, "cool", result.get("fan_mode"))
-        assert controller._previous_slope == -0.75
+        assert controller.previous_slope == -0.75
 
     def test_stable_above_target_with_custom_deadband(self):
         """Test issue: stable temperature above target should still cool to reach setpoint.
@@ -125,8 +125,8 @@ class TestSmartFanControllerCool:
         )
 
         # Simulate stable temperature above target
-        controller._previous_slope = 0.01
-        controller._last_change_time = controller._now - (20 * 60)  # 20 minutes ago
+        controller.previous_slope = 0.01
+        controller.last_change_time = controller.now - (20 * 60)  # 20 minutes ago
 
         result = controller.calculate_decision(
             current_temp=20.2,
@@ -138,3 +138,40 @@ class TestSmartFanControllerCool:
 
         # System should increase fan to reach target
         assert result["fan_mode"] == "medium", f"Expected fan increase, got {result['fan_mode']} with reason: {result['reason']}"
+
+    def test_setpoint_drop_night_mode(self, controller):
+        """Test Scenario A-bis: Target rises significantly → immediate min fan.
+
+        Simulates night mode where cooling setpoint rises from 22°C to 25°C while
+        room is at 23°C. Error = 23 - 25 = -2.0 < THRESHOLD_TARGET_DROP (-1.0).
+        Forced changes bypass step-down protection. If temperature then rises
+        too fast, Emergency (Zone A) will react immediately.
+        """
+        result = controller.calculate_decision(current_temp=23.0, target_temp=25.0, vtherm_slope=-0.5, hvac_mode="cool", current_fan="turbo")
+        assert result["fan_mode"] == "low"
+        assert "Setpoint drop" in result["reason"]
+
+    def test_comfort_stable_no_action(self, controller):
+        """Test Scenario F: Temperature at target, slope stable → no change."""
+        controller.previous_slope = -0.05
+
+        result = controller.calculate_decision(current_temp=20.0, target_temp=20.0, vtherm_slope=-0.05, hvac_mode="cool", current_fan="medium")
+        assert result["fan_mode"] == "medium"
+        assert "Comfort: Stable" in result["reason"]
+
+    def test_stable_away_reaching_setpoint(self):
+        """Test Zone D: Stable but away from target in ESTABLISHED phase → increase fan."""
+        controller = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
+        # Established phase: 20 min since last change
+        controller.last_change_time = controller.now - (20 * 60)
+        controller.previous_slope = 0.0
+
+        result = controller.calculate_decision(
+            current_temp=20.1,  # error = 0.1 (in zone D: 0 < 0.1 < soft_error)
+            target_temp=20.0,
+            vtherm_slope=0.0,  # no drift, no favorable slope
+            hvac_mode="cool",
+            current_fan="low",
+        )
+        assert result["fan_mode"] == "medium"
+        assert "Stable away from target" in result["reason"]

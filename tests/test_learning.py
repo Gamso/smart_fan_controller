@@ -1,6 +1,8 @@
 """Tests for ThermalLearning auto-calibration."""
 import pytest
-from custom_components.smart_fan_controller.controller import ThermalLearning
+from unittest.mock import patch
+from custom_components.smart_fan_controller.controller import SmartFanController, ThermalLearning
+from custom_components.smart_fan_controller.const import MIN_LIMIT_TIMEOUT
 
 
 class TestThermalLearning:
@@ -47,7 +49,6 @@ class TestThermalLearning:
         optimal = learning.compute_optimal_parameters()
 
         # With median=4 and MIN_LIMIT_TIMEOUT=5, optimal should be clamped to 5
-        from custom_components.smart_fan_controller.const import MIN_LIMIT_TIMEOUT
 
         assert optimal["limit_timeout"] == max(MIN_LIMIT_TIMEOUT, 4)
 
@@ -87,9 +88,6 @@ class TestThermalLearning:
 
     def test_response_time_validation_rejects_unreasonable_values(self):
         """Test that very short (<2 min) or very long (>60 min) response times are filtered."""
-        from unittest.mock import patch
-        from custom_components.smart_fan_controller.controller import SmartFanController
-
         controller = SmartFanController(
             fan_modes=["low", "medium", "high"],
             deadband=0.2,
@@ -107,26 +105,26 @@ class TestThermalLearning:
 
         # Test 1: Response time of 1 minute (too short, should be filtered)
         with patch('time.time', return_value=base_time):
-            controller._now = base_time
+            controller.now = base_time
             controller.save_states("medium", "low", 0.5, 0.5, False)  # Fan changes
             controller.confirm_fan_change()  # Confirm: sets _last_change_time = base_time
 
         events_before = len(controller.learning.response_events)
         with patch('time.time', return_value=base_time + 60):  # +1 minute
-            controller._now = base_time + 60
+            controller.now = base_time + 60
             controller.save_states("medium", "medium", 0.3, 0.3, True)  # Slope changes
         events_after = len(controller.learning.response_events)
         assert events_after == events_before, "1-minute response should be filtered out"
 
         # Test 2: Response time of 10 minutes (valid, should be recorded)
         with patch('time.time', return_value=base_time + 1000):
-            controller._now = base_time + 1000
+            controller.now = base_time + 1000
             controller.save_states("high", "medium", 0.6, 0.6, False)  # Fan changes
             controller.confirm_fan_change()  # Confirm: sets _last_change_time = base_time + 1000
 
         events_before = len(controller.learning.response_events)
         with patch('time.time', return_value=base_time + 1000 + 600):  # +10 minutes
-            controller._now = base_time + 1000 + 600
+            controller.now = base_time + 1000 + 600
             controller.save_states("high", "high", 0.4, 0.4, True)  # Slope changes
         events_after = len(controller.learning.response_events)
         assert events_after == events_before + 1, "10-minute response should be recorded"
@@ -134,13 +132,13 @@ class TestThermalLearning:
 
         # Test 3: Response time of 65 minutes (too long, should be filtered)
         with patch('time.time', return_value=base_time + 5000):
-            controller._now = base_time + 5000
+            controller.now = base_time + 5000
             controller.save_states("low", "high", 0.7, 0.7, False)  # Fan changes
             controller.confirm_fan_change()  # Confirm: sets _last_change_time = base_time + 5000
 
         events_before = len(controller.learning.response_events)
         with patch('time.time', return_value=base_time + 5000 + 3900):  # +65 minutes
-            controller._now = base_time + 5000 + 3900
+            controller.now = base_time + 5000 + 3900
             controller.save_states("low", "low", 0.2, 0.2, True)  # Slope changes
         events_after = len(controller.learning.response_events)
         assert events_after == events_before, "65-minute response should be filtered out"

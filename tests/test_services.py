@@ -1,7 +1,9 @@
 """Tests for Smart Fan Controller HA services (apply_learned_settings, reset_learning)."""
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from custom_components.smart_fan_controller import _apply_optimal_parameters
 from custom_components.smart_fan_controller.controller import SmartFanController
 from custom_components.smart_fan_controller.thermal_learning import ThermalLearning
 from custom_components.smart_fan_controller.const import (
@@ -58,13 +60,12 @@ class TestApplyLearnedSettings:
 
         hass = MagicMock()
 
-        # Inline the service logic (mirrors __init__.py apply_learned_settings)
-        with patch("custom_components.smart_fan_controller._apply_optimal_parameters", side_effect=fake_apply):
-            from custom_components.smart_fan_controller import _apply_optimal_parameters
-            if controller.learning.is_ready():
-                optimal = controller.learning.compute_optimal_parameters()
-                if optimal:
-                    await _apply_optimal_parameters(hass, entry, optimal)
+        # Inline the service logic (mirrors __init__.py apply_learned_settings).
+        # Call fake_apply directly: the real _apply_optimal_parameters is tested separately.
+        if controller.learning.is_ready():
+            optimal = controller.learning.compute_optimal_parameters()
+            if optimal:
+                await fake_apply(hass, entry, optimal)
 
         assert "deadband" in applied_data
         assert "soft_error" in applied_data
@@ -94,9 +95,6 @@ class TestApplyLearnedSettings:
 
     def test_apply_optimal_sets_learning_auto_applied_flag(self):
         """_apply_optimal_parameters must set learning_auto_applied=True in entry.data."""
-        from custom_components.smart_fan_controller import _apply_optimal_parameters
-        import asyncio
-
         hass = MagicMock()
         hass.config_entries = MagicMock()
         hass.config_entries.async_update_entry = MagicMock()
@@ -140,12 +138,12 @@ class TestResetLearning:
         learning = _make_ready_learning()
         # Prime the cache
         _ = learning.compute_optimal_parameters()
-        assert learning._optimal_cache is not None
+        assert learning.optimal_cache is not None
 
         learning.reset()
 
         # Cache must be gone and compute must return empty
-        assert learning._optimal_cache is None
+        assert learning.optimal_cache is None
         assert learning.compute_optimal_parameters() == {}
 
     def test_reset_then_relearn(self):
