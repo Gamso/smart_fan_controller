@@ -22,7 +22,7 @@
                     "hard_error": "Plage : 0.0-10.0 °C. Défaut : 0.6 °C.",
                     "limit_timeout": "Plage : 10-120 min. Défaut : 15 min.",
                     "learning_enabled": "Activer l'apprentissage automatique des paramètres optimaux. Quand prêt, les paramètres seront appliqués automatiquement.",
-                    "data_collection": "Écrit une ligne CSV par cycle de contrôle dans /config/smart_fan_controller_data_*.csv. Utile pour investiguer les problèmes et améliorer l'algorithme pendant la phase bêta."
+                    "data_collection": "Enregistre une ligne CSV toutes les 2 minutes dans le dossier de configuration Home Assistant, à côté de configuration.yaml : smart_fan_controller_data_XXXXXXXX.csv (max 10 Mo, rotation automatique). Utile pour reproduire le comportement de l'algorithme et identifier des améliorations pendant la phase bêta."
                 },
                 "error": {
                     "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",
@@ -54,7 +54,7 @@
                     "hard_error": "Plage : 0.0-10.0 °C. Défaut : 0.6 °C.",
                     "limit_timeout": "Plage : 10-120 min. Défaut : 15 min.",
                     "learning_enabled": "Activer l'apprentissage automatique des paramètres optimaux. Quand prêt, les paramètres seront appliqués automatiquement.",
-                    "data_collection": "Écrit une ligne CSV par cycle de contrôle dans /config/smart_fan_controller_data_*.csv. Utile pour investiguer les problèmes et améliorer l'algorithme pendant la phase bêta."
+                    "data_collection": "Enregistre une ligne CSV toutes les 2 minutes dans le dossier de configuration Home Assistant, à côté de configuration.yaml : smart_fan_controller_data_XXXXXXXX.csv (max 10 Mo, rotation automatique). Utile pour reproduire le comportement de l'algorithme et identifier des améliorations pendant la phase bêta."
                 },
                 "error": {
                     "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",

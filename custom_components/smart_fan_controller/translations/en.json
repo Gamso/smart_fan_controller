@@ -22,7 +22,7 @@
                     "hard_error": "Range: 0.0-10.0 °C. Default: 0.6 °C.",
                     "limit_timeout": "Range: 10-120 min. Default: 15 min.",
                     "learning_enabled": "Enable automatic learning of optimal parameters. When ready, settings will be applied automatically.",
-                    "data_collection": "Write one CSV row per control cycle to /config/smart_fan_controller_data_*.csv. Useful for investigating issues and improving the algorithm during the beta phase."
+                    "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase."
                 },
                 "error": {
                     "invalid_climate_entity": "This entity must come from Versatile Thermostat.",
@@ -54,7 +54,7 @@
                     "hard_error": "Range: 0.0-10.0 °C. Default: 0.6 °C.",
                     "limit_timeout": "Range: 10-120 min. Default: 15 min.",
                     "learning_enabled": "Enable automatic learning of optimal parameters. When ready, settings will be applied automatically.",
-                    "data_collection": "Write one CSV row per control cycle to /config/smart_fan_controller_data_*.csv. Useful for investigating issues and improving the algorithm during the beta phase."
+                    "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase."
                 },
                 "error": {
                     "invalid_climate_entity": "This entity must come from Versatile Thermostat.",
