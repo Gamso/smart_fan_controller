@@ -11,16 +11,18 @@
                     "soft_error": "Seuil d'erreur faible (°C)",
                     "hard_error": "Seuil d'erreur élevée (°C)",
                     "limit_timeout": "Intervalle avant de forcer un changement (minutes)",
-                    "learning_enabled": "Activer l'apprentissage automatique"
+                    "learning_enabled": "Activer l'apprentissage automatique",
+                    "data_collection": "Activer la collecte de données (bêta)"
                 },
                 "data_description": {
                     "climate_entity": "Doit provenir de Versatile Thermostat.",
-                    "deadband": "Plage : 0.0-5.0 °C. Défaut : 0.2 °C.",
-                    "min_interval": "Plage : 1-60 min. Défaut : 10 min.",
-                    "soft_error": "Plage : 0.0-10.0 °C. Défaut : 0.3 °C.",
-                    "hard_error": "Plage : 0.0-10.0 °C. Défaut : 0.6 °C.",
-                    "limit_timeout": "Plage : 10-120 min. Défaut : 15 min.",
-                    "learning_enabled": "Activer l'apprentissage automatique des paramètres optimaux. Quand prêt, les paramètres seront appliqués automatiquement."
+                    "deadband": "Plage : 0.0-5.0 °C. Défaut : 0.2 °C.",
+                    "min_interval": "Plage : 1-60 min. Défaut : 10 min.",
+                    "soft_error": "Plage : 0.0-10.0 °C. Défaut : 0.3 °C.",
+                    "hard_error": "Plage : 0.0-10.0 °C. Défaut : 0.6 °C.",
+                    "limit_timeout": "Plage : 10-120 min. Défaut : 15 min.",
+                    "learning_enabled": "Activer l'apprentissage automatique des paramètres optimaux. Quand prêt, les paramètres seront appliqués automatiquement.",
+                    "data_collection": "Écrit une ligne CSV par cycle de contrôle dans /config/smart_fan_controller_data_*.csv. Utile pour investiguer les problèmes et améliorer l'algorithme pendant la phase bêta."
                 },
                 "error": {
                     "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",
@@ -41,16 +43,18 @@
                     "soft_error": "Seuil d'erreur faible (°C)",
                     "hard_error": "Seuil d'erreur élevée (°C)",
                     "limit_timeout": "Intervalle avant de forcer un changement (minutes)",
-                    "learning_enabled": "Activer l'apprentissage automatique"
+                    "learning_enabled": "Activer l'apprentissage automatique",
+                    "data_collection": "Activer la collecte de données (bêta)"
                 },
                 "data_description": {
                     "climate_entity": "Doit provenir de Versatile Thermostat.",
-                    "deadband": "Plage : 0.0-5.0 °C. Défaut : 0.2 °C.",
-                    "min_interval": "Plage : 1-60 min. Défaut : 10 min.",
-                    "soft_error": "Plage : 0.0-10.0 °C. Défaut : 0.3 °C.",
-                    "hard_error": "Plage : 0.0-10.0 °C. Défaut : 0.6 °C.",
-                    "limit_timeout": "Plage : 10-120 min. Défaut : 15 min.",
-                    "learning_enabled": "Activer l'apprentissage automatique des paramètres optimaux. Quand prêt, les paramètres seront appliqués automatiquement."
+                    "deadband": "Plage : 0.0-5.0 °C. Défaut : 0.2 °C.",
+                    "min_interval": "Plage : 1-60 min. Défaut : 10 min.",
+                    "soft_error": "Plage : 0.0-10.0 °C. Défaut : 0.3 °C.",
+                    "hard_error": "Plage : 0.0-10.0 °C. Défaut : 0.6 °C.",
+                    "limit_timeout": "Plage : 10-120 min. Défaut : 15 min.",
+                    "learning_enabled": "Activer l'apprentissage automatique des paramètres optimaux. Quand prêt, les paramètres seront appliqués automatiquement.",
+                    "data_collection": "Écrit une ligne CSV par cycle de contrôle dans /config/smart_fan_controller_data_*.csv. Utile pour investiguer les problèmes et améliorer l'algorithme pendant la phase bêta."
                 },
                 "error": {
                     "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",

@@ -10,6 +10,7 @@ CONF_SOFT_ERROR = "soft_error"
 CONF_HARD_ERROR = "hard_error"
 CONF_LIMIT_TIMEOUT = "limit_timeout"
 CONF_LEARNING_ENABLED = "learning_enabled"
+CONF_DATA_COLLECTION = "data_collection"
 
 # Default values
 DEFAULT_DEADBAND = 0.2
@@ -18,6 +19,7 @@ DEFAULT_SOFT_ERROR = 0.3
 DEFAULT_HARD_ERROR = 0.6
 DEFAULT_LIMIT_TIMEOUT = 15
 DEFAULT_LEARNING_ENABLED = True
+DEFAULT_DATA_COLLECTION = True
 
 DELTA_TIME_CONTROL_LOOP = 2  # minutes between each control loop execution
 

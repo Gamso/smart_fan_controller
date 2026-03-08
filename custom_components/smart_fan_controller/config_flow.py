@@ -16,12 +16,14 @@ from .const import (
     CONF_HARD_ERROR,
     CONF_LIMIT_TIMEOUT,
     CONF_LEARNING_ENABLED,
+    CONF_DATA_COLLECTION,
     DEFAULT_DEADBAND,
     DEFAULT_MIN_INTERVAL,
     DEFAULT_SOFT_ERROR,
     DEFAULT_HARD_ERROR,
     DEFAULT_LIMIT_TIMEOUT,
     DEFAULT_LEARNING_ENABLED,
+    DEFAULT_DATA_COLLECTION,
 )
 
 
@@ -114,6 +116,7 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     selector.NumberSelectorConfig(min=10, max=120, step=5, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="min")
                 ),
                 vol.Optional(CONF_LEARNING_ENABLED, default=DEFAULT_LEARNING_ENABLED): selector.BooleanSelector(),
+                vol.Optional(CONF_DATA_COLLECTION, default=DEFAULT_DATA_COLLECTION): selector.BooleanSelector(),
             }
         )
 
@@ -187,6 +190,7 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
                     selector.NumberSelectorConfig(min=10, max=120, step=5, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="min")
                 ),
                 vol.Optional(CONF_LEARNING_ENABLED, default=current_data.get(CONF_LEARNING_ENABLED, DEFAULT_LEARNING_ENABLED)): selector.BooleanSelector(),
+                vol.Optional(CONF_DATA_COLLECTION, default=current_data.get(CONF_DATA_COLLECTION, DEFAULT_DATA_COLLECTION)): selector.BooleanSelector(),
             }
         )
 

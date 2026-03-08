@@ -16,18 +16,21 @@ from .const import (
     CONF_HARD_ERROR,
     CONF_LIMIT_TIMEOUT,
     CONF_LEARNING_ENABLED,
+    CONF_DATA_COLLECTION,
     DEFAULT_DEADBAND,
     DEFAULT_MIN_INTERVAL,
     DEFAULT_SOFT_ERROR,
     DEFAULT_HARD_ERROR,
     DEFAULT_LIMIT_TIMEOUT,
     DEFAULT_LEARNING_ENABLED,
+    DEFAULT_DATA_COLLECTION,
     DELTA_TIME_CONTROL_LOOP,
     STORAGE_VERSION,
     STORAGE_KEY,
     LEARNING_DATA_SAVE_INTERVAL,
 )
 from .controller import SmartFanController
+from .data_collection import DataCollector
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.SENSOR, Platform.SWITCH]
@@ -90,6 +93,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         learning_data=learning_data,
         learning_enabled=conf.get(CONF_LEARNING_ENABLED, DEFAULT_LEARNING_ENABLED),
     )
+
+    # Instantiate the data collector (creates the CSV file immediately if enabled)
+    data_collection_enabled = conf.get(CONF_DATA_COLLECTION, DEFAULT_DATA_COLLECTION)
+    collector: DataCollector | None = (
+        DataCollector(hass.config.config_dir, entry.entry_id)
+        if data_collection_enabled
+        else None
+    )
+    if collector:
+        _LOGGER.info("DataCollector enabled – writing to %s", collector.path)
 
     # 3. Store data for platforms and forward setup
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
@@ -164,6 +177,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             current_fan,
             is_window_open,
         )
+
+        # Persist one CSV row for offline analysis (beta instrumentation)
+        if collector:
+            effective_slope = -float(vtherm_slope) if str(hvac_mode) == "cool" else float(vtherm_slope)
+            minutes_since = decision.get("minutes_since_last_change", 0.0)
+            collector.record(
+                hvac_mode=str(hvac_mode),
+                current_temp=float(current_temp),
+                target_temp=float(target_temp),
+                vtherm_slope=float(vtherm_slope),
+                is_window_open=is_window_open,
+                decision={**decision, "current_fan": current_fan},
+                phase=controller.detect_phase(minutes_since),
+                effective_slope=effective_slope,
+                effective_timeout=controller.get_effective_timeout(),
+                force=decision.get("reason", "").startswith(("Emergency", "Setpoint drop")),
+                learning_ready=controller.learning_enabled and controller.learning.is_ready(),
+                dead_time=controller.learning.get_dead_time() if controller.learning_enabled else 0.0,
+            )
 
         # Update all sensors stored in the list
         sensors = hass.data[DOMAIN][entry.entry_id].get("sensors")
