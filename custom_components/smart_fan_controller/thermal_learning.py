@@ -2,7 +2,7 @@ import logging
 import time
 import statistics
 
-from .const import MIN_SAMPLES_LEARNING, MIN_LIMIT_TIMEOUT
+from .const import MIN_SAMPLES_LEARNING, MIN_LIMIT_TIMEOUT, MIN_MODE_PROFILE_SAMPLES, DEFAULT_DEAD_TIME
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -12,7 +12,7 @@ class ThermalLearning:
 
     def __init__(self):
         # Data collection with sliding window
-        self._slope_samples = []  # (timestamp, fan_mode, slope)
+        self._slope_samples = []  # (timestamp, fan_mode, slope, hvac_mode)
         self._response_events = []  # (timestamp, response_time_minutes) - thermal response from fan change to slope change
         self._learning_window_hours = 168  # 7 days sliding window
         self._min_samples = MIN_SAMPLES_LEARNING  # Minimum samples for initial readiness (48-72h typical activity)
@@ -39,35 +39,38 @@ class ThermalLearning:
         self._optimal_cache = None
         _LOGGER.info("Learning: reset requested; data cleared")
 
-    def add_slope_sample(self, fan_mode: str, slope: float, temperature_error: float = 0):
-        """Record slope only if in normal operating range (not setpoint changes)."""
-        # Ignore data during setpoint drop/night mode (error < -1°C)
-        # Accept positive errors and small negative errors (normal operation)
+    def add_slope_sample(self, fan_mode: str, slope: float, temperature_error: float = 0, hvac_mode: str = "unknown", is_window_open: bool = False):
+        """Record slope only if in normal operating range.
+
+        Samples are filtered out when:
+        - Setpoint drop / night mode (error < -1°C)
+        - Window is open (external disturbance, not representative)
+        - Slope is stagnant (no useful data)
+        """
         if temperature_error < -1.0:
             _LOGGER.debug("Learning: Skipped sample (setpoint drop, err=%.2f)", temperature_error)
-            return  # Skip: Setpoint change, night, or emergency conditions
+            return
 
-        # Ignore stagnation (no useful data)
+        if is_window_open:
+            _LOGGER.debug("Learning: Skipped sample (window open)")
+            return
+
         if abs(slope) < 0.15:
             _LOGGER.debug("Learning: Skipped sample (stagnation, slope=%.2f)", slope)
             return
 
-        # Only collect meaningful transitions
-        self._slope_samples.append((time.time(), fan_mode, slope))
-        _LOGGER.debug("Learning: Collected slope sample #%d (fan=%s, slope=%.2f, err=%.2f)", len(self._slope_samples), fan_mode, slope, temperature_error)
+        self._slope_samples.append((time.time(), fan_mode, slope, hvac_mode))
+        _LOGGER.debug("Learning: Collected slope sample #%d (fan=%s, slope=%.2f, err=%.2f, hvac=%s)", len(self._slope_samples), fan_mode, slope, temperature_error, hvac_mode)
 
-        # Invalidate cached optimal parameters
         self._optimal_cache = None
 
-        # Update incremental statistics using Welford's algorithm
         self._update_slope_stats(abs(slope))
 
         # Cleanup: keep only data within sliding window (7 days)
         cutoff_time = time.time() - (self._learning_window_hours * 3600)
         before = len(self._slope_samples)
-        self._slope_samples = [(ts, mode, sl) for ts, mode, sl in self._slope_samples if ts > cutoff_time]
+        self._slope_samples = [s for s in self._slope_samples if s[0] > cutoff_time]
 
-        # If some points were dropped → rebuild stats
         if len(self._slope_samples) < before:
             self.recompute_slope_stats()
 
@@ -139,9 +142,29 @@ class ThermalLearning:
         return self._min_samples
 
     @property
+    def slope_samples(self) -> list:
+        """Return the list of slope samples."""
+        return self._slope_samples
+
+    @slope_samples.setter
+    def slope_samples(self, value: list) -> None:
+        self._slope_samples = value
+        self._optimal_cache = None
+
+    @property
     def response_events(self) -> list:
         """Return the list of response events."""
         return self._response_events
+
+    @response_events.setter
+    def response_events(self, value: list) -> None:
+        self._response_events = value
+        self._optimal_cache = None
+
+    @property
+    def optimal_cache(self) -> dict | None:
+        """Return the cached optimal parameters, or None if not yet computed."""
+        return self._optimal_cache
 
     def is_ready(self) -> bool:
         """Check if enough data has been collected."""
@@ -149,6 +172,31 @@ class ThermalLearning:
             self._ready_once = True
             _LOGGER.info("Learning: Initial readiness reached with %d samples", self._min_samples)
         return self._ready_once
+
+    def get_dead_time(self) -> float:
+        """Return the learned dead time (median response time) in minutes.
+
+        Falls back to DEFAULT_DEAD_TIME when no response events have been recorded yet.
+        """
+        response_times = [t for _, t in self._response_events if t > 0]
+        if not response_times:
+            return DEFAULT_DEAD_TIME
+        return statistics.median(response_times)
+
+    def get_mode_effective_slope(self, fan_mode: str, hvac_mode: str) -> float | None:
+        """Return the average effective slope for a fan mode in a given HVAC mode.
+
+        Effective slope is positive when moving towards target:
+        - In heating: positive raw slope is good
+        - In cooling: negative raw slope is good (inverted)
+
+        Returns None if fewer than MIN_MODE_PROFILE_SAMPLES are available.
+        """
+        matching_slopes = [sl for (_, fm, sl, hm) in self._slope_samples if fm == fan_mode and hm == hvac_mode]
+        if len(matching_slopes) < MIN_MODE_PROFILE_SAMPLES:
+            return None
+        avg = statistics.mean(matching_slopes)
+        return -avg if hvac_mode == "cool" else avg
 
     def compute_optimal_parameters(self) -> dict:
         """Calculate optimal parameters from learned data.
@@ -233,8 +281,8 @@ class ThermalLearning:
         self._slope_max = 0.0
         self._optimal_cache = None  # Invalidate cache when stats are rebuilt
 
-        for _, _, sl in self._slope_samples:
-            self._update_slope_stats(abs(sl))
+        for sample in self._slope_samples:
+            self._update_slope_stats(abs(sample[2]))
 
         _LOGGER.debug(
             "Learning: Recomputed stats from window (count=%d, mean=%.3f, max=%.3f)",
@@ -245,10 +293,22 @@ class ThermalLearning:
 
     @classmethod
     def from_dict(cls, data: dict):
-        """Restore from storage."""
+        """Restore from storage.
+
+        Handles backward compatibility: old 3-tuple samples (timestamp, fan_mode, slope)
+        are migrated to 4-tuples by appending hvac_mode="unknown".
+        """
         instance = cls()
-        # Restore data and clean up old entries outside window
-        instance._slope_samples = data.get("slope_samples", [])
+
+        # Migrate slope_samples: support both 3-tuple (old) and 4-tuple (new)
+        raw_samples = data.get("slope_samples", [])
+        instance._slope_samples = []
+        for sample in raw_samples:
+            if len(sample) == 3:
+                instance._slope_samples.append((sample[0], sample[1], sample[2], "unknown"))
+            else:
+                instance._slope_samples.append(tuple(sample))
+
         instance._response_events = data.get("response_events", [])
 
         # Restore incremental statistics
@@ -259,7 +319,7 @@ class ThermalLearning:
 
         # Apply sliding window cleanup on restore
         cutoff_time = time.time() - (instance._learning_window_hours * 3600)
-        instance._slope_samples = [(ts, mode, sl) for ts, mode, sl in instance._slope_samples if ts > cutoff_time]
+        instance._slope_samples = [s for s in instance._slope_samples if s[0] > cutoff_time]
         instance._response_events = [(ts, t) for ts, t in instance._response_events if ts > cutoff_time]
 
         # Rebuild stats from cleaned window
@@ -269,7 +329,6 @@ class ThermalLearning:
         if instance._slope_count >= instance._min_samples:
             instance._ready_once = True
 
-        # Start uncached – will be computed on first access
         instance._optimal_cache = None
 
         return instance

@@ -8,6 +8,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 
 from custom_components.smart_fan_controller.const import DOMAIN
 from custom_components.smart_fan_controller.controller import SmartFanController
+from custom_components.smart_fan_controller.thermal_learning import ThermalLearning
 from custom_components.smart_fan_controller.const import (
     DEFAULT_DEADBAND,
     DEFAULT_MIN_INTERVAL,
@@ -35,7 +36,7 @@ class TestSmartFanControllerSystem:
     def test_min_interval_protection(self, controller):
         """Test that speed doesn't change before min_interval unless forced."""
         start_time = 60
-        controller._last_change_time = 60
+        controller.last_change_time = 60
 
         # 1. First change at T=0
         with patch('time.time', return_value=start_time):
@@ -57,7 +58,7 @@ class TestSmartFanControllerSystem:
     def test_emergency_overrides_interval(self, controller):
         """Test that Emergency bypasses the min_interval timer."""
         start_time = 60
-        controller._last_change_time = 60
+        controller.last_change_time = 60
 
         # 1. First change at T=0
         with patch('time.time', return_value=start_time):
@@ -70,6 +71,8 @@ class TestSmartFanControllerSystem:
         # Should bypass timer because it's an Emergency
         assert result["fan_mode"] == "turbo"
         assert "Emergency" in result["reason"]
+
+    def test_index_boundaries_low(self, controller):
         """Ensure no crash when trying to go below the first fan mode."""
         # Case: Overheating in heat mode while already at 'low'
         result = controller.calculate_decision(21.0, 20.0, 0.1, "heat", "low")
@@ -89,7 +92,7 @@ class TestSmartFanControllerSystem:
         """Test switching from Heat to Cool mode maintains logic integrity."""
         # 1. Operating in Heat: error=0.5 > soft_error, interval expired → Strong recovery
         result = controller.calculate_decision(19.5, 20.0, 0.2, "heat", "low")
-        assert controller._last_hvac_mode == "heat"
+        assert controller.last_hvac_mode == "heat"
         assert "Strong recovery: Drop predicted " in result["reason"]
         assert result["fan_mode"] == "medium"
 
@@ -97,7 +100,7 @@ class TestSmartFanControllerSystem:
         # _thermal_acceleration so no spurious slope_change is triggered.
         # With interval still expired and error=-0.5 < -deadband, Zone E fires.
         result = controller.calculate_decision(19.5, 20.0, 0.2, "cool", "medium")
-        assert controller._last_hvac_mode == "cool"
+        assert controller.last_hvac_mode == "cool"
         # _thermal_acceleration was reset; slope_change=False; interval_expired=True
         # Zone E: current_temperature_error=-0.5 < -deadband → reduce speed
         assert "Over-target: Reducing speed" in result["reason"]
@@ -122,25 +125,23 @@ class TestSmartFanControllerSystem:
         assert result["fan_mode"] == "low"
         assert "fan_only" in result["reason"]
 
-    def test_thermal_acceleration_reset_on_hvac_switch(self, controller):
-        """Test that _thermal_acceleration is reset when hvac_mode changes."""
-        # Build up some thermal acceleration in heat mode
-        controller._previous_slope = 0.1
-        controller._thermal_acceleration = 5.0  # Artificially high
+    def test_hvac_mode_switch_resets_slope(self, controller):
+        """Test that _previous_slope is reset when hvac_mode changes."""
+        controller.previous_slope = 0.1
         controller.calculate_decision(19.5, 20.0, 0.3, "heat", "low")
-        # Switch to cool: acceleration must be zeroed
+        # Switch to cool: previous_slope must be reset to the current slope
         controller.calculate_decision(19.5, 20.0, 0.3, "cool", "low")
-        assert controller._thermal_acceleration == 0.0
+        assert controller.previous_slope == 0.3
 
     def test_learning_records_current_fan_not_decided_fan(self, controller):
         """Verify that the slope sample is attributed to the ACTIVE fan mode, not the decided one."""
-        controller._last_change_time = 0  # interval expired immediately
+        controller.last_change_time = 0  # interval expired immediately
         # current_fan='low', error=0.5 (soft zone), slope=-0.5 (falling, not improving) → boosts to 'medium'
         result = controller.calculate_decision(19.5, 20.0, -0.5, "heat", "low")
         assert result["fan_mode"] == "medium"  # decision changed from low to medium
         # But the learning sample must carry 'low' (the mode that produced the measured slope)
-        assert len(controller.learning._slope_samples) > 0
-        sample = controller.learning._slope_samples[-1]
+        assert len(controller.learning.slope_samples) > 0
+        sample = controller.learning.slope_samples[-1]
         assert sample[1] == "low", f"Expected sample fan_mode='low' but got '{sample[1]}'"
 
     def test_auto_apply_flag_in_entry_data_prevents_second_apply(self):
@@ -168,14 +169,21 @@ class TestSmartFanControllerSystem:
 
     def test_step_down_protection(self, controller):
         """
-        Scenario: Drastic change requires dropping from Turbo to Low.
-        Goal: Validate that the controller only steps down one level at a time
-        to protect the motor and maintain acoustic comfort.
+        Scenario: Normal (non-forced) change wants to drop from Turbo to Low.
+        Goal: Validate step-down limit caps descent to one level at a time.
         """
-        # Current index is Turbo (3), proposed is Low (0).
-        # Even with force=True, it should only drop to High (2).
+        # Non-forced: step-down protection limits Turbo (3) -> High (2)
+        final_idx = controller.determine_final_index(current_index=3, new_index=0, minutes_since_change=35, force=False)
+        assert FAN_MODES[final_idx] == "high"
+
+    def test_forced_change_bypasses_step_down(self, controller):
+        """
+        Scenario: Forced change (emergency / setpoint drop) from Turbo to Low.
+        Goal: Forced changes bypass step-down protection entirely.
+        The emergency system (Zone A) handles subsequent rapid temperature changes.
+        """
         final_idx = controller.determine_final_index(current_index=3, new_index=0, minutes_since_change=35, force=True)
-        assert FAN_MODES[final_idx] == "high" # Turbo (3) -> High (2), pas Low (0)
+        assert FAN_MODES[final_idx] == "low"
 
     def test_startup_with_invalid_fan_mode(self, controller):
         """
@@ -189,20 +197,21 @@ class TestSmartFanControllerSystem:
 
     def test_projection_math(self, controller):
         """
-        Scenario: High thermal acceleration.
-        Goal: Verify the parabolic math: temp_proj = current + (v*t) + (0.5*a*t^2).
+        Scenario: Linear projection with clamp.
+        Goal: Verify the linear math: temp_proj = current + (v * 10/60), clamped.
         """
-        controller._previous_slope = 0.0 # Started stable
-        current_slope = 0.6              # Now rising at 0.6°C/h
+        controller.previous_slope = 0.0  # Started stable
+        current_slope = 0.6  # Now rising at 0.6°C/h
         proj = controller.compute_temperature_projection(20.0, current_slope)
-        assert proj == 20.225
+        # 20.0 + 0.6 * (10/60) = 20.0 + 0.1 = 20.1
+        assert proj == 20.1
 
     def _run_sequence_test(self, controller, sequence, initial_time=0.0, initial_slope=0.0, last_change_ago=None):
-        controller._last_change_time = initial_time
-        controller._previous_slope = initial_slope
+        controller.last_change_time = initial_time
+        controller.previous_slope = initial_slope
 
         if last_change_ago is not None:
-            controller._last_change_time = last_change_ago
+            controller.last_change_time = last_change_ago
 
         current_fan = sequence[0][4]
 
@@ -383,7 +392,7 @@ class TestSmartFanControllerSystem:
 
         # 5. Verification
         # If the listener worked, last_change_time should match our patched time
-        assert controller._last_change_time == test_time
+        assert controller.last_change_time == test_time
 
     def test_uninitialized_fan_modes_returns_sensor_data(self):
         """
@@ -458,3 +467,36 @@ class TestSmartFanControllerSystem:
         # Should now be able to make decisions
         assert result["fan_mode"] in ["low", "medium", "high"]
         assert "No fan modes defined" not in result["reason"]
+
+    def test_confirm_fan_change_updates_timestamp(self, controller):
+        """confirm_fan_change should set _last_change_time to the cycle's _now."""
+        controller.now = 5000.0
+        controller.confirm_fan_change()
+        assert controller.last_change_time == 5000.0
+
+    def test_record_manual_override_payload(self, controller):
+        """record_manual_override should return correct structure and update timestamp."""
+        result = controller.record_manual_override("high")
+        assert result["fan_mode"] == "high"
+        assert result["minutes_since_last_change"] == 0.0
+        assert "Manual Override" in result["reason"]
+        # Timestamp should be updated
+        assert controller.last_change_time > 0
+
+    def test_projection_zero_slope(self, controller):
+        """Zero slope should project same temperature."""
+        proj = controller.compute_temperature_projection(20.0, 0.0)
+        assert proj == 20.0
+
+    def test_learning_progress_tracks_sample_count(self):
+        """Learning progress should reflect sample count vs MIN_SAMPLES_LEARNING."""
+        learning = ThermalLearning()
+        assert learning.get_progress() == 0.0
+
+        for _ in range(120):
+            learning.add_slope_sample("medium", 0.3, 0.2)
+        assert learning.get_progress() == pytest.approx(50.0, abs=1.0)
+
+        for _ in range(120):
+            learning.add_slope_sample("medium", 0.3, 0.2)
+        assert learning.get_progress() == 100.0

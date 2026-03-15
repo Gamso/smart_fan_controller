@@ -3,9 +3,14 @@ import time
 from typing import Callable
 
 from .const import (
-    DELTA_TIME_CONTROL_LOOP,
     THRESHOLD_SLOPE,
     THRESHOLD_TARGET_DROP,
+    MAX_PROJECTION_DELTA,
+    DEFAULT_DEAD_TIME,
+    DEAD_TIME_SAFETY_FACTOR,
+    PHASE_DEAD_TIME,
+    PHASE_TRANSIENT,
+    PHASE_ESTABLISHED,
 )
 from .thermal_learning import ThermalLearning
 
@@ -44,7 +49,6 @@ class SmartFanController:
 
         # State variables
         self._previous_slope: float | None = None
-        self._thermal_acceleration: float = 0.0
         self._slope_at_last_change: float = 0.0
         self._now: float = time.time()
         self._last_change_time: float = self._now - (self._limit_timeout * 60)
@@ -69,26 +73,87 @@ class SmartFanController:
         self._fan_modes = modes
 
     @property
+    def previous_slope(self) -> float | None:
+        """Last recorded slope snapshot (set before each fan-speed change)."""
+        return self._previous_slope
+
+    @previous_slope.setter
+    def previous_slope(self, value: float | None) -> None:
+        self._previous_slope = value
+
+    @property
+    def last_change_time(self) -> float:
+        """Timestamp of the last confirmed fan-speed change."""
+        return self._last_change_time
+
+    @last_change_time.setter
+    def last_change_time(self, value: float) -> None:
+        self._last_change_time = value
+
+    @property
+    def now(self) -> float:
+        """Clock snapshot captured at the start of the last calculate_decision cycle."""
+        return self._now
+
+    @now.setter
+    def now(self, value: float) -> None:
+        self._now = value
+
+    @property
+    def last_hvac_mode(self) -> str | None:
+        """HVAC mode observed during the previous cycle."""
+        return self._last_hvac_mode
+
+    @property
+    def limit_timeout(self) -> int:
+        """Configured static limit timeout (minutes)."""
+        return self._limit_timeout
+
+    @property
     def _projected_error_threshold(self) -> float:
         """Calculate projected error threshold as midpoint between soft and hard error."""
         return (self._soft_error + self._hard_error) / 2
 
     def compute_temperature_projection(self, current_temp: float, vtherm_slope: float) -> float:
-        """Estimate temperature projection in 10 min"""
+        """Estimate temperature projection in 10 min using a linear model.
 
-        dt_hours = DELTA_TIME_CONTROL_LOOP / 60 # h
-        d_slope = vtherm_slope - self._previous_slope if self._previous_slope is not None else 0.0 # °C/h
-        a_inst = d_slope / dt_hours  # °C/h²
+        The VTherm slope is already smoothed over ~15-30 min (EMA). A second-order
+        (parabolic) term added negligible accuracy but amplified noise through a
+        double derivative of an already-filtered signal. A clamped linear projection
+        is simpler and more robust.
+        """
+        window_time = 10 / 60  # hours
+        temp_proj = current_temp + (vtherm_slope * window_time)
 
-        # Low-pass filter on acceleration
-        # Using 0.5/0.5 EMA to balance reactivity (VTherm already provides ~15-30min smoothing)
-        # This gives ~8 min integration window vs 20 min with 0.3/0.7
-        self._thermal_acceleration = (0.5 * a_inst) + (0.5 * self._thermal_acceleration) # °C/h
-
-        # Parabolic forecast (t = 10 min)
-        window_time = 10 /60 # h
-        temp_proj = current_temp + (vtherm_slope * window_time) + (0.5 * self._thermal_acceleration * (window_time**2))
+        # Clamp to physically reasonable range
+        temp_proj = max(current_temp - MAX_PROJECTION_DELTA, min(current_temp + MAX_PROJECTION_DELTA, temp_proj))
         return temp_proj
+
+    def get_effective_timeout(self) -> float:
+        """Return the adaptive timeout (minutes) based on learned dead time.
+
+        Uses the learned median response time × safety factor so the system
+        waits long enough for a fan change to materialize at the sensor.
+        Falls back to the configured limit_timeout when learning is not ready.
+        """
+        if self.learning_enabled and self.learning.is_ready():
+            learned_dead_time = self.learning.get_dead_time()
+            return max(self._min_interval, learned_dead_time * DEAD_TIME_SAFETY_FACTOR)
+        return self._limit_timeout
+
+    def detect_phase(self, minutes_since_change: float) -> str:
+        """Classify the current control phase relative to the last fan change.
+
+        - DEAD_TIME:    Too early for the sensor to see the effect of the change.
+        - TRANSIENT:    The sensor is starting to react but hasn't stabilized.
+        - ESTABLISHED:  The slope now reflects the current fan regime.
+        """
+        learned_dead_time = self.learning.get_dead_time() if self.learning_enabled and self.learning.is_ready() else DEFAULT_DEAD_TIME
+        if minutes_since_change < learned_dead_time:
+            return PHASE_DEAD_TIME
+        if minutes_since_change < learned_dead_time * DEAD_TIME_SAFETY_FACTOR:
+            return PHASE_TRANSIENT
+        return PHASE_ESTABLISHED
 
     def _apply_step_limit(self, current_index: int, new_index: int) -> int:
         """
@@ -102,7 +167,9 @@ class SmartFanController:
     def determine_final_index(self, current_index: int, new_index: int, minutes_since_change: float, force: bool) -> int:
         """Limit fan speed changes with safety guards."""
         if force:
-            return self._apply_step_limit(current_index, new_index)
+            # Emergency and setpoint-drop bypass all guards (timer + step limit).
+            # If temperature then drops too fast, Emergency (Zone A) will react.
+            return new_index
 
         # Enforce the minimum time between two changes
         if minutes_since_change < self._min_interval:
@@ -152,7 +219,7 @@ class SmartFanController:
             # Track when the last slope change occurred (for reference, not used in calculation)
             self._last_slope_significant_change = self._now
 
-    def calculate_decision(self, current_temp: float, target_temp: float, vtherm_slope: float, hvac_mode: str, current_fan: str | None) -> dict:
+    def calculate_decision(self, current_temp: float, target_temp: float, vtherm_slope: float, hvac_mode: str, current_fan: str | None, is_window_open: bool = False) -> dict:
         """Compute new fan speed."""
         self._now = time.time()
 
@@ -170,7 +237,6 @@ class SmartFanController:
         # Reset thermal memory when HVAC mode switches (heat ↔ cool)
         if self._last_hvac_mode is not None and self._last_hvac_mode != hvac_mode:
             _LOGGER.info("HVAC mode changed from %s to %s: resetting thermal state", self._last_hvac_mode, hvac_mode)
-            self._thermal_acceleration = 0.0
             self._previous_slope = vtherm_slope
         self._last_hvac_mode = hvac_mode
 
@@ -208,9 +274,11 @@ class SmartFanController:
         # -------------------------#
         # --- Logic indicators ---#
         # -------------------------#
-        interval_expired = minutes_since_change >= self._limit_timeout
+        effective_timeout = self.get_effective_timeout()
+        interval_expired = minutes_since_change >= effective_timeout
         slope_change = abs(vtherm_slope - self._previous_slope) > THRESHOLD_SLOPE
         is_slope_improving = effective_slope > (self._slope_at_last_change + THRESHOLD_SLOPE)
+        phase = self.detect_phase(minutes_since_change)
 
         if current_fan is None:
             current_index = 0
@@ -246,7 +314,9 @@ class SmartFanController:
 
         # C. RECOVERY ANTICIPATION (Under-target predicted)
         elif current_temperature_error > self._soft_error:
-            if slope_change or interval_expired:
+            if phase == PHASE_DEAD_TIME:
+                reason = "Patience: Waiting for thermal response"
+            elif slope_change or interval_expired:
                 if is_slope_improving:
                     reason = "Patience: Trend is improving"
                 else:
@@ -258,11 +328,14 @@ class SmartFanController:
 
         # D. DRIFT IN COMFORT ZONE
         elif current_temperature_error > 0:
-            if (effective_slope < -THRESHOLD_SLOPE or projected_temperature_error > self._projected_error_threshold) and (slope_change or interval_expired):
+            # Descent: strong favorable slope in established phase → reduce fan
+            if effective_slope > THRESHOLD_SLOPE * 2 and phase == PHASE_ESTABLISHED and interval_expired:
+                new_index = max(0, current_index - 1)
+                reason = "Maintenance: Strong favorable slope, reducing"
+            elif (effective_slope < -THRESHOLD_SLOPE or projected_temperature_error > self._projected_error_threshold) and (slope_change or interval_expired):
                 new_index = min(max_index, current_index + 1)
                 reason = "Maintenance: Slow drift detected"
-            elif interval_expired:
-                # Proactive adjustment: stable away from target but interval expired
+            elif interval_expired and phase == PHASE_ESTABLISHED:
                 new_index = min(max_index, current_index + 1)
                 reason = "Maintenance: Stable away from target, reaching setpoint"
             else:
@@ -294,10 +367,10 @@ class SmartFanController:
         # Collect learning data using the fan mode CURRENTLY active (not the decided one),
         # so the slope observation is correctly attributed to the mode that produced it.
         if self.learning_enabled and current_fan is not None and current_fan in self._fan_modes:
-            self.learning.add_slope_sample(current_fan, vtherm_slope, current_temperature_error)
+            self.learning.add_slope_sample(current_fan, vtherm_slope, current_temperature_error, hvac_mode, is_window_open)
 
         _LOGGER.debug(
-            "Decision: hvac=%s current=%.2f target=%.2f err=%.2f proj=%.2f proj_err=%.2f slope=%.3f eff_slope=%.3f accel=%.3f minutes=%.1f -> %s (%s)",
+            "Decision: hvac=%s current=%.2f target=%.2f err=%.2f proj=%.2f proj_err=%.2f slope=%.3f eff_slope=%.3f phase=%s minutes=%.1f -> %s (%s)",
             hvac_mode,
             current_temp,
             target_temp,
@@ -306,7 +379,7 @@ class SmartFanController:
             projected_temperature_error,
             vtherm_slope,
             effective_slope,
-            self._thermal_acceleration,
+            phase,
             minutes_since_change,
             target_fan,
             reason,
