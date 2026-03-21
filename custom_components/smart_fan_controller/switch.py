@@ -8,15 +8,17 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import DeviceInfo
 
-from .const import DOMAIN, CONF_LEARNING_ENABLED
+from .const import DOMAIN, CONF_LEARNING_ENABLED, CONF_MPC_SHADOW_ENABLED
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     """Set up the switch platform from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
     controller = data["controller"]
+    mpc_shadow = data["mpc_shadow"]
 
     entities = [
         SmartFanLearningSwitch(entry.entry_id, controller, entry, hass),
+        SmartFanMpcShadowSwitch(entry.entry_id, mpc_shadow, entry, hass),
     ]
 
     async_add_entities(entities)
@@ -76,4 +78,39 @@ class SmartFanLearningSwitch(SwitchEntity):
         new_options = {**self._entry.options, CONF_LEARNING_ENABLED: False}
         self._hass.config_entries.async_update_entry(self._entry, options=new_options)
 
+        self.async_write_ha_state()
+
+
+class SmartFanMpcShadowSwitch(SwitchEntity):
+    """Switch to enable/disable MPC shadow mode."""
+
+    def __init__(self, entry_id: str, shadow_controller, entry: ConfigEntry, hass: HomeAssistant) -> None:
+        self._entry_id = entry_id
+        self._shadow_controller = shadow_controller
+        self._entry = entry
+        self._hass = hass
+
+        self._attr_name = "MPC Shadow Mode"
+        self._attr_unique_id = f"smart_fan_mpc_shadow_enabled_{entry_id}"
+        self._attr_icon = "mdi:robot-outline"
+        self._attr_entity_category = EntityCategory.CONFIG
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry_id)}, name="Smart Fan Controller")
+
+    @property
+    def is_on(self) -> bool:
+        return self._shadow_controller.enabled
+
+    async def async_turn_on(self, **kwargs) -> None:
+        self._shadow_controller.enabled = True
+        new_options = {**self._entry.options, CONF_MPC_SHADOW_ENABLED: True}
+        self._hass.config_entries.async_update_entry(self._entry, options=new_options)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs) -> None:
+        self._shadow_controller.enabled = False
+        new_options = {**self._entry.options, CONF_MPC_SHADOW_ENABLED: False}
+        self._hass.config_entries.async_update_entry(self._entry, options=new_options)
         self.async_write_ha_state()

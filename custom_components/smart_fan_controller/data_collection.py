@@ -7,7 +7,11 @@ CSV columns (in order):
   timestamp, hvac_mode, current_temp, target_temp, current_error,
   vtherm_slope, effective_slope, projected_temp, projected_error,
   phase, minutes_since_change, effective_timeout, current_fan, decided_fan,
-  force, reason, learning_ready, dead_time, is_window_open
+  force, reason, learning_ready, dead_time, is_window_open,
+  mpc_shadow_status, mpc_shadow_fan, mpc_shadow_match,
+  mpc_shadow_would_change, mpc_shadow_cost, mpc_shadow_confidence,
+  mpc_shadow_temp_10m, mpc_shadow_temp_30m, mpc_shadow_known_profiles,
+  mpc_shadow_disturbance
 """
 
 import csv
@@ -17,7 +21,7 @@ from datetime import datetime, timezone
 
 _LOGGER = logging.getLogger(__name__)
 
-# Header used when creating a new file.  Keep in sync with _row() below.
+# Header used when creating a new file. Keep in sync with record() below.
 _HEADER = [
     "timestamp",
     "hvac_mode",
@@ -38,9 +42,19 @@ _HEADER = [
     "learning_ready",
     "dead_time",
     "is_window_open",
+    "mpc_shadow_status",
+    "mpc_shadow_fan",
+    "mpc_shadow_match",
+    "mpc_shadow_would_change",
+    "mpc_shadow_cost",
+    "mpc_shadow_confidence",
+    "mpc_shadow_temp_10m",
+    "mpc_shadow_temp_30m",
+    "mpc_shadow_known_profiles",
+    "mpc_shadow_disturbance",
 ]
 
-# Rotate the file when it exceeds this size (bytes).  10 MB keeps ~200 000 rows.
+# Rotate the file when it exceeds this size (bytes). 10 MB keeps ~200 000 rows.
 _MAX_FILE_SIZE = 10 * 1024 * 1024
 
 
@@ -51,10 +65,6 @@ class DataCollector:
         self._path = os.path.join(config_dir, f"smart_fan_controller_data_{entry_id[:8]}.csv")
         self._rotated_path = self._path.replace(".csv", "_old.csv")
         self._ensure_header()
-
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
 
     def record(
         self,
@@ -71,8 +81,10 @@ class DataCollector:
         force: bool,
         learning_ready: bool,
         dead_time: float,
+        shadow: dict | None = None,
     ) -> None:
         """Append one row to the CSV file."""
+        shadow = shadow or {}
         row = [
             datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             hvac_mode,
@@ -93,6 +105,16 @@ class DataCollector:
             int(learning_ready),
             round(dead_time, 2),
             int(is_window_open),
+            shadow.get("mpc_shadow_status", "Disabled"),
+            shadow.get("mpc_shadow_fan_mode", ""),
+            shadow.get("mpc_shadow_matches_live", "n/a"),
+            shadow.get("mpc_shadow_would_change_now", "no"),
+            round(shadow.get("mpc_shadow_cost", 0.0), 3) if shadow.get("mpc_shadow_cost") is not None else "",
+            round(shadow.get("mpc_shadow_confidence", 0.0), 1) if shadow.get("mpc_shadow_confidence") is not None else "",
+            round(shadow.get("mpc_shadow_predicted_temperature_10m", 0.0), 3) if shadow.get("mpc_shadow_predicted_temperature_10m") is not None else "",
+            round(shadow.get("mpc_shadow_predicted_temperature_30m", 0.0), 3) if shadow.get("mpc_shadow_predicted_temperature_30m") is not None else "",
+            shadow.get("mpc_shadow_known_profiles", 0),
+            round(shadow.get("mpc_shadow_disturbance_bias", 0.0), 3) if shadow.get("mpc_shadow_disturbance_bias") is not None else "",
         ]
         try:
             self._rotate_if_needed()
@@ -106,10 +128,6 @@ class DataCollector:
         """Return the active CSV file path."""
         return self._path
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
     def _ensure_header(self) -> None:
         """Write the header row if the file does not exist yet."""
         if not os.path.exists(self._path):
@@ -119,6 +137,20 @@ class DataCollector:
                 _LOGGER.info("DataCollector: created %s", self._path)
             except OSError as exc:
                 _LOGGER.warning("DataCollector: could not create %s: %s", self._path, exc)
+            return
+
+        try:
+            with open(self._path, newline="", encoding="utf-8") as fh:
+                current_header = next(csv.reader(fh), [])
+            if current_header != _HEADER:
+                if os.path.exists(self._rotated_path):
+                    os.remove(self._rotated_path)
+                os.rename(self._path, self._rotated_path)
+                with open(self._path, "w", newline="", encoding="utf-8") as fh:
+                    csv.writer(fh).writerow(_HEADER)
+                _LOGGER.info("DataCollector: rotated %s due to header change", self._path)
+        except OSError as exc:
+            _LOGGER.warning("DataCollector: could not validate %s: %s", self._path, exc)
 
     def _rotate_if_needed(self) -> None:
         """Rename current file to *_old.csv when it exceeds _MAX_FILE_SIZE."""
@@ -128,6 +160,6 @@ class DataCollector:
                     os.remove(self._rotated_path)
                 os.rename(self._path, self._rotated_path)
                 self._ensure_header()
-                _LOGGER.info("DataCollector: rotated %s → %s", self._path, self._rotated_path)
+                _LOGGER.info("DataCollector: rotated %s -> %s", self._path, self._rotated_path)
         except OSError as exc:
             _LOGGER.warning("DataCollector: rotation error for %s: %s", self._path, exc)

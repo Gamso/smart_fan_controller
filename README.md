@@ -66,6 +66,9 @@ Smart Fan Controller is a custom Home Assistant integration that **adjusts HVAC 
 4. Evaluates six priority zones (A–F) and selects the first matching action
 5. Applies safety guards (step-down limit, min interval) and changes fan speed if needed
 6. Collects learning data to automatically calibrate parameters over time
+7. Optionally runs an MPC shadow controller in the background for dry-run comparison
+
+> Experimental: **MPC Shadow Mode** runs a learned temperature-state model and MPC-lite in observation-only mode. It owns its own runtime parameters (`deadband`, `min_interval`, fan modes), never applies real fan commands, pauses itself during disturbed periods such as an open window, and keeps those periods out of dead-time learning. See [docs/mpc_shadow_mode.md](docs/mpc_shadow_mode.md).
 
 ---
 
@@ -97,6 +100,7 @@ All parameters can be changed at any time via **Settings → Devices & Services 
 | **Hard Error**       | `0.6°C`  | `0.0` – `10.0°C` | Error threshold that triggers emergency mode (max fan, bypasses min interval).                  |
 | **Limit Timeout**    | `15 min` | `10` – `120 min` | Maximum time before forcing a re-evaluation, even without significant slope change.             |
 | **Learning Enabled** | `true`   | —                | Enables the automatic learning system. Disable for fully manual tuning.                         |
+| **MPC Shadow Mode**  | `false`  | —                | Runs the learned model + MPC-lite in the background for comparison only. No real fan command is applied. |
 
 > **Tip — recommended ratios**: `deadband < soft_error < hard_error`, e.g. `0.2 / 0.3 / 0.6`.
 
@@ -200,8 +204,9 @@ Response events are only recorded when the delay is between 2 and 60 minutes (fi
 ### Window-Open Filtering
 
 When Versatile Thermostat reports a window as open (via the `window_manager.window_state` attribute), the controller:
-- **Continues making fan decisions** normally (the HVAC system is still running)
-- **Stops collecting learning data**, since slope readings during open windows are not representative of normal thermal behavior
+- **Continues making live heuristic fan decisions** normally (the HVAC system is still running)
+- **Stops collecting learning data**, including both per-mode slope samples and response-time events used to learn `dead_time`
+- **Pauses the MPC shadow model**, marking it as disturbed instead of trusting predictions during the perturbation
 
 This prevents window-open periods from corrupting the learned profiles.
 
@@ -216,6 +221,7 @@ This prevents window-open periods from corrupting the learned profiles.
 | `sensor.smart_fan_fan_mode`         | Sensor | Current fan mode selected by the controller |
 | `sensor.smart_fan_status`           | Sensor | Current control zone and decision reason    |
 | `switch.smart_fan_learning_enabled` | Switch | Enable / disable the learning system        |
+| `switch.smart_fan_mpc_shadow_mode`  | Switch | Enable / disable observation-only MPC shadow mode |
 
 ### Diagnostic Sensors
 
@@ -235,6 +241,19 @@ This prevents window-open periods from corrupting the learned profiles.
 | `sensor.smart_fan_learned_soft_error`          | °C    | Learned optimal soft error threshold                |
 | `sensor.smart_fan_learned_hard_error`          | °C    | Learned optimal hard error threshold                |
 | `sensor.smart_fan_learned_limit_timeout`       | min   | Learned base timeout stored in config               |
+| `sensor.smart_fan_mpc_shadow_status`           | —     | Shadow controller state (`Disabled`, `Ready`, etc.) |
+| `sensor.smart_fan_mpc_shadow_reason`           | —     | Explanation of the current shadow recommendation    |
+| `sensor.smart_fan_mpc_shadow_fan_mode`         | —     | Fan mode the MPC shadow would choose                |
+| `sensor.smart_fan_mpc_shadow_match`            | —     | Whether the shadow recommendation matches the live heuristic |
+| `sensor.smart_fan_mpc_shadow_would_change_now` | —     | Whether the shadow controller would actively change the fan right now |
+| `sensor.smart_fan_mpc_shadow_confidence`       | %     | Confidence derived from learned profile coverage    |
+| `sensor.smart_fan_mpc_shadow_predicted_temperature_10_min` | °C | Predicted temperature after 10 minutes with the recommended mode |
+| `sensor.smart_fan_mpc_shadow_predicted_temperature_30_min` | °C | Predicted temperature after 30 minutes with the recommended mode |
+| `sensor.smart_fan_mpc_shadow_dead_time`        | min   | Dead time currently used by the shadow simulator    |
+| `sensor.smart_fan_mpc_shadow_known_profiles`   | count | Number of reliable learned fan-mode profiles used by the shadow controller |
+| `sensor.smart_fan_mpc_shadow_disturbance_bias` | °C/h  | Learned disturbance correction currently applied by the shadow model |
+
+See [docs/mpc_shadow_mode.md](docs/mpc_shadow_mode.md) for the full technical design of the learned model and MPC-lite shadow mode.
 
 ---
 

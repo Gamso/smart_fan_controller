@@ -43,6 +43,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         ("Temperature Projected (10 min)", "projected_temperature", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:chart-bell-curve", EntityCategory.DIAGNOSTIC),
         ("Temperature Projected Error (10 min)", "projected_temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:chart-bell-curve", EntityCategory.DIAGNOSTIC),
         ("Temperature Error", "temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:thermometer-lines", EntityCategory.DIAGNOSTIC),
+        ("MPC Shadow Status", "mpc_shadow_status", None, None, "mdi:robot-outline", EntityCategory.DIAGNOSTIC),
+        ("MPC Shadow Reason", "mpc_shadow_reason", None, None, "mdi:text-box-search-outline", EntityCategory.DIAGNOSTIC),
+        ("MPC Shadow Fan Mode", "mpc_shadow_fan_mode", None, None, "mdi:fan-chevron-up", EntityCategory.DIAGNOSTIC),
+        ("MPC Shadow Match", "mpc_shadow_matches_live", None, None, "mdi:compare", EntityCategory.DIAGNOSTIC),
+        ("MPC Shadow Would Change Now", "mpc_shadow_would_change_now", None, None, "mdi:swap-horizontal", EntityCategory.DIAGNOSTIC),
+        ("MPC Shadow Cost", "mpc_shadow_cost", None, None, "mdi:calculator", EntityCategory.DIAGNOSTIC),
+        ("MPC Shadow Confidence", "mpc_shadow_confidence", PERCENTAGE, None, "mdi:chart-line", EntityCategory.DIAGNOSTIC),
+        ("MPC Shadow Predicted Temperature (10 min)", "mpc_shadow_predicted_temperature_10m", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:chart-timeline-variant", EntityCategory.DIAGNOSTIC),
+        ("MPC Shadow Predicted Temperature (30 min)", "mpc_shadow_predicted_temperature_30m", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:chart-timeline-variant", EntityCategory.DIAGNOSTIC),
+        ("MPC Shadow Dead Time", "mpc_shadow_dead_time", UnitOfTime.MINUTES, SensorDeviceClass.DURATION, "mdi:timer-sand", EntityCategory.DIAGNOSTIC),
+        ("MPC Shadow Known Profiles", "mpc_shadow_known_profiles", None, None, "mdi:database-search-outline", EntityCategory.DIAGNOSTIC),
+        ("MPC Shadow Disturbance Bias", "mpc_shadow_disturbance_bias", "°C/h", None, "mdi:weather-windy", EntityCategory.DIAGNOSTIC),
     ]
 
     entities = []
@@ -98,9 +110,8 @@ class SmartFanSensor(_SmartFanEntity):
 
     def update_from_controller(self, data: dict) -> None:
         """Update the sensor value with data from the controller."""
-        new_value = data.get(self._data_key)
-        if new_value is not None:
-            self._attr_native_value = new_value
+        if self._data_key in data:
+            self._attr_native_value = data.get(self._data_key)
             # Caller (the control loop) is responsible for calling async_write_ha_state()
 
 

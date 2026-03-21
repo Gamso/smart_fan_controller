@@ -17,6 +17,7 @@ from .const import (
     CONF_LIMIT_TIMEOUT,
     CONF_LEARNING_ENABLED,
     CONF_DATA_COLLECTION,
+    CONF_MPC_SHADOW_ENABLED,
     DEFAULT_DEADBAND,
     DEFAULT_MIN_INTERVAL,
     DEFAULT_SOFT_ERROR,
@@ -24,6 +25,7 @@ from .const import (
     DEFAULT_LIMIT_TIMEOUT,
     DEFAULT_LEARNING_ENABLED,
     DEFAULT_DATA_COLLECTION,
+    DEFAULT_MPC_SHADOW_ENABLED,
 )
 
 
@@ -117,6 +119,7 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
                 vol.Optional(CONF_LEARNING_ENABLED, default=DEFAULT_LEARNING_ENABLED): selector.BooleanSelector(),
                 vol.Optional(CONF_DATA_COLLECTION, default=DEFAULT_DATA_COLLECTION): selector.BooleanSelector(),
+                vol.Optional(CONF_MPC_SHADOW_ENABLED, default=DEFAULT_MPC_SHADOW_ENABLED): selector.BooleanSelector(),
             }
         )
 
@@ -191,6 +194,7 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
                 ),
                 vol.Optional(CONF_LEARNING_ENABLED, default=current_data.get(CONF_LEARNING_ENABLED, DEFAULT_LEARNING_ENABLED)): selector.BooleanSelector(),
                 vol.Optional(CONF_DATA_COLLECTION, default=current_data.get(CONF_DATA_COLLECTION, DEFAULT_DATA_COLLECTION)): selector.BooleanSelector(),
+                vol.Optional(CONF_MPC_SHADOW_ENABLED, default=current_data.get(CONF_MPC_SHADOW_ENABLED, DEFAULT_MPC_SHADOW_ENABLED)): selector.BooleanSelector(),
             }
         )
 

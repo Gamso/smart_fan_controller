@@ -17,6 +17,7 @@ from .const import (
     CONF_LIMIT_TIMEOUT,
     CONF_LEARNING_ENABLED,
     CONF_DATA_COLLECTION,
+    CONF_MPC_SHADOW_ENABLED,
     DEFAULT_DEADBAND,
     DEFAULT_MIN_INTERVAL,
     DEFAULT_SOFT_ERROR,
@@ -24,6 +25,7 @@ from .const import (
     DEFAULT_LIMIT_TIMEOUT,
     DEFAULT_LEARNING_ENABLED,
     DEFAULT_DATA_COLLECTION,
+    DEFAULT_MPC_SHADOW_ENABLED,
     DELTA_TIME_CONTROL_LOOP,
     STORAGE_VERSION,
     STORAGE_KEY,
@@ -31,6 +33,7 @@ from .const import (
 )
 from .controller import SmartFanController
 from .data_collection import DataCollector
+from .mpc_shadow import MPCShadowController
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.SENSOR, Platform.SWITCH]
@@ -94,6 +97,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         learning_enabled=conf.get(CONF_LEARNING_ENABLED, DEFAULT_LEARNING_ENABLED),
     )
 
+    shadow_controller = MPCShadowController(
+        learning=controller.learning,
+        deadband=conf.get(CONF_DEADBAND, DEFAULT_DEADBAND),
+        min_interval=conf.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL),
+        fan_modes=None,
+        enabled=conf.get(CONF_MPC_SHADOW_ENABLED, DEFAULT_MPC_SHADOW_ENABLED),
+    )
+
     # Instantiate the data collector (creates the CSV file immediately if enabled)
     data_collection_enabled = conf.get(CONF_DATA_COLLECTION, DEFAULT_DATA_COLLECTION)
     collector: DataCollector | None = (
@@ -107,6 +118,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # 3. Store data for platforms and forward setup
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "controller": controller,
+        "mpc_shadow": shadow_controller,
         "climate_entity": climate_id,
         "sensor": None,  # Reference will be set in sensor.py
         "store": store,  # Store the storage object for periodic saves
@@ -131,6 +143,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             filtered_modes = [m for m in raw_modes if m.lower() not in ["auto", "off"]]
             if filtered_modes:
                 controller.fan_modes = filtered_modes
+                shadow_controller.fan_modes = filtered_modes
                 _LOGGER.info("Detected fan modes for %s: %s", climate_id, controller.fan_modes)
             else:
                 _LOGGER.debug("Climate entity %s has no valid fan modes yet, will retry on next cycle", climate_id)
@@ -178,6 +191,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             is_window_open,
         )
 
+        shadow_decision = shadow_controller.evaluate(
+            current_temp=float(current_temp),
+            target_temp=float(target_temp),
+            vtherm_slope=float(vtherm_slope),
+            hvac_mode=str(hvac_mode),
+            current_fan=current_fan,
+            live_decision_fan=decision.get("fan_mode"),
+            is_window_open=is_window_open,
+            minutes_since_change=decision.get("minutes_since_last_change", 0.0),
+        )
+        combined_decision = {**decision, **shadow_decision}
+
         # Persist one CSV row for offline analysis (beta instrumentation)
         if collector:
             effective_slope = -float(vtherm_slope) if str(hvac_mode) == "cool" else float(vtherm_slope)
@@ -195,6 +220,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 force=decision.get("reason", "").startswith(("Emergency", "Setpoint drop")),
                 learning_ready=controller.learning_enabled and controller.learning.is_ready(),
                 dead_time=controller.learning.get_dead_time() if controller.learning_enabled else 0.0,
+                shadow=shadow_decision,
             )
 
         # Update all sensors stored in the list
@@ -203,7 +229,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.debug("Updating %s diagnostic sensors", len(sensors))
             for sensor in sensors:
                 if hasattr(sensor, 'update_from_controller'):
-                    sensor.update_from_controller(decision)
+                    sensor.update_from_controller(combined_decision)
                 # Force update all sensors (including learning sensors)
                 sensor.async_write_ha_state()
 
@@ -253,9 +279,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for sensor in sensors:
             if hasattr(sensor, "update_from_controller"):
                 sensor.update_from_controller(manual_data)
-            else:
-                # Learning sensor updates itself via properties
-                sensor.async_write_ha_state()
+            sensor.async_write_ha_state()
 
     # Schedule the loop and run it immediately once to initialize
     remove_timer = async_track_time_interval(hass, run_control_loop, timedelta(minutes=DELTA_TIME_CONTROL_LOOP))

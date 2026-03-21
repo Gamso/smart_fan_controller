@@ -12,7 +12,8 @@
                     "hard_error": "Hard Error Threshold (°C)",
                     "limit_timeout": "Interval Before Forcing Change (minutes)",
                     "learning_enabled": "Enable Automatic Learning",
-                    "data_collection": "Enable Data Collection (beta)"
+                    "data_collection": "Enable Data Collection (beta)",
+                    "mpc_shadow_enabled": "Enable MPC Shadow Mode"
                 },
                 "data_description": {
                     "climate_entity": "Must come from a Versatile Thermostat.",
@@ -22,7 +23,8 @@
                     "hard_error": "Range: 0.0-10.0 °C. Default: 0.6 °C.",
                     "limit_timeout": "Range: 10-120 min. Default: 15 min.",
                     "learning_enabled": "Enable automatic learning of optimal parameters. When ready, settings will be applied automatically.",
-                    "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase."
+                    "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
+                    "mpc_shadow_enabled": "Runs the learned model + MPC-lite in the background for comparison only. No real fan command is applied from the shadow controller."
                 },
                 "error": {
                     "invalid_climate_entity": "This entity must come from Versatile Thermostat.",
@@ -44,7 +46,8 @@
                     "hard_error": "Hard Error Threshold (°C)",
                     "limit_timeout": "Interval Before Forcing Change (minutes)",
                     "learning_enabled": "Enable Automatic Learning",
-                    "data_collection": "Enable Data Collection (beta)"
+                    "data_collection": "Enable Data Collection (beta)",
+                    "mpc_shadow_enabled": "Enable MPC Shadow Mode"
                 },
                 "data_description": {
                     "climate_entity": "Must come from a Versatile Thermostat.",
@@ -54,7 +57,8 @@
                     "hard_error": "Range: 0.0-10.0 °C. Default: 0.6 °C.",
                     "limit_timeout": "Range: 10-120 min. Default: 15 min.",
                     "learning_enabled": "Enable automatic learning of optimal parameters. When ready, settings will be applied automatically.",
-                    "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase."
+                    "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
+                    "mpc_shadow_enabled": "Runs the learned model + MPC-lite in the background for comparison only. No real fan command is applied from the shadow controller."
                 },
                 "error": {
                     "invalid_climate_entity": "This entity must come from Versatile Thermostat.",
