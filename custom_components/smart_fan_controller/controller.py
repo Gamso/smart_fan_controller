@@ -280,6 +280,7 @@ class SmartFanController:
         min_interval_expired = minutes_since_change >= self._min_interval
         slope_change = abs(vtherm_slope - self._previous_slope) > THRESHOLD_SLOPE
         is_slope_improving = effective_slope > (self._slope_at_last_change + THRESHOLD_SLOPE)
+        can_reduce_on_favorable_slope = current_temperature_error <= (self._deadband + 1e-9) and projected_temperature_error <= 0
         phase = self.detect_phase(minutes_since_change)
 
         if current_fan is None:
@@ -329,10 +330,13 @@ class SmartFanController:
 
         # D. DRIFT IN COMFORT ZONE
         elif current_temperature_error > 0:
-            # Descent: strong favorable slope in established phase → reduce fan
+            # Descent: strong favorable slope in established phase → reduce only when close enough to target
             if effective_slope > THRESHOLD_SLOPE * 2 and phase == PHASE_ESTABLISHED and interval_expired:
-                new_index = max(0, current_index - 1)
-                reason = "Maintenance: Strong favorable slope, reducing"
+                if can_reduce_on_favorable_slope:
+                    new_index = max(0, current_index - 1)
+                    reason = "Maintenance: Strong favorable slope, reducing"
+                else:
+                    reason = "Maintenance: Favorable slope, holding"
             elif (effective_slope < -THRESHOLD_SLOPE or projected_temperature_error > self._projected_error_threshold) and (slope_change or interval_expired):
                 new_index = min(max_index, current_index + 1)
                 reason = "Maintenance: Slow drift detected"

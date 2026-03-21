@@ -175,3 +175,26 @@ class TestSmartFanControllerCool:
         )
         assert result["fan_mode"] == "medium"
         assert "Stable away from target" in result["reason"]
+
+    def test_favorable_slope_holds_when_still_far_from_target(self):
+        """Strong cooling trend should not trigger a step-down while still above deadband."""
+        controller = SmartFanController(
+            fan_modes=FAN_MODES,
+            deadband=0.3,
+            min_interval=DEFAULT_MIN_INTERVAL,
+            soft_error=0.5,
+            hard_error=DEFAULT_HARD_ERROR,
+        )
+        controller.last_change_time = controller.now - (30 * 60)
+        controller.previous_slope = -3.66
+
+        result = controller.calculate_decision(
+            current_temp=20.4,
+            target_temp=20.0,
+            vtherm_slope=-3.66,
+            hvac_mode="cool",
+            current_fan="high",
+        )
+
+        assert result["fan_mode"] == "high"
+        assert "Favorable slope, holding" in result["reason"]

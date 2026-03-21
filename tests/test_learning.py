@@ -3,6 +3,7 @@ import pytest
 from unittest.mock import patch
 from custom_components.smart_fan_controller.controller import SmartFanController, ThermalLearning
 from custom_components.smart_fan_controller.const import MIN_LIMIT_TIMEOUT
+from custom_components.smart_fan_controller.sensor import SmartFanLearnedDeadTimeSensor, SmartFanEffectiveTimeoutSensor
 
 
 class TestThermalLearning:
@@ -142,3 +143,40 @@ class TestThermalLearning:
             controller.save_states("low", "low", 0.2, 0.2, True)  # Slope changes
         events_after = len(controller.learning.response_events)
         assert events_after == events_before, "65-minute response should be filtered out"
+
+
+    def test_learned_dead_time_sensor_reports_median_response(self):
+        """The diagnostic dead-time sensor should expose the median response delay."""
+        controller = SmartFanController(
+            fan_modes=["low", "medium", "high"],
+            deadband=0.2,
+            min_interval=10,
+            soft_error=0.3,
+            hard_error=0.6,
+            limit_timeout=15,
+        )
+        for response_time in [6.0, 8.0, 8.0, 10.0]:
+            controller.learning.add_response_event(response_time)
+
+        sensor = SmartFanLearnedDeadTimeSensor("entry", controller)
+
+        assert sensor.native_value == 8.0
+
+    def test_effective_timeout_sensor_shows_runtime_timeout(self):
+        """The effective-timeout sensor should expose dead_time × 1.5 once learning is ready."""
+        controller = SmartFanController(
+            fan_modes=["low", "medium", "high"],
+            deadband=0.2,
+            min_interval=10,
+            soft_error=0.3,
+            hard_error=0.6,
+            limit_timeout=15,
+        )
+        for _ in range(250):
+            controller.learning.add_slope_sample("medium", 0.3, 0.1)
+        for response_time in [8.0, 8.0, 9.0]:
+            controller.learning.add_response_event(response_time)
+
+        sensor = SmartFanEffectiveTimeoutSensor("entry", controller)
+
+        assert sensor.native_value == 12.0
