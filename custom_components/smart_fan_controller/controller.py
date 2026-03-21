@@ -258,6 +258,7 @@ class SmartFanController:
         current_temperature_error = (current_temp - target_temp) if hvac_mode == 'cool' else (target_temp - current_temp)
         # Projected error in 10 min (positive = will miss target)
         projected_temperature_error = (projected_temperature - target_temp) if hvac_mode == 'cool' else (target_temp - projected_temperature)
+        above_soft_error = current_temperature_error > (self._soft_error + 1e-9)
 
         # Return early if fan modes not initialized, but include all sensor data
         if not self._fan_modes:
@@ -276,6 +277,7 @@ class SmartFanController:
         # -------------------------#
         effective_timeout = self.get_effective_timeout()
         interval_expired = minutes_since_change >= effective_timeout
+        min_interval_expired = minutes_since_change >= self._min_interval
         slope_change = abs(vtherm_slope - self._previous_slope) > THRESHOLD_SLOPE
         is_slope_improving = effective_slope > (self._slope_at_last_change + THRESHOLD_SLOPE)
         phase = self.detect_phase(minutes_since_change)
@@ -313,18 +315,17 @@ class SmartFanController:
             reason = f"Braking: Target overshoot predicted ({round(projected_temperature, 2)}°C)"
 
         # C. RECOVERY ANTICIPATION (Under-target predicted)
-        elif current_temperature_error > self._soft_error:
+        elif above_soft_error:
             if phase == PHASE_DEAD_TIME:
                 reason = "Patience: Waiting for thermal response"
-            elif slope_change or interval_expired:
-                if is_slope_improving:
-                    reason = "Patience: Trend is improving"
-                else:
-                    new_index = min(max_index, current_index + 1)
-                    intensity = "Strong" if projected_temperature_error > self._projected_error_threshold else "Soft"
-                    reason = f"{intensity} recovery: Drop predicted to {round(projected_temperature, 2)}°C"
+            elif is_slope_improving:
+                reason = "Patience: Trend is improving"
+            elif min_interval_expired:
+                new_index = min(max_index, current_index + 1)
+                intensity = "Strong" if projected_temperature_error > self._projected_error_threshold else "Soft"
+                reason = f"{intensity} recovery: Drop predicted to {round(projected_temperature, 2)}°C"
             else:
-                reason = f"Waiting: Observing inertia ({round(minutes_since_change)} min)"
+                reason = f"Waiting: Min interval active ({round(minutes_since_change)} min)"
 
         # D. DRIFT IN COMFORT ZONE
         elif current_temperature_error > 0:

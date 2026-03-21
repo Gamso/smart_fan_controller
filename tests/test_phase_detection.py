@@ -154,6 +154,29 @@ class TestDeadTimePatienceInZoneC:
         assert result["fan_mode"] == "medium"
         assert "recovery" in result["reason"].lower()
 
+    def test_zone_c_boosts_in_transient_without_waiting_for_effective_timeout(self):
+        """Once DEAD_TIME ends, zone C should boost even if no fresh slope_change arrives."""
+        controller = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
+        start_time = 1000.0
+        controller.last_change_time = start_time
+        controller.previous_slope = 0.2
+        controller._slope_at_last_change = 1.5
+
+        # 12 minutes -> TRANSIENT with default timings:
+        # - dead time has ended (10 min)
+        # - effective timeout has NOT expired yet (15 min)
+        # - slope hasn't improved vs the last fan-change snapshot
+        with patch("time.time", return_value=start_time + 12 * 60):
+            result = controller.calculate_decision(
+                current_temp=19.5,
+                target_temp=20.0,
+                vtherm_slope=0.2,
+                hvac_mode="heat",
+                current_fan="low",
+            )
+        assert result["fan_mode"] == "medium"
+        assert "recovery" in result["reason"].lower()
+
 
 class TestDescentPathZoneD:
     """Zone D should allow descent when slope is strongly favorable."""
@@ -267,6 +290,25 @@ class TestCoolModePhaseDetection:
                 current_temp=20.5,  # error 0.5 > soft_error
                 target_temp=20.0,
                 vtherm_slope=0.0,
+                hvac_mode="cool",
+                current_fan="low",
+            )
+        assert result["fan_mode"] == "medium"
+        assert "recovery" in result["reason"].lower()
+
+    def test_zone_c_boosts_in_transient_without_waiting_for_effective_timeout_cool(self):
+        """Cool mode should also relaunch once dead time ends, even during TRANSIENT."""
+        controller = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
+        start_time = 1000.0
+        controller.last_change_time = start_time
+        controller.previous_slope = -0.2
+        controller._slope_at_last_change = 1.5
+
+        with patch("time.time", return_value=start_time + 12 * 60):
+            result = controller.calculate_decision(
+                current_temp=20.5,
+                target_temp=20.0,
+                vtherm_slope=-0.2,
                 hvac_mode="cool",
                 current_fan="low",
             )
