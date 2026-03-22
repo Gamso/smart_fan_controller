@@ -31,6 +31,24 @@ def _prime_learning_profiles(controller: SmartFanController) -> None:
     controller.learning.add_response_event(12.0)
 
 
+def _prime_cooling_profiles(controller: SmartFanController) -> None:
+    for _ in range(10):
+        controller.learning.add_slope_sample("low", -0.25, 0.8, "cool")
+        controller.learning.add_slope_sample("medium", -0.9, 0.8, "cool")
+        controller.learning.add_slope_sample("high", -1.5, 0.8, "cool")
+    controller.learning.add_response_event(8.0)
+    controller.learning.add_response_event(10.0)
+    controller.learning.add_response_event(12.0)
+
+
+def _prime_marginal_heat_profiles(controller: SmartFanController) -> None:
+    for _ in range(10):
+        controller.learning.add_slope_sample("low", 0.25, 0.2, "heat")
+        controller.learning.add_slope_sample("medium", 0.5, 0.2, "heat")
+        controller.learning.add_slope_sample("high", 0.55, 0.2, "heat")
+    controller.learning.add_response_event(10.0)
+
+
 def test_shadow_disabled_reports_disabled_status():
     controller = _build_controller()
     shadow = MPCShadowController(
@@ -85,6 +103,184 @@ def test_shadow_prefers_stronger_fan_when_profiles_support_it():
     assert result["mpc_shadow_would_change_now"] == "yes"
     assert result["mpc_shadow_known_profiles"] == 3
     assert result["mpc_shadow_predicted_temperature_30m"] > result["mpc_shadow_predicted_temperature_10m"]
+
+
+def test_shadow_supports_cooling_profiles():
+    controller = _build_controller()
+    _prime_cooling_profiles(controller)
+    controller.last_change_time = controller.now - (20 * 60)
+    shadow = MPCShadowController(
+        learning=controller.learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=FAN_MODES,
+        enabled=True,
+    )
+
+    result = shadow.evaluate(
+        current_temp=21.0,
+        target_temp=20.0,
+        vtherm_slope=-0.25,
+        hvac_mode="cool",
+        current_fan="low",
+        live_decision_fan="medium",
+        is_window_open=False,
+        minutes_since_change=20.0,
+    )
+
+    assert result["mpc_shadow_fan_mode"] == "high"
+    assert result["mpc_shadow_matches_live"] == "no"
+    assert result["mpc_shadow_would_change_now"] == "yes"
+    assert result["mpc_shadow_known_profiles"] == 3
+    assert result["mpc_shadow_predicted_temperature_30m"] < result["mpc_shadow_predicted_temperature_10m"]
+
+
+def test_shadow_hysteresis_holds_current_fan_for_marginal_gain():
+    controller = _build_controller()
+    _prime_marginal_heat_profiles(controller)
+    shadow = MPCShadowController(
+        learning=controller.learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=FAN_MODES,
+        enabled=True,
+    )
+
+    result = shadow.evaluate(
+        current_temp=20.0,
+        target_temp=20.0,
+        vtherm_slope=0.6,
+        hvac_mode="heat",
+        current_fan="medium",
+        live_decision_fan="low",
+        is_window_open=False,
+        minutes_since_change=20.0,
+    )
+
+    assert result["mpc_shadow_fan_mode"] == "medium"
+    assert result["mpc_shadow_would_change_now"] == "no"
+    assert "Hysteresis holds medium" in result["mpc_shadow_reason"]
+
+
+def test_shadow_cooling_stops_before_dropping_below_floor():
+    controller = SmartFanController(
+        fan_modes=["silent", "low", "med", "high"],
+        deadband=0.2,
+        min_interval=10,
+        soft_error=0.3,
+        hard_error=0.6,
+        limit_timeout=15,
+    )
+    for _ in range(20):
+        controller.learning.add_slope_sample("silent", 0.0, 0.0, "cool")
+        controller.learning.add_slope_sample("low", -0.2, 0.2, "cool")
+        controller.learning.add_slope_sample("med", -0.5, 0.2, "cool")
+        controller.learning.add_slope_sample("high", -1.0, 0.2, "cool")
+    controller.learning.add_response_event(10.0)
+
+    shadow = MPCShadowController(
+        learning=controller.learning,
+        deadband=0.2,
+        min_interval=10,
+        fan_modes=["silent", "low", "med", "high"],
+        enabled=True,
+    )
+
+    result = shadow.evaluate(
+        current_temp=20.0,
+        target_temp=20.0,
+        vtherm_slope=-0.2,
+        hvac_mode="cool",
+        current_fan="low",
+        live_decision_fan="low",
+        is_window_open=False,
+        minutes_since_change=20.0,
+    )
+
+    assert result["mpc_shadow_fan_mode"] == "silent"
+    assert result["mpc_shadow_would_change_now"] == "yes"
+    assert result["mpc_shadow_predicted_temperature_30m"] >= 19.9
+
+
+def test_shadow_heating_treats_target_as_floor_too():
+    controller = SmartFanController(
+        fan_modes=["silent", "low", "med", "high"],
+        deadband=0.2,
+        min_interval=10,
+        soft_error=0.3,
+        hard_error=0.6,
+        limit_timeout=15,
+    )
+    for _ in range(20):
+        controller.learning.add_slope_sample("silent", 0.0, 0.0, "heat")
+        controller.learning.add_slope_sample("low", 0.2, 0.2, "heat")
+        controller.learning.add_slope_sample("med", 0.5, 0.2, "heat")
+        controller.learning.add_slope_sample("high", 1.0, 0.2, "heat")
+    controller.learning.add_response_event(10.0)
+
+    shadow = MPCShadowController(
+        learning=controller.learning,
+        deadband=0.2,
+        min_interval=10,
+        fan_modes=["silent", "low", "med", "high"],
+        enabled=True,
+    )
+
+    result = shadow.evaluate(
+        current_temp=19.8,
+        target_temp=20.0,
+        vtherm_slope=0.0,
+        hvac_mode="heat",
+        current_fan="silent",
+        live_decision_fan="silent",
+        is_window_open=False,
+        minutes_since_change=20.0,
+    )
+
+    assert result["mpc_shadow_fan_mode"] in ("med", "high")
+    assert result["mpc_shadow_would_change_now"] == "yes"
+
+
+def test_shadow_limits_large_step_down_even_if_lower_mode_is_cheapest():
+    fan_modes = ["silent", "low", "med", "high", "superhigh"]
+    controller = SmartFanController(
+        fan_modes=fan_modes,
+        deadband=0.2,
+        min_interval=10,
+        soft_error=0.3,
+        hard_error=0.6,
+        limit_timeout=15,
+    )
+    for _ in range(20):
+        controller.learning.add_slope_sample("silent", 0.2, -0.1, "heat")
+        controller.learning.add_slope_sample("low", -0.25, -0.1, "heat")
+        controller.learning.add_slope_sample("med", 0.7, -0.1, "heat")
+        controller.learning.add_slope_sample("high", 1.1, -0.1, "heat")
+        controller.learning.add_slope_sample("superhigh", 1.3, -0.1, "heat")
+    controller.learning.add_response_event(18.0)
+
+    shadow = MPCShadowController(
+        learning=controller.learning,
+        deadband=0.2,
+        min_interval=10,
+        fan_modes=fan_modes,
+        enabled=True,
+    )
+
+    result = shadow.evaluate(
+        current_temp=20.4,
+        target_temp=20.3,
+        vtherm_slope=1.2,
+        hvac_mode="heat",
+        current_fan="superhigh",
+        live_decision_fan="high",
+        is_window_open=False,
+        minutes_since_change=60.0,
+    )
+
+    assert result["mpc_shadow_fan_mode"] == "high"
+    assert result["mpc_shadow_would_change_now"] == "yes"
+    assert "Step-down limited to high" in result["mpc_shadow_reason"]
 
 
 def test_shadow_respects_min_interval_guardrail():

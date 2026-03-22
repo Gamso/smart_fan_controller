@@ -17,6 +17,13 @@ MIN_INTERVAL_CHANGE_PENALTY = 25.0
 DISTURBANCE_EMA_ALPHA = 0.2
 DISTURBANCE_DECAY = 0.85
 MAX_DISTURBANCE_BIAS = 2.0
+BASE_SWITCH_GAIN_MARGIN = 0.2
+NEAR_TARGET_SWITCH_GAIN_MARGIN = 0.75
+APPROACHING_TARGET_SWITCH_GAIN_MARGIN = 0.45
+PHASE_SWITCH_MARGIN_BONUS = 0.2
+STEP_SWITCH_MARGIN = 0.15
+FLOOR_VIOLATION_LINEAR_WEIGHT = 8.0
+FLOOR_VIOLATION_QUADRATIC_WEIGHT = 20.0
 
 
 @dataclass(slots=True)
@@ -179,7 +186,40 @@ class MPCShadowController:
             simulations.append(sim)
             known_profiles += int(known_profile)
 
+        current_simulation = next(sim for sim in simulations if sim.fan_mode == active_fan)
         best = min(simulations, key=lambda item: item.total_cost)
+        selection_note = ""
+        if not change_allowed and best.fan_mode != active_fan:
+            selection_note = f"Min interval holds {active_fan} until a change is allowed"
+            best = current_simulation
+        elif change_allowed and best.fan_mode != active_fan:
+            current_error = self._temperature_error(current_temp, target_temp, hvac_mode)
+            required_gain = self._required_switch_gain(
+                current_error=current_error,
+                phase=phase,
+                candidate_index=fan_modes.index(best.fan_mode),
+                current_index=current_index,
+            )
+            actual_gain = current_simulation.total_cost - best.total_cost
+            if actual_gain < required_gain:
+                selection_note = (
+                    f"Hysteresis holds {active_fan}: {best.fan_mode} only improves by "
+                    f"{actual_gain:.2f} < {required_gain:.2f}"
+                )
+                best = current_simulation
+        if change_allowed and best.fan_mode != active_fan:
+            limited_best = self._apply_step_down_limit(
+                best=best,
+                active_fan=active_fan,
+                simulations=simulations,
+                fan_modes=fan_modes,
+            )
+            if limited_best.fan_mode != best.fan_mode:
+                if selection_note:
+                    selection_note += " | "
+                selection_note += f"Step-down limited to {limited_best.fan_mode}"
+                best = limited_best
+
         confidence = self._compute_confidence(known_profiles, len(fan_modes), phase)
         matches_live = "n/a" if live_decision_fan is None else ("yes" if live_decision_fan == best.fan_mode else "no")
         would_change_now = "yes" if change_allowed and best.fan_mode != active_fan else "no"
@@ -188,6 +228,8 @@ class MPCShadowController:
             f"Shadow recommends {best.fan_mode}: cost={best.total_cost:.2f}, "
             f"T+10={best.predicted_temp_10m:.2f}C, T+30={best.predicted_temp_30m:.2f}C"
         )
+        if selection_note:
+            reason += f" | {selection_note}"
         if abs(self._disturbance_bias) >= 0.05:
             reason += f" | Bias={self._disturbance_bias:+.2f}C/h"
         if not change_allowed:
@@ -309,8 +351,11 @@ class MPCShadowController:
             error = self._temperature_error(shadow_temp, target_temp, hvac_mode)
             comfort_error = max(abs(error) - self._deadband, 0.0)
             overshoot = max(-error, 0.0)
+            floor_violation = max(target_temp - shadow_temp, 0.0)
             cost += comfort_error
             cost += 4.0 * overshoot * overshoot
+            cost += FLOOR_VIOLATION_LINEAR_WEIGHT * floor_violation
+            cost += FLOOR_VIOLATION_QUADRATIC_WEIGHT * floor_violation * floor_violation
 
         cost += 0.4 * abs(candidate_index - current_index)
         cost += 0.15 * (candidate_index + 1)
@@ -324,6 +369,53 @@ class MPCShadowController:
             predicted_temp_30m=current_temp if predicted_30m is None else predicted_30m,
             known_profile=known_profile,
         )
+
+    def _required_switch_gain(
+        self,
+        *,
+        current_error: float,
+        phase: str,
+        candidate_index: int,
+        current_index: int,
+    ) -> float:
+        """Return the minimum cost gain required before switching fan mode.
+
+        The shadow controller stays deliberately sticky near the setpoint: when the
+        current mode is already acceptable, a candidate must be meaningfully better
+        than "do nothing" before the recommendation changes. This avoids cost ties
+        turning into fan-mode oscillations every few minutes.
+        """
+        if current_error < -self._deadband:
+            margin = BASE_SWITCH_GAIN_MARGIN
+        elif current_error > (self._deadband * 2):
+            margin = BASE_SWITCH_GAIN_MARGIN
+        elif current_error > self._deadband:
+            margin = APPROACHING_TARGET_SWITCH_GAIN_MARGIN
+        else:
+            margin = NEAR_TARGET_SWITCH_GAIN_MARGIN
+
+        if phase != PHASE_ESTABLISHED:
+            margin += PHASE_SWITCH_MARGIN_BONUS
+
+        margin += STEP_SWITCH_MARGIN * abs(candidate_index - current_index)
+        return margin
+
+    @staticmethod
+    def _apply_step_down_limit(
+        *,
+        best: ModeSimulation,
+        active_fan: str,
+        simulations: list[ModeSimulation],
+        fan_modes: list[str],
+    ) -> ModeSimulation:
+        """Allow at most one downward fan step per cycle, like the live controller."""
+        current_index = fan_modes.index(active_fan)
+        best_index = fan_modes.index(best.fan_mode)
+        if best_index >= current_index - 1:
+            return best
+
+        limited_fan = fan_modes[current_index - 1]
+        return next(sim for sim in simulations if sim.fan_mode == limited_fan)
 
     def _compute_confidence(self, known_profiles: int, total_profiles: int, phase: str) -> float:
         """Return a coarse confidence score for the current recommendation."""

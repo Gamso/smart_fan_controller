@@ -97,6 +97,7 @@ When a window is detected as open, the shadow model does not trust its own predi
 
 The controller simulates every available fan mode on a short fixed horizon of 30 minutes.
 The current scaffold keeps the action constant over the horizon to stay simple and fast.
+The simulator supports both `heat` and `cool`; cooling uses the same learned effective-power model with the sign inverted back to room-temperature evolution.
 
 Each candidate mode gets a scalar cost:
 
@@ -117,7 +118,10 @@ Where:
 - `fan_energy_rank` lightly discourages staying on the highest modes all the time
 - `min_interval_penalty` keeps the shadow recommendation aligned with the same actuator guardrail as the live controller
 
+In addition, the current implementation applies a mode-independent floor penalty when the predicted room temperature drops below the setpoint. This reflects a conservative comfort rule: if the target is `20°C`, predictions below `20°C` are considered increasingly unacceptable in both `heat` and `cool`.
+
 The selected mode is the one with the lowest total cost.
+To avoid fan yo-yo near the setpoint, a recommendation that changes the fan must also beat the current mode by a minimum gain. If the gain is only marginal, the shadow controller keeps the current fan and reports that hysteresis blocked the switch.
 
 ## Shadow Diagnostics
 

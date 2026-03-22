@@ -69,6 +69,7 @@ Smart Fan Controller is a custom Home Assistant integration that **adjusts HVAC 
 7. Optionally runs an MPC shadow controller in the background for dry-run comparison
 
 > Experimental: **MPC Shadow Mode** runs a learned temperature-state model and MPC-lite in observation-only mode. It owns its own runtime parameters (`deadband`, `min_interval`, fan modes), never applies real fan commands, pauses itself during disturbed periods such as an open window, and keeps those periods out of dead-time learning. See [docs/mpc_shadow_mode.md](docs/mpc_shadow_mode.md).
+> It supports both `heat` and `cool`, and includes a hysteresis guard so tiny cost differences do not create fan yo-yo around the setpoint.
 
 ---
 
