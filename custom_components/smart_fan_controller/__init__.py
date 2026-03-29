@@ -108,11 +108,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Instantiate the data collector (creates the CSV file immediately if enabled)
     data_collection_enabled = conf.get(CONF_DATA_COLLECTION, DEFAULT_DATA_COLLECTION)
     collector: DataCollector | None = (
-        DataCollector(hass.config.config_dir, entry.entry_id)
+        DataCollector(hass, hass.config.config_dir, entry.entry_id)
         if data_collection_enabled
         else None
     )
     if collector:
+        await collector.async_initialize()
         _LOGGER.info("DataCollector enabled – writing to %s", collector.path)
 
     # 3. Store data for platforms and forward setup
@@ -207,7 +208,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if collector:
             effective_slope = -float(vtherm_slope) if str(hvac_mode) == "cool" else float(vtherm_slope)
             minutes_since = decision.get("minutes_since_last_change", 0.0)
-            collector.record(
+            await collector.async_record(
                 hvac_mode=str(hvac_mode),
                 current_temp=float(current_temp),
                 target_temp=float(target_temp),

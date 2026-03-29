@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .thermal_learning import ThermalLearning
 from .const import (
     DEAD_TIME_SAFETY_FACTOR,
     DEFAULT_DEAD_TIME,
@@ -12,6 +11,7 @@ from .const import (
     PHASE_ESTABLISHED,
     PHASE_TRANSIENT,
 )
+from .thermal_learning import ThermalLearning
 
 MIN_INTERVAL_CHANGE_PENALTY = 25.0
 DISTURBANCE_EMA_ALPHA = 0.2
@@ -22,6 +22,9 @@ NEAR_TARGET_SWITCH_GAIN_MARGIN = 0.75
 APPROACHING_TARGET_SWITCH_GAIN_MARGIN = 0.45
 PHASE_SWITCH_MARGIN_BONUS = 0.2
 STEP_SWITCH_MARGIN = 0.15
+UNDER_TARGET_STEPDOWN_GAIN_MARGIN = 0.45
+UNDER_TARGET_STEPDOWN_GAIN_PER_DEG = 1.2
+UNDER_TARGET_SHORTFALL_RESERVE = 0.1
 FLOOR_VIOLATION_LINEAR_WEIGHT = 8.0
 FLOOR_VIOLATION_QUADRATIC_WEIGHT = 20.0
 
@@ -38,12 +41,7 @@ class ModeSimulation:
 
 
 class MPCShadowController:
-    """Background-only learned model + MPC-lite scaffold.
-
-    The shadow controller never applies commands. It evaluates the currently
-    available fan modes against a short prediction horizon and exposes the fan
-    mode it would recommend if it were active.
-    """
+    """Background-only learned model + MPC-lite scaffold."""
 
     def __init__(
         self,
@@ -188,16 +186,18 @@ class MPCShadowController:
 
         current_simulation = next(sim for sim in simulations if sim.fan_mode == active_fan)
         best = min(simulations, key=lambda item: item.total_cost)
+        current_error = self._temperature_error(current_temp, target_temp, hvac_mode)
         selection_note = ""
+
         if not change_allowed and best.fan_mode != active_fan:
             selection_note = f"Min interval holds {active_fan} until a change is allowed"
             best = current_simulation
         elif change_allowed and best.fan_mode != active_fan:
-            current_error = self._temperature_error(current_temp, target_temp, hvac_mode)
+            best_index = fan_modes.index(best.fan_mode)
             required_gain = self._required_switch_gain(
                 current_error=current_error,
                 phase=phase,
-                candidate_index=fan_modes.index(best.fan_mode),
+                candidate_index=best_index,
                 current_index=current_index,
             )
             actual_gain = current_simulation.total_cost - best.total_cost
@@ -207,6 +207,21 @@ class MPCShadowController:
                     f"{actual_gain:.2f} < {required_gain:.2f}"
                 )
                 best = current_simulation
+            else:
+                hold_note = self._step_down_hold_note(
+                    candidate=best,
+                    active_fan=active_fan,
+                    hvac_mode=hvac_mode,
+                    target_temp=target_temp,
+                    current_error=current_error,
+                    candidate_index=best_index,
+                    current_index=current_index,
+                    phase=phase,
+                )
+                if hold_note:
+                    selection_note = hold_note
+                    best = current_simulation
+
         if change_allowed and best.fan_mode != active_fan:
             limited_best = self._apply_step_down_limit(
                 best=best,
@@ -378,13 +393,7 @@ class MPCShadowController:
         candidate_index: int,
         current_index: int,
     ) -> float:
-        """Return the minimum cost gain required before switching fan mode.
-
-        The shadow controller stays deliberately sticky near the setpoint: when the
-        current mode is already acceptable, a candidate must be meaningfully better
-        than "do nothing" before the recommendation changes. This avoids cost ties
-        turning into fan-mode oscillations every few minutes.
-        """
+        """Return the minimum cost gain required before switching fan mode."""
         if current_error < -self._deadband:
             margin = BASE_SWITCH_GAIN_MARGIN
         elif current_error > (self._deadband * 2):
@@ -398,7 +407,41 @@ class MPCShadowController:
             margin += PHASE_SWITCH_MARGIN_BONUS
 
         margin += STEP_SWITCH_MARGIN * abs(candidate_index - current_index)
+
+        if candidate_index < current_index and current_error > 0:
+            margin += UNDER_TARGET_STEPDOWN_GAIN_MARGIN
+            margin += UNDER_TARGET_STEPDOWN_GAIN_PER_DEG * current_error
+
         return margin
+
+    def _step_down_hold_note(
+        self,
+        *,
+        candidate: ModeSimulation,
+        active_fan: str,
+        hvac_mode: str,
+        target_temp: float,
+        current_error: float,
+        candidate_index: int,
+        current_index: int,
+        phase: str,
+    ) -> str | None:
+        """Return a note when a downward switch should be held despite lower cost."""
+        if candidate_index >= current_index or current_error <= 0:
+            return None
+
+        if phase != PHASE_ESTABLISHED:
+            return f"Below target: holding {active_fan} until the current response is established"
+
+        predicted_error_10m = self._temperature_error(candidate.predicted_temp_10m, target_temp, hvac_mode)
+        reserve = max(self._deadband * 0.5, UNDER_TARGET_SHORTFALL_RESERVE)
+        if predicted_error_10m > reserve:
+            return (
+                f"Below target: holding {active_fan} because {candidate.fan_mode} still leaves "
+                f"{predicted_error_10m:.2f}C shortfall at 10 min"
+            )
+
+        return None
 
     @staticmethod
     def _apply_step_down_limit(

@@ -198,6 +198,28 @@ class ThermalLearning:
         avg = statistics.mean(matching_slopes)
         return -avg if hvac_mode == "cool" else avg
 
+    def get_mode_sample_count(self, fan_mode: str, hvac_mode: str) -> int:
+        """Return the number of collected samples for one fan/HVAC profile."""
+        return sum(1 for (_, fm, _, hm) in self._slope_samples if fm == fan_mode and hm == hvac_mode)
+
+    def get_mode_profiles(self, hvac_mode: str, fan_modes: list[str] | None = None) -> dict[str, dict]:
+        """Return the learned profile summary for one HVAC mode."""
+        if fan_modes:
+            ordered_modes = list(dict.fromkeys(fan_modes))
+        else:
+            ordered_modes = sorted({fm for (_, fm, _, hm) in self._slope_samples if hm == hvac_mode})
+
+        profiles: dict[str, dict] = {}
+        for fan_mode in ordered_modes:
+            effective_slope = self.get_mode_effective_slope(fan_mode, hvac_mode)
+            sample_count = self.get_mode_sample_count(fan_mode, hvac_mode)
+            profiles[fan_mode] = {
+                "effective_slope": round(effective_slope, 3) if effective_slope is not None else None,
+                "samples": sample_count,
+                "ready": effective_slope is not None,
+            }
+        return profiles
+
     def compute_optimal_parameters(self) -> dict:
         """Calculate optimal parameters from learned data.
 

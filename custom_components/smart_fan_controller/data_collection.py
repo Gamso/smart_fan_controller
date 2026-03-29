@@ -14,14 +14,17 @@ CSV columns (in order):
   mpc_shadow_disturbance
 """
 
+import asyncio
 import csv
 import logging
 import os
 from datetime import datetime, timezone
 
+from homeassistant.core import HomeAssistant
+
 _LOGGER = logging.getLogger(__name__)
 
-# Header used when creating a new file. Keep in sync with record() below.
+# Header used when creating a new file. Keep in sync with async_record() below.
 _HEADER = [
     "timestamp",
     "hvac_mode",
@@ -61,12 +64,18 @@ _MAX_FILE_SIZE = 10 * 1024 * 1024
 class DataCollector:
     """Appends one CSV row per control cycle to a rotating log file."""
 
-    def __init__(self, config_dir: str, entry_id: str) -> None:
+    def __init__(self, hass: HomeAssistant, config_dir: str, entry_id: str) -> None:
+        self._hass = hass
         self._path = os.path.join(config_dir, f"smart_fan_controller_data_{entry_id[:8]}.csv")
         self._rotated_path = self._path.replace(".csv", "_old.csv")
-        self._ensure_header()
+        self._io_lock = asyncio.Lock()
 
-    def record(
+    async def async_initialize(self) -> None:
+        """Create or validate the CSV file outside the event loop."""
+        async with self._io_lock:
+            await self._hass.async_add_executor_job(self._ensure_header)
+
+    async def async_record(
         self,
         *,
         hvac_mode: str,
@@ -83,7 +92,7 @@ class DataCollector:
         dead_time: float,
         shadow: dict | None = None,
     ) -> None:
-        """Append one row to the CSV file."""
+        """Append one row to the CSV file outside the event loop."""
         shadow = shadow or {}
         row = [
             datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -111,25 +120,37 @@ class DataCollector:
             shadow.get("mpc_shadow_would_change_now", "no"),
             round(shadow.get("mpc_shadow_cost", 0.0), 3) if shadow.get("mpc_shadow_cost") is not None else "",
             round(shadow.get("mpc_shadow_confidence", 0.0), 1) if shadow.get("mpc_shadow_confidence") is not None else "",
-            round(shadow.get("mpc_shadow_predicted_temperature_10m", 0.0), 3) if shadow.get("mpc_shadow_predicted_temperature_10m") is not None else "",
-            round(shadow.get("mpc_shadow_predicted_temperature_30m", 0.0), 3) if shadow.get("mpc_shadow_predicted_temperature_30m") is not None else "",
+            round(shadow.get("mpc_shadow_predicted_temperature_10m", 0.0), 3)
+            if shadow.get("mpc_shadow_predicted_temperature_10m") is not None
+            else "",
+            round(shadow.get("mpc_shadow_predicted_temperature_30m", 0.0), 3)
+            if shadow.get("mpc_shadow_predicted_temperature_30m") is not None
+            else "",
             shadow.get("mpc_shadow_known_profiles", 0),
-            round(shadow.get("mpc_shadow_disturbance_bias", 0.0), 3) if shadow.get("mpc_shadow_disturbance_bias") is not None else "",
+            round(shadow.get("mpc_shadow_disturbance_bias", 0.0), 3)
+            if shadow.get("mpc_shadow_disturbance_bias") is not None
+            else "",
         ]
-        try:
-            self._rotate_if_needed()
-            with open(self._path, "a", newline="", encoding="utf-8") as fh:
-                csv.writer(fh).writerow(row)
-        except OSError as exc:
-            _LOGGER.warning("DataCollector: could not write to %s: %s", self._path, exc)
+        async with self._io_lock:
+            await self._hass.async_add_executor_job(self._write_row, row)
 
     @property
     def path(self) -> str:
         """Return the active CSV file path."""
         return self._path
 
+    def _write_row(self, row: list[object]) -> None:
+        """Write one row to disk, rotating the file first if needed."""
+        try:
+            self._rotate_if_needed()
+            self._ensure_header()
+            with open(self._path, "a", newline="", encoding="utf-8") as fh:
+                csv.writer(fh).writerow(row)
+        except OSError as exc:
+            _LOGGER.warning("DataCollector: could not write to %s: %s", self._path, exc)
+
     def _ensure_header(self) -> None:
-        """Write the header row if the file does not exist yet."""
+        """Write the header row if missing, or rotate when the schema changes."""
         if not os.path.exists(self._path):
             try:
                 with open(self._path, "w", newline="", encoding="utf-8") as fh:
