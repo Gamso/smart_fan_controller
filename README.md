@@ -122,8 +122,9 @@ Each cycle the controller computes the temperature error (always positive when t
 
 **Zone C details**: During the dead-time phase, the controller reports "Patience: Waiting for thermal response" instead of boosting, to avoid over-reacting before the sensor can reflect the last change. After dead time, if the slope hasn't improved, it increases fan speed.
 
-**Zone D details**: Three sub-rules gated by control phase:
-- **Descent**: Strong favorable slope in ESTABLISHED phase → reduce fan (save energy)
+**Zone D details**: Four sub-rules gated by control phase:
+- **Descent**: Strong favorable slope in ESTABLISHED phase, already within deadband, and projection at/past target → reduce fan
+- **Hold**: Strong favorable slope but still too far from target → keep current fan
 - **Drift**: Slow drift away from target → increase fan
 - **Proactive**: Stable but away from target in ESTABLISHED phase → increase fan to reach setpoint
 
@@ -174,9 +175,11 @@ The integration includes an **automatic learning system** that collects data dur
 | `deadband`      | `0.15 + (volatility_factor × 0.2)`        |
 | `soft_error`    | `0.25 + (volatility_factor × 0.3)`        |
 | `hard_error`    | `0.5 + (volatility_factor × 0.4)`         |
-| `limit_timeout` | median of measured thermal response times |
+| `limit_timeout` | rounded median of measured thermal response times |
 
 Where `volatility_factor = min(slope_stdev / slope_mean, 3.0)`.
+
+> **Important**: the learned `limit_timeout` is the stored base response estimate. At runtime, non-emergency decisions use `effective_timeout = max(min_interval, dead_time × 1.5)` once learning is ready.
 
 Once learning is ready, parameters are **automatically applied** and the integration reloads. To apply manually, use the `apply_learned_settings` service. To start over, use `reset_learning`.
 
@@ -226,10 +229,12 @@ This prevents window-open periods from corrupting the learned profiles.
 | `sensor.smart_fan_learning_status`             | —     | `"Learning (45%)"` or `"Ready"`                     |
 | `sensor.smart_fan_learning_samples`            | count | Number of slope samples collected                   |
 | `sensor.smart_fan_learning_response_events`    | count | Number of thermal response time measurements        |
+| `sensor.smart_fan_learned_dead_time`           | min   | Median learned thermal response delay (`dead_time`) |
+| `sensor.smart_fan_effective_timeout`           | min   | Actual non-emergency timeout currently used         |
 | `sensor.smart_fan_learned_deadband`            | °C    | Learned optimal deadband                            |
 | `sensor.smart_fan_learned_soft_error`          | °C    | Learned optimal soft error threshold                |
 | `sensor.smart_fan_learned_hard_error`          | °C    | Learned optimal hard error threshold                |
-| `sensor.smart_fan_learned_limit_timeout`       | min   | Learned optimal limit timeout                       |
+| `sensor.smart_fan_learned_limit_timeout`       | min   | Learned base timeout stored in config               |
 
 ---
 

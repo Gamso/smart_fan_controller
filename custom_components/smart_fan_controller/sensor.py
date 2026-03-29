@@ -55,6 +55,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     entities.append(SmartFanLearningStatusSensor(entry.entry_id, controller))
     entities.append(SmartFanLearningSamplesSensor(entry.entry_id, controller))
     entities.append(SmartFanLearningResponseSensor(entry.entry_id, controller))
+    entities.append(SmartFanLearnedDeadTimeSensor(entry.entry_id, controller))
+    entities.append(SmartFanEffectiveTimeoutSensor(entry.entry_id, controller))
     entities.append(SmartFanLearnedDeadbandSensor(entry.entry_id, controller))
     entities.append(SmartFanLearnedSoftErrorSensor(entry.entry_id, controller))
     entities.append(SmartFanLearnedHardErrorSensor(entry.entry_id, controller))
@@ -128,6 +130,8 @@ class SmartFanLearningSensor(_SmartFanEntity):
             "samples_collected": self._controller.learning.slope_sample_count(),
             "response_events": self._controller.learning.response_event_count(),
             "is_ready": self._controller.learning.is_ready(),
+            "learned_dead_time": round(self._controller.learning.get_dead_time(), 2),
+            "effective_timeout": round(self._controller.get_effective_timeout(), 2),
         }
 
         # Always compute optimal parameters for continuous monitoring (not applied automatically)
@@ -231,7 +235,64 @@ class SmartFanLearningResponseSensor(_SmartFanEntity):
         return {
             "response_samples": optimal.get("response_samples", 0),
             "avg_response_time_min": round(avg_response, 1),
+            "median_response_time_min": round(learning.get_dead_time(), 2),
+            "effective_timeout_min": round(self._controller.get_effective_timeout(), 2),
             "computed_limit_timeout": optimal.get("limit_timeout", 0),
+        }
+
+
+class SmartFanLearnedDeadTimeSensor(_SmartFanEntity):
+    """Sensor showing the learned thermal dead time."""
+
+    def __init__(self, entry_id: str, controller) -> None:
+        self._entry_id = entry_id
+        self._controller = controller
+        self._attr_name = "Learned Dead Time"
+        self._attr_unique_id = f"smart_fan_learned_dead_time_{entry_id}"
+        self._attr_native_unit_of_measurement = UnitOfTime.MINUTES
+        self._attr_device_class = SensorDeviceClass.DURATION
+        self._attr_icon = "mdi:timer-sand"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def native_value(self) -> float:
+        """Return the median learned response delay."""
+        return round(self._controller.learning.get_dead_time(), 2)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Expose readiness context for the learned dead time."""
+        return {
+            "is_ready": self._controller.learning.is_ready(),
+            "response_events": self._controller.learning.response_event_count(),
+        }
+
+
+class SmartFanEffectiveTimeoutSensor(_SmartFanEntity):
+    """Sensor showing the actual non-emergency timeout in use."""
+
+    def __init__(self, entry_id: str, controller) -> None:
+        self._entry_id = entry_id
+        self._controller = controller
+        self._attr_name = "Effective Timeout"
+        self._attr_unique_id = f"smart_fan_effective_timeout_{entry_id}"
+        self._attr_native_unit_of_measurement = UnitOfTime.MINUTES
+        self._attr_device_class = SensorDeviceClass.DURATION
+        self._attr_icon = "mdi:clock-check-outline"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def native_value(self) -> float:
+        """Return the actual timeout currently used by controller decisions."""
+        return round(self._controller.get_effective_timeout(), 2)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Show how the effective timeout is derived."""
+        return {
+            "is_ready": self._controller.learning.is_ready(),
+            "learned_dead_time": round(self._controller.learning.get_dead_time(), 2),
+            "configured_limit_timeout": round(self._controller.limit_timeout, 2),
         }
 
 
