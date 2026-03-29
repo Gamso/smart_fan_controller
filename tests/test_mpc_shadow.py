@@ -9,7 +9,11 @@ import pytest
 from custom_components.smart_fan_controller.controller import SmartFanController
 from custom_components.smart_fan_controller.data_collection import DataCollector
 from custom_components.smart_fan_controller.mpc_shadow import MPCShadowController
-from custom_components.smart_fan_controller.sensor import SmartFanMpcProfilesSensor, SmartFanSensor
+from custom_components.smart_fan_controller.sensor import (
+    SmartFanMpcProfilesSensor,
+    SmartFanProfileEffectiveSlopeSensor,
+    SmartFanSensor,
+)
 
 FAN_MODES = ["low", "medium", "high"]
 
@@ -166,6 +170,7 @@ def test_shadow_sensor_can_clear_to_none() -> None:
         "entry-1",
         "MPC Shadow Cost",
         "mpc_shadow_cost",
+        "mpc_shadow_cost",
         None,
         None,
         "mdi:calculator",
@@ -196,8 +201,22 @@ def test_mpc_profiles_sensor_exposes_per_mode_values() -> None:
     assert attrs["profiles"]["medium"]["effective_slope"] == 0.5
     assert attrs["profiles"]["medium"]["samples"] == 15
     assert attrs["profiles"]["medium"]["ready"] is True
+    assert attrs["profile_effective_slope_sensors"]["medium"] == "sensor.smart_fan_controller_heat_medium_effective_slope"
     assert attrs["profiles"]["high"]["effective_slope"] is None
     assert attrs["profiles"]["high"]["samples"] == 8
+
+
+def test_profile_effective_slope_sensor_exposes_historizable_state() -> None:
+    controller = _build_controller()
+    for _ in range(12):
+        controller.learning.add_slope_sample("high", 0.9, 0.3, "heat")
+
+    sensor = SmartFanProfileEffectiveSlopeSensor("entry-1", controller, "heat", "high")
+
+    assert sensor.entity_id == "sensor.smart_fan_controller_heat_high_effective_slope"
+    assert sensor.native_value == 0.9
+    assert sensor.extra_state_attributes["samples"] == 12
+    assert sensor.extra_state_attributes["ready"] is True
 
 
 def test_live_controller_holds_favorable_slope_until_close_to_target() -> None:

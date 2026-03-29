@@ -1,35 +1,41 @@
 """Initialisation of Smart Fan Controller."""
+from __future__ import annotations
+
 import logging
 from datetime import timedelta
-from homeassistant.core import HomeAssistant
+
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers.event import async_track_time_interval, async_track_state_change_event
-from homeassistant.helpers.storage import Store
 from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
+from homeassistant.helpers.storage import Store
 
 from .const import (
-    DOMAIN,
     CONF_CLIMATE_ENTITY,
-    CONF_DEADBAND,
-    CONF_MIN_INTERVAL,
-    CONF_SOFT_ERROR,
-    CONF_HARD_ERROR,
-    CONF_LIMIT_TIMEOUT,
-    CONF_LEARNING_ENABLED,
     CONF_DATA_COLLECTION,
+    CONF_DEADBAND,
+    CONF_HARD_ERROR,
+    CONF_LEARNING_ENABLED,
+    CONF_LIMIT_TIMEOUT,
+    CONF_MIN_INTERVAL,
     CONF_MPC_SHADOW_ENABLED,
-    DEFAULT_DEADBAND,
-    DEFAULT_MIN_INTERVAL,
-    DEFAULT_SOFT_ERROR,
-    DEFAULT_HARD_ERROR,
-    DEFAULT_LIMIT_TIMEOUT,
-    DEFAULT_LEARNING_ENABLED,
+    CONF_SOFT_ERROR,
     DEFAULT_DATA_COLLECTION,
+    DEFAULT_DEADBAND,
+    DEFAULT_HARD_ERROR,
+    DEFAULT_LEARNING_ENABLED,
+    DEFAULT_LIMIT_TIMEOUT,
+    DEFAULT_MIN_INTERVAL,
     DEFAULT_MPC_SHADOW_ENABLED,
+    DEFAULT_SOFT_ERROR,
     DELTA_TIME_CONTROL_LOOP,
-    STORAGE_VERSION,
-    STORAGE_KEY,
+    DOMAIN,
     LEARNING_DATA_SAVE_INTERVAL,
+    STORAGE_KEY,
+    STORAGE_VERSION,
+    build_unique_id,
+    extract_object_key_from_unique_id,
 )
 from .controller import SmartFanController
 from .data_collection import DataCollector
@@ -39,18 +45,97 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.SENSOR, Platform.SWITCH]
 
 
+def _filter_supported_fan_modes(raw_modes: list[str] | None) -> list[str]:
+    """Keep only supported manual fan modes."""
+    if not raw_modes:
+        return []
+    return [mode for mode in raw_modes if isinstance(mode, str) and mode.lower() not in {"auto", "off"}]
+
+
+def _extract_supported_fan_modes(state) -> list[str]:
+    """Extract supported fan modes from a climate state."""
+    if state is None:
+        return []
+    return _filter_supported_fan_modes(state.attributes.get("fan_modes"))
+
+
+async def _async_migrate_entity_registry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Migrate Smart Fan Controller entity IDs and unique IDs to the canonical naming."""
+    entity_registry = er.async_get(hass)
+    if not hasattr(entity_registry, "entities"):
+        try:
+            await entity_registry.async_load()
+        except Exception as exc:  # pragma: no cover - defensive guard for partial test harnesses
+            _LOGGER.debug(
+                "Skipping entity registry migration for %s because the registry is not ready: %s",
+                entry.entry_id,
+                exc,
+            )
+            return
+
+    entries = er.async_entries_for_config_entry(entity_registry, entry.entry_id)
+    if not entries:
+        return
+
+    migrated = 0
+    reserved_entity_ids: set[str] = set()
+
+    for registry_entry in entries:
+        updates: dict[str, object] = {}
+        object_key = extract_object_key_from_unique_id(registry_entry.unique_id, entry.entry_id)
+
+        if object_key is None:
+            reserved_entity_ids.add(registry_entry.entity_id)
+            _LOGGER.warning(
+                "Skipping entity registry migration for %s because its unique_id is not recognized: %s",
+                registry_entry.entity_id,
+                registry_entry.unique_id,
+            )
+            continue
+
+        desired_unique_id = build_unique_id(object_key, entry.entry_id)
+        if registry_entry.unique_id != desired_unique_id:
+            updates["new_unique_id"] = desired_unique_id
+
+        desired_entity_id = entity_registry.async_get_available_entity_id(
+            registry_entry.domain,
+            f"{DOMAIN}_{object_key}",
+            current_entity_id=registry_entry.entity_id,
+            reserved_entity_ids=reserved_entity_ids,
+        )
+        reserved_entity_ids.add(desired_entity_id)
+
+        if registry_entry.entity_id != desired_entity_id:
+            updates["new_entity_id"] = desired_entity_id
+
+        if not registry_entry.has_entity_name:
+            updates["has_entity_name"] = True
+
+        if not updates:
+            continue
+
+        old_entity_id = registry_entry.entity_id
+        old_unique_id = registry_entry.unique_id
+        updated_entry = entity_registry.async_update_entity(registry_entry.entity_id, **updates)
+        migrated += 1
+        _LOGGER.info(
+            "Migrated entity %s -> %s (unique_id %s -> %s)",
+            old_entity_id,
+            updated_entry.entity_id,
+            old_unique_id,
+            updated_entry.unique_id,
+        )
+
+    if migrated:
+        _LOGGER.info("Entity registry migration completed for %s: %d entities updated", entry.entry_id, migrated)
+
+
 async def _apply_optimal_parameters(
     hass: HomeAssistant,
     entry: ConfigEntry,
     optimal: dict,
 ) -> None:
-    """Apply learned optimal parameters to the config entry and trigger a reload.
-
-    This is a standalone helper factorised from both the auto-apply block and the
-    apply_learned_settings service, so the logic lives in exactly one place.
-    Sets the learning_auto_applied flag in entry.data so that a subsequent reload
-    does not trigger a second auto-apply (breaking the infinite-reload loop).
-    """
+    """Apply learned optimal parameters to the config entry and trigger a reload."""
     new_data = {**entry.data}
     new_data["learning_auto_applied"] = True
     new_data[CONF_DEADBAND] = optimal["deadband"]
@@ -59,7 +144,8 @@ async def _apply_optimal_parameters(
     new_data[CONF_LIMIT_TIMEOUT] = optimal["limit_timeout"]
 
     _LOGGER.info(
-        "Applying learned settings: deadband=%.2f soft_error=%.2f hard_error=%.2f limit_timeout=%d",
+        "Applying learned settings for %s: deadband=%.2f soft_error=%.2f hard_error=%.2f limit_timeout=%d",
+        entry.entry_id,
         optimal["deadband"],
         optimal["soft_error"],
         optimal["hard_error"],
@@ -72,22 +158,44 @@ async def _apply_optimal_parameters(
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the integration from a config entry."""
-    # 1. Retrieve settings from config entry (options override data)
     conf = {**entry.data, **entry.options}
     climate_id = conf[CONF_CLIMATE_ENTITY]
+    current_state = hass.states.get(climate_id)
+    initial_fan_modes = _extract_supported_fan_modes(current_state)
 
-    # Set up persistent storage for learning data
+    _LOGGER.info(
+        "Setting up Smart Fan Controller for %s (learning=%s, shadow=%s, data_collection=%s)",
+        climate_id,
+        conf.get(CONF_LEARNING_ENABLED, DEFAULT_LEARNING_ENABLED),
+        conf.get(CONF_MPC_SHADOW_ENABLED, DEFAULT_MPC_SHADOW_ENABLED),
+        conf.get(CONF_DATA_COLLECTION, DEFAULT_DATA_COLLECTION),
+    )
+
+    if initial_fan_modes:
+        _LOGGER.info("Initial fan modes discovered for %s: %s", climate_id, initial_fan_modes)
+    else:
+        _LOGGER.debug("No supported fan modes available yet for %s during setup", climate_id)
+
     store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY}.{entry.entry_id}")
 
-    # Try to restore learning data from persistent storage first, then fall back to config entry
     learning_data = await store.async_load()
+    learning_data_source = "storage"
     if not learning_data:
         learning_data = entry.data.get("learning_data")
-        _LOGGER.debug("No persistent storage found, using config entry data")
+        learning_data_source = "config_entry"
+        _LOGGER.debug("No persistent storage found for %s, using config entry data", entry.entry_id)
 
-    # 2. Instantiate the controller with dynamic parameters from Config Flow
+    if learning_data:
+        _LOGGER.info(
+            "Restored learning data for %s from %s (%d slope samples, %d response events)",
+            entry.entry_id,
+            learning_data_source,
+            len(learning_data.get("slope_samples", [])),
+            len(learning_data.get("response_events", [])),
+        )
+
     controller = SmartFanController(
-        fan_modes=None,
+        fan_modes=initial_fan_modes or None,
         deadband=conf.get(CONF_DEADBAND, DEFAULT_DEADBAND),
         min_interval=conf.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL),
         soft_error=conf.get(CONF_SOFT_ERROR, DEFAULT_SOFT_ERROR),
@@ -101,11 +209,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         learning=controller.learning,
         deadband=conf.get(CONF_DEADBAND, DEFAULT_DEADBAND),
         min_interval=conf.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL),
-        fan_modes=None,
+        fan_modes=initial_fan_modes or None,
         enabled=conf.get(CONF_MPC_SHADOW_ENABLED, DEFAULT_MPC_SHADOW_ENABLED),
     )
 
-    # Instantiate the data collector (creates the CSV file immediately if enabled)
     data_collection_enabled = conf.get(CONF_DATA_COLLECTION, DEFAULT_DATA_COLLECTION)
     collector: DataCollector | None = (
         DataCollector(hass, hass.config.config_dir, entry.entry_id)
@@ -114,42 +221,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     if collector:
         await collector.async_initialize()
-        _LOGGER.info("DataCollector enabled – writing to %s", collector.path)
+        _LOGGER.info("DataCollector enabled for %s, writing to %s", entry.entry_id, collector.path)
 
-    # 3. Store data for platforms and forward setup
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "controller": controller,
         "mpc_shadow": shadow_controller,
         "climate_entity": climate_id,
-        "sensor": None,  # Reference will be set in sensor.py
-        "store": store,  # Store the storage object for periodic saves
+        "sensors": [],
+        "ensure_profile_sensors": None,
+        "store": store,
     }
 
+    await _async_migrate_entity_registry(hass, entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    def _ensure_profile_sensors() -> None:
+        """Create late-discovered profile sensors when fan modes become available."""
+        add_profile_entities = hass.data[DOMAIN][entry.entry_id].get("ensure_profile_sensors")
+        if callable(add_profile_entities):
+            add_profile_entities()
 
     async def run_control_loop(_):
         """Main control loop executed every 2 minutes."""
         current_state = hass.states.get(climate_id)
 
-        # Guard clause if the climate entity is still missing from the state machine
         if not current_state:
-            _LOGGER.warning("Climate entity %s not found", climate_id)
+            _LOGGER.warning("Climate entity %s not found; skipping control cycle", climate_id)
             return
 
-        # Dynamically fetch fan modes if the controller doesn't have them yet
-        # Check for both None and empty list to handle race condition at startup
         if not controller.fan_modes:
-            raw_modes = current_state.attributes.get("fan_modes", [])
-            # Remove "auto" from the list of modes
-            filtered_modes = [m for m in raw_modes if m.lower() not in ["auto", "off"]]
-            if filtered_modes:
-                controller.fan_modes = filtered_modes
-                shadow_controller.fan_modes = filtered_modes
-                _LOGGER.info("Detected fan modes for %s: %s", climate_id, controller.fan_modes)
+            detected_modes = _extract_supported_fan_modes(current_state)
+            if detected_modes:
+                controller.fan_modes = detected_modes
+                shadow_controller.fan_modes = detected_modes
+                _LOGGER.info("Detected fan modes for %s during runtime: %s", climate_id, detected_modes)
+                _ensure_profile_sensors()
             else:
-                _LOGGER.debug("Climate entity %s has no valid fan modes yet, will retry on next cycle", climate_id)
+                _LOGGER.debug("Climate entity %s has no supported fan modes yet, will retry next cycle", climate_id)
 
-        # Extract VTherm and Climate data
         attrs = current_state.attributes
         vtherm_slope = attrs.get("specific_states", {}).get("temperature_slope", 0)
         current_temp = attrs.get("current_temperature")
@@ -157,32 +266,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hvac_mode = attrs.get("hvac_mode")
         current_fan = attrs.get("fan_mode")
 
-        # Detect window-open state from VTherm attributes
-        # VTherm exposes window_manager.window_state ("on"/"off") and
-        # hvac_off_reason ("Window" when heating is cut due to open window)
         window_mgr = attrs.get("window_manager", {})
         is_window_open = (
-            window_mgr.get("window_state") == "on" or window_mgr.get("window_auto_state") == "on" or attrs.get("specific_states", {}).get("hvac_off_reason") == "Window"
+            window_mgr.get("window_state") == "on"
+            or window_mgr.get("window_auto_state") == "on"
+            or attrs.get("specific_states", {}).get("hvac_off_reason") == "Window"
         )
 
         if vtherm_slope is None:
-            _LOGGER.warning("%s missing VTherm temperature_slope; skipping control cycle", climate_id)
+            _LOGGER.warning("%s is missing VTherm temperature_slope; skipping control cycle", climate_id)
             return
 
         if current_temp is None or target_temp is None:
-            _LOGGER.debug("Incomplete temperature data for %s, skipping cycle", climate_id)
+            _LOGGER.debug(
+                "Skipping control cycle for %s because temperature data is incomplete (current=%s, target=%s)",
+                climate_id,
+                current_temp,
+                target_temp,
+            )
             return
 
         _LOGGER.debug(
-            "Cycle: temp=%.2f target=%.2f slope=%.3f fan=%s hvac=%s",
+            "Cycle start for %s: temp=%.2f target=%.2f slope=%.3f fan=%s hvac=%s window_open=%s",
+            climate_id,
             current_temp,
             target_temp,
             vtherm_slope,
             current_fan,
             hvac_mode,
+            is_window_open,
         )
 
-        # Execute decision logic
         decision = controller.calculate_decision(
             float(current_temp),
             float(target_temp),
@@ -204,7 +318,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         combined_decision = {**decision, **shadow_decision}
 
-        # Persist one CSV row for offline analysis (beta instrumentation)
+        _LOGGER.debug(
+            "Cycle result for %s: live=%s shadow=%s shadow_status=%s shadow_confidence=%s%%",
+            climate_id,
+            decision.get("fan_mode"),
+            shadow_decision.get("mpc_shadow_fan_mode"),
+            shadow_decision.get("mpc_shadow_status"),
+            shadow_decision.get("mpc_shadow_confidence"),
+        )
+
         if collector:
             effective_slope = -float(vtherm_slope) if str(hvac_mode) == "cool" else float(vtherm_slope)
             minutes_since = decision.get("minutes_since_last_change", 0.0)
@@ -224,40 +346,43 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 shadow=shadow_decision,
             )
 
-        # Update all sensors stored in the list
         sensors = hass.data[DOMAIN][entry.entry_id].get("sensors")
         if sensors:
-            _LOGGER.debug("Updating %s diagnostic sensors", len(sensors))
+            _LOGGER.debug("Updating %d Smart Fan Controller sensors for %s", len(sensors), climate_id)
             for sensor in sensors:
-                if hasattr(sensor, 'update_from_controller'):
+                if hasattr(sensor, "update_from_controller"):
                     sensor.update_from_controller(combined_decision)
-                # Force update all sensors (including learning sensors)
                 sensor.async_write_ha_state()
 
-        # Auto-apply learned parameters when learning becomes ready (only once per installation).
-        # The flag is persisted in entry.data so it survives reloads and avoids an infinite loop
-        # where the reload itself triggers another auto-apply.
-        if controller.learning_enabled and controller.learning.is_ready() and not entry.data.get("learning_auto_applied", False):
-
+        if (
+            controller.learning_enabled
+            and controller.learning.is_ready()
+            and not entry.data.get("learning_auto_applied", False)
+        ):
             optimal = controller.learning.compute_optimal_parameters()
             if optimal:
-                _LOGGER.info("Learning is ready! Scheduling auto-apply of learned parameters.")
+                _LOGGER.info("Learning is ready for %s, scheduling auto-apply of learned parameters", climate_id)
                 hass.async_create_task(_apply_optimal_parameters(hass, entry, optimal))
 
-        # Apply the new fan speed if a change is required
         if decision["fan_mode"] != current_fan:
             _LOGGER.info(
-                "Changing %s fan to %s. Reason: %s",
-                climate_id, decision["fan_mode"], decision["reason"]
+                "Changing %s fan mode from %s to %s (%s)",
+                climate_id,
+                current_fan,
+                decision["fan_mode"],
+                decision["reason"],
             )
-            await hass.services.async_call("climate", "set_fan_mode", {
-                "entity_id": climate_id,
-                "fan_mode": decision["fan_mode"]
-            })
-            # Advance the cooldown timer only after the service call succeeds
+            await hass.services.async_call(
+                "climate",
+                "set_fan_mode",
+                {"entity_id": climate_id, "fan_mode": decision["fan_mode"]},
+            )
             controller.confirm_fan_change()
+        else:
+            _LOGGER.debug("No fan mode change required for %s (%s)", climate_id, decision["reason"])
 
     async def _handle_manual_change(event):
+        """Track manual fan mode changes to reset the controller cooldown."""
         new_state = event.data.get("new_state")
         old_state = event.data.get("old_state")
         if not new_state or not old_state:
@@ -266,105 +391,107 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         new_fan = new_state.attributes.get("fan_mode")
         old_fan = old_state.attributes.get("fan_mode")
 
-        # Ignore transitions where the fan mode disappears (entity going unavailable)
         if new_fan is None or new_fan == old_fan:
             return
 
-        _LOGGER.info("Manual fan_mode change detected, resetting timer")
+        _LOGGER.info("Manual fan mode change detected for %s: %s -> %s", climate_id, old_fan, new_fan)
 
-        # Reset internal controller timer
         manual_data = controller.record_manual_override(new_fan)
 
-        # Instantly refresh sensors to show the change
         sensors = hass.data[DOMAIN][entry.entry_id].get("sensors", [])
         for sensor in sensors:
             if hasattr(sensor, "update_from_controller"):
                 sensor.update_from_controller(manual_data)
             sensor.async_write_ha_state()
 
-    # Schedule the loop and run it immediately once to initialize
     remove_timer = async_track_time_interval(hass, run_control_loop, timedelta(minutes=DELTA_TIME_CONTROL_LOOP))
     manual_change = async_track_state_change_event(hass, [climate_id], _handle_manual_change)
-    # This ensures the timer stops if the integration is unloaded/removed
     entry.async_on_unload(remove_timer)
     entry.async_on_unload(manual_change)
 
-    # Trigger first run immediately after setup
     hass.async_create_task(run_control_loop(None))
 
     async def periodic_save_learning(_):
         """Periodically save learning data to persistent storage."""
-        learning_data = controller.learning.to_dict()
-        await store.async_save(learning_data)
-        _LOGGER.debug("Learning data saved to persistent storage")
+        learning_data_to_save = controller.learning.to_dict()
+        await store.async_save(learning_data_to_save)
+        _LOGGER.debug(
+            "Persisted learning data for %s (%d slope samples, %d response events)",
+            entry.entry_id,
+            len(learning_data_to_save.get("slope_samples", [])),
+            len(learning_data_to_save.get("response_events", [])),
+        )
 
-    # Schedule periodic saves every 5 minutes
-    remove_periodic_save = async_track_time_interval(
-        hass, periodic_save_learning, LEARNING_DATA_SAVE_INTERVAL
-    )
+    remove_periodic_save = async_track_time_interval(hass, periodic_save_learning, LEARNING_DATA_SAVE_INTERVAL)
     entry.async_on_unload(remove_periodic_save)
 
-    # Register service to apply learned parameters
     async def apply_learned_settings(_):
         """Service to apply optimal parameters from learning."""
         if not controller.learning.is_ready():
-            _LOGGER.warning("Learning not complete yet (%.1f%%), cannot apply settings", controller.learning.get_progress())
+            _LOGGER.warning(
+                "Learning not complete yet for %s (%.1f%%), cannot apply settings",
+                climate_id,
+                controller.learning.get_progress(),
+            )
             return
 
         optimal = controller.learning.compute_optimal_parameters()
         if not optimal:
-            _LOGGER.error("Failed to compute optimal parameters")
+            _LOGGER.error("Failed to compute optimal parameters for %s", climate_id)
             return
 
         await _apply_optimal_parameters(hass, entry, optimal)
 
     hass.services.async_register(DOMAIN, "apply_learned_settings", apply_learned_settings)
 
-    # Register service to reset learning data
     async def reset_learning(_):
         """Service to clear all learning data and restart learning."""
         controller.learning.reset()
 
-        # Persist cleared data to both config entry and storage
-        learning_data = controller.learning.to_dict()
-        new_data = {**entry.data, "learning_data": learning_data}
+        learning_data_to_save = controller.learning.to_dict()
+        new_data = {**entry.data, "learning_data": learning_data_to_save}
         hass.config_entries.async_update_entry(entry, data=new_data)
-        await store.async_save(learning_data)
+        await store.async_save(learning_data_to_save)
 
-        # Refresh sensors immediately
         sensors = hass.data[DOMAIN][entry.entry_id].get("sensors", [])
         for sensor in sensors:
             sensor.async_write_ha_state()
 
-        _LOGGER.info("Learning reset: all samples and stats cleared")
+        _LOGGER.info("Learning reset for %s: all samples and stats cleared", climate_id)
 
     hass.services.async_register(DOMAIN, "reset_learning", reset_learning)
 
     return True
 
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry when it's being removed."""
-    # Save learning data before unloading
     entry_data = hass.data[DOMAIN].get(entry.entry_id)
     if entry_data:
         controller = entry_data.get("controller")
         store = entry_data.get("store")
-        if controller and hasattr(controller, 'learning'):
+        if controller and hasattr(controller, "learning"):
             learning_data = controller.learning.to_dict()
-            # Store in both config entry and persistent storage
             new_data = {**entry.data, "learning_data": learning_data}
             hass.config_entries.async_update_entry(entry, data=new_data)
             if store:
                 await store.async_save(learning_data)
-                _LOGGER.debug("Learning data saved on unload")
+                _LOGGER.debug(
+                    "Learning data saved on unload for %s (%d slope samples, %d response events)",
+                    entry.entry_id,
+                    len(learning_data.get("slope_samples", [])),
+                    len(learning_data.get("response_events", [])),
+                )
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
+        _LOGGER.info("Unloaded Smart Fan Controller entry %s", entry.entry_id)
     return unload_ok
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry."""
+    _LOGGER.info("Reloading Smart Fan Controller entry %s", entry.entry_id)
     await async_unload_entry(hass, entry)
     await async_setup_entry(hass, entry)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 
 from .const import (
     DEAD_TIME_SAFETY_FACTOR,
@@ -12,6 +13,8 @@ from .const import (
     PHASE_TRANSIENT,
 )
 from .thermal_learning import ThermalLearning
+
+_LOGGER = logging.getLogger(__name__)
 
 MIN_INTERVAL_CHANGE_PENALTY = 25.0
 DISTURBANCE_EMA_ALPHA = 0.2
@@ -96,6 +99,19 @@ class MPCShadowController:
         minutes_since_change: float = 0.0,
     ) -> dict:
         """Evaluate the best shadow fan mode for the current cycle."""
+        _LOGGER.debug(
+            "Shadow evaluate: enabled=%s hvac=%s current_temp=%.2f target=%.2f slope=%.3f current_fan=%s live_decision=%s minutes_since_change=%.1f window_open=%s",
+            self._enabled,
+            hvac_mode,
+            current_temp,
+            target_temp,
+            vtherm_slope,
+            current_fan,
+            live_decision_fan,
+            minutes_since_change,
+            is_window_open,
+        )
+
         if not self._enabled:
             return self._payload(
                 status="Disabled",
@@ -239,6 +255,19 @@ class MPCShadowController:
         matches_live = "n/a" if live_decision_fan is None else ("yes" if live_decision_fan == best.fan_mode else "no")
         would_change_now = "yes" if change_allowed and best.fan_mode != active_fan else "no"
         status = "Ready" if confidence >= 0.5 else "Low confidence"
+        _LOGGER.debug(
+            "Shadow candidates: %s",
+            [
+                (
+                    sim.fan_mode,
+                    round(sim.total_cost, 3),
+                    round(sim.predicted_temp_10m, 2),
+                    round(sim.predicted_temp_30m, 2),
+                    sim.known_profile,
+                )
+                for sim in simulations
+            ],
+        )
         reason = (
             f"Shadow recommends {best.fan_mode}: cost={best.total_cost:.2f}, "
             f"T+10={best.predicted_temp_10m:.2f}C, T+30={best.predicted_temp_30m:.2f}C"
@@ -252,6 +281,18 @@ class MPCShadowController:
                 f" | Min interval active ({minutes_since_change:.1f}/"
                 f"{self._min_interval:.1f} min)"
             )
+
+        _LOGGER.debug(
+            "Shadow result: active=%s best=%s status=%s confidence=%.2f known_profiles=%d/%d bias=%.3f note=%s",
+            active_fan,
+            best.fan_mode,
+            status,
+            confidence,
+            known_profiles,
+            len(fan_modes),
+            self._disturbance_bias,
+            selection_note or "none",
+        )
 
         return self._payload(
             status=status,
@@ -279,12 +320,26 @@ class MPCShadowController:
         """Return the effective slope estimate for a candidate fan mode."""
         learned = self._learning.get_mode_effective_slope(fan_mode, hvac_mode)
         if learned is not None:
+            _LOGGER.debug(
+                "Shadow slope model: using learned profile for %s/%s = %.3f",
+                hvac_mode,
+                fan_mode,
+                learned,
+            )
             return learned, True
 
         baseline_slope = max(current_effective_slope, 0.2)
         current_rank = fan_modes.index(current_fan) + 1
         candidate_rank = fan_modes.index(fan_mode) + 1
         scaled = baseline_slope * (candidate_rank / max(current_rank, 1))
+        _LOGGER.debug(
+            "Shadow slope model: using fallback for %s/%s = %.3f (baseline=%.3f current_fan=%s)",
+            hvac_mode,
+            fan_mode,
+            scaled,
+            baseline_slope,
+            current_fan,
+        )
         return scaled, False
 
     @staticmethod
@@ -309,15 +364,29 @@ class MPCShadowController:
         """Track slow external disturbances such as solar gains or occupancy."""
         if is_window_open:
             self._disturbance_bias *= DISTURBANCE_DECAY
+            _LOGGER.debug("Shadow disturbance bias decayed to %.3f because window is open", self._disturbance_bias)
             return
 
         if not known_profile or phase != PHASE_ESTABLISHED:
             self._disturbance_bias *= DISTURBANCE_DECAY
+            _LOGGER.debug(
+                "Shadow disturbance bias decayed to %.3f because known_profile=%s phase=%s",
+                self._disturbance_bias,
+                known_profile,
+                phase,
+            )
             return
 
         residual = observed_effective_slope - expected_effective_slope
         updated = ((1 - DISTURBANCE_EMA_ALPHA) * self._disturbance_bias) + (DISTURBANCE_EMA_ALPHA * residual)
         self._disturbance_bias = max(-MAX_DISTURBANCE_BIAS, min(MAX_DISTURBANCE_BIAS, updated))
+        _LOGGER.debug(
+            "Shadow disturbance bias updated to %.3f (observed=%.3f expected=%.3f residual=%.3f)",
+            self._disturbance_bias,
+            observed_effective_slope,
+            expected_effective_slope,
+            residual,
+        )
 
     def _simulate_mode(
         self,

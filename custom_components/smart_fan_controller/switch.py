@@ -1,14 +1,41 @@
 """Switch platform for Smart Fan Controller."""
 from __future__ import annotations
 
-from homeassistant.components.switch import SwitchEntity
-from homeassistant.const import EntityCategory
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.entity import DeviceInfo
+import logging
 
-from .const import DOMAIN, CONF_LEARNING_ENABLED, CONF_MPC_SHADOW_ENABLED
+from homeassistant.components.switch import SwitchEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .const import (
+    CONF_LEARNING_ENABLED,
+    CONF_MPC_SHADOW_ENABLED,
+    DEVICE_NAME,
+    DOMAIN,
+    build_entity_id,
+    build_unique_id,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class _SmartFanSwitchEntity(SwitchEntity):
+    """Base switch wired to the Smart Fan Controller device."""
+
+    _entry_id: str
+    _attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Link the entity to the Smart Fan Controller device."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._entry_id)},
+            name=DEVICE_NAME,
+        )
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     """Set up the switch platform from a config entry."""
@@ -24,55 +51,49 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     async_add_entities(entities)
 
 
-class SmartFanLearningSwitch(SwitchEntity):
-    """Switch to enable/disable learning mode."""
+class SmartFanLearningSwitch(_SmartFanSwitchEntity):
+    """Switch to enable or disable learning mode."""
 
     def __init__(self, entry_id: str, controller, entry: ConfigEntry, hass: HomeAssistant) -> None:
-        """Initialize the learning switch."""
         self._entry_id = entry_id
         self._controller = controller
         self._entry = entry
         self._hass = hass
 
         self._attr_name = "Learning Enabled"
-        self._attr_unique_id = f"smart_fan_learning_enabled_{entry_id}"
+        self._attr_unique_id = build_unique_id("learning_enabled", entry_id)
         self._attr_icon = "mdi:brain"
         self._attr_entity_category = EntityCategory.CONFIG
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Link to the Smart Fan device."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._entry_id)},
-            name="Smart Fan Controller",
-        )
+        self.entity_id = build_entity_id("switch", "learning_enabled")
 
     @property
     def is_on(self) -> bool:
         """Return true if learning is enabled."""
         return self._controller.learning_enabled
 
-    def turn_on(self, **kwargs) -> None:
-        """Turn on learning mode (sync — HA calls async_turn_on when available)."""
-        self._controller.learning_enabled = True
-
-    def turn_off(self, **kwargs) -> None:
-        """Turn off learning mode (sync — HA calls async_turn_off when available)."""
-        self._controller.learning_enabled = False
-
     async def async_turn_on(self, **kwargs) -> None:
         """Turn on learning mode."""
         self._controller.learning_enabled = True
+        self._hass.config_entries.async_update_entry(
+            self._entry,
+            options={**self._entry.options, CONF_LEARNING_ENABLED: True},
+        )
+        _LOGGER.info("Learning enabled for %s", self._entry.entry_id)
+        self.async_write_ha_state()
 
-        # Update config entry to persist the setting
-        new_options = {**self._entry.options, CONF_LEARNING_ENABLED: True}
-        self._hass.config_entries.async_update_entry(self._entry, options=new_options)
-
+    async def async_turn_off(self, **kwargs) -> None:
+        """Turn off learning mode."""
+        self._controller.learning_enabled = False
+        self._hass.config_entries.async_update_entry(
+            self._entry,
+            options={**self._entry.options, CONF_LEARNING_ENABLED: False},
+        )
+        _LOGGER.info("Learning disabled for %s", self._entry.entry_id)
         self.async_write_ha_state()
 
 
-class SmartFanMpcShadowSwitch(SwitchEntity):
-    """Switch to enable/disable MPC shadow mode."""
+class SmartFanMpcShadowSwitch(_SmartFanSwitchEntity):
+    """Switch to enable or disable MPC shadow mode."""
 
     def __init__(self, entry_id: str, shadow_controller, entry: ConfigEntry, hass: HomeAssistant) -> None:
         self._entry_id = entry_id
@@ -81,17 +102,10 @@ class SmartFanMpcShadowSwitch(SwitchEntity):
         self._hass = hass
 
         self._attr_name = "MPC Shadow Mode"
-        self._attr_unique_id = f"smart_fan_mpc_shadow_enabled_{entry_id}"
+        self._attr_unique_id = build_unique_id("mpc_shadow_mode", entry_id)
         self._attr_icon = "mdi:robot-outline"
         self._attr_entity_category = EntityCategory.CONFIG
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Link to the Smart Fan device."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._entry_id)},
-            name="Smart Fan Controller",
-        )
+        self.entity_id = build_entity_id("switch", "mpc_shadow_mode")
 
     @property
     def is_on(self) -> bool:
@@ -101,58 +115,19 @@ class SmartFanMpcShadowSwitch(SwitchEntity):
     async def async_turn_on(self, **kwargs) -> None:
         """Turn on shadow mode."""
         self._shadow_controller.enabled = True
-        new_options = {**self._entry.options, CONF_MPC_SHADOW_ENABLED: True}
-        self._hass.config_entries.async_update_entry(self._entry, options=new_options)
+        self._hass.config_entries.async_update_entry(
+            self._entry,
+            options={**self._entry.options, CONF_MPC_SHADOW_ENABLED: True},
+        )
+        _LOGGER.info("MPC shadow mode enabled for %s", self._entry.entry_id)
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs) -> None:
         """Turn off shadow mode."""
         self._shadow_controller.enabled = False
-        new_options = {**self._entry.options, CONF_MPC_SHADOW_ENABLED: False}
-        self._hass.config_entries.async_update_entry(self._entry, options=new_options)
-        self.async_write_ha_state()
-
-    async def async_turn_off(self, **kwargs) -> None:
-        """Turn off learning mode."""
-        self._controller.learning_enabled = False
-
-        # Update config entry to persist the setting
-        new_options = {**self._entry.options, CONF_LEARNING_ENABLED: False}
-        self._hass.config_entries.async_update_entry(self._entry, options=new_options)
-
-        self.async_write_ha_state()
-
-
-class SmartFanMpcShadowSwitch(SwitchEntity):
-    """Switch to enable/disable MPC shadow mode."""
-
-    def __init__(self, entry_id: str, shadow_controller, entry: ConfigEntry, hass: HomeAssistant) -> None:
-        self._entry_id = entry_id
-        self._shadow_controller = shadow_controller
-        self._entry = entry
-        self._hass = hass
-
-        self._attr_name = "MPC Shadow Mode"
-        self._attr_unique_id = f"smart_fan_mpc_shadow_enabled_{entry_id}"
-        self._attr_icon = "mdi:robot-outline"
-        self._attr_entity_category = EntityCategory.CONFIG
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        return DeviceInfo(identifiers={(DOMAIN, self._entry_id)}, name="Smart Fan Controller")
-
-    @property
-    def is_on(self) -> bool:
-        return self._shadow_controller.enabled
-
-    async def async_turn_on(self, **kwargs) -> None:
-        self._shadow_controller.enabled = True
-        new_options = {**self._entry.options, CONF_MPC_SHADOW_ENABLED: True}
-        self._hass.config_entries.async_update_entry(self._entry, options=new_options)
-        self.async_write_ha_state()
-
-    async def async_turn_off(self, **kwargs) -> None:
-        self._shadow_controller.enabled = False
-        new_options = {**self._entry.options, CONF_MPC_SHADOW_ENABLED: False}
-        self._hass.config_entries.async_update_entry(self._entry, options=new_options)
+        self._hass.config_entries.async_update_entry(
+            self._entry,
+            options={**self._entry.options, CONF_MPC_SHADOW_ENABLED: False},
+        )
+        _LOGGER.info("MPC shadow mode disabled for %s", self._entry.entry_id)
         self.async_write_ha_state()

@@ -180,6 +180,7 @@ class SmartFanController:
     def record_manual_override(self, new_fan: str) -> dict:
         """Persist last change timestamp and return manual override payload."""
         self._last_change_time = time.time()
+        _LOGGER.debug("Manual override recorded: fan=%s at %.3f", new_fan, self._last_change_time)
 
         return {
             "fan_mode": new_fan,
@@ -196,6 +197,7 @@ class SmartFanController:
         the method compatible with tests that set self._now directly.
         """
         self._last_change_time = self._now
+        _LOGGER.debug("Confirmed fan change at %.3f", self._last_change_time)
 
     def save_states(
         self,
@@ -212,6 +214,12 @@ class SmartFanController:
             # Note: _last_change_time is updated by confirm_fan_change() AFTER the
             # HA service call succeeds, to avoid advancing the cooldown on failed calls.
             self._slope_at_last_change = effective_slope
+            _LOGGER.debug(
+                "Pending fan change snapshot saved: %s -> %s with effective_slope=%.3f",
+                current_fan,
+                target_fan,
+                effective_slope,
+            )
 
         if target_fan != current_fan or slope_change:
             self._previous_slope = vtherm_slope
@@ -224,6 +232,17 @@ class SmartFanController:
             # Very short times might be noise, very long times might be system off or other issues
             if 2.0 <= response_time <= 60.0 and self.learning_enabled and not is_window_open:
                 self.learning.add_response_event(response_time)
+                _LOGGER.debug(
+                    "Recorded thermal response event: %.1f min after last fan change",
+                    response_time,
+                )
+            else:
+                _LOGGER.debug(
+                    "Ignored thermal response event: response_time=%.1f learning_enabled=%s window_open=%s",
+                    response_time,
+                    self.learning_enabled,
+                    is_window_open,
+                )
             # Track when the last slope change occurred (for reference, not used in calculation)
             self._last_slope_significant_change = self._now
 
@@ -233,6 +252,7 @@ class SmartFanController:
 
         # Early exit: unsupported or inactive HVAC modes
         if hvac_mode in ("off", "dry", "fan_only"):
+            _LOGGER.debug("Skipping active control because HVAC mode is %s", hvac_mode)
             return {
                 "fan_mode": current_fan,
                 "projected_temperature": round(current_temp, 2),
@@ -390,7 +410,12 @@ class SmartFanController:
             self.learning.add_slope_sample(current_fan, vtherm_slope, current_temperature_error, hvac_mode, is_window_open)
 
         _LOGGER.debug(
-            "Decision: hvac=%s current=%.2f target=%.2f err=%.2f proj=%.2f proj_err=%.2f slope=%.3f eff_slope=%.3f phase=%s minutes=%.1f -> %s (%s)",
+            (
+                "Decision: hvac=%s current=%.2f target=%.2f err=%.2f proj=%.2f proj_err=%.2f "
+                "slope=%.3f eff_slope=%.3f phase=%s minutes=%.1f timeout=%.1f "
+                "slope_change=%s improving=%s interval_expired=%s min_interval_expired=%s "
+                "window_open=%s idx=%d->%d->%d force=%s -> %s (%s)"
+            ),
             hvac_mode,
             current_temp,
             target_temp,
@@ -401,6 +426,16 @@ class SmartFanController:
             effective_slope,
             phase,
             minutes_since_change,
+            effective_timeout,
+            slope_change,
+            is_slope_improving,
+            interval_expired,
+            min_interval_expired,
+            is_window_open,
+            current_index,
+            new_index,
+            final_index,
+            force,
             target_fan,
             reason,
         )
