@@ -136,7 +136,11 @@ class TestDeadTimePatienceInZoneC:
         assert "Patience: Waiting for thermal response" in result["reason"]
 
     def test_zone_c_boosts_after_dead_time(self):
-        """After dead time expires and slope hasn't improved, zone C should boost."""
+        """After dead time expires and slope hasn't improved, zone C should boost.
+
+        With error=0.5 > 0.75*hard_error, the controller now requests +2 steps
+        for faster recovery (low → high).
+        """
         controller = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
         start_time = 1000.0
         controller.last_change_time = start_time
@@ -151,11 +155,15 @@ class TestDeadTimePatienceInZoneC:
                 hvac_mode="heat",
                 current_fan="low",
             )
-        assert result["fan_mode"] == "medium"
+        assert result["fan_mode"] == "high"
         assert "recovery" in result["reason"].lower()
 
     def test_zone_c_boosts_in_transient_without_waiting_for_effective_timeout(self):
-        """Once DEAD_TIME ends, zone C should boost even if no fresh slope_change arrives."""
+        """Once DEAD_TIME ends, zone C should boost even if no fresh slope_change arrives.
+
+        With error=0.5 > 0.75*hard_error, the controller now requests +2 steps
+        for faster recovery (low → high).
+        """
         controller = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
         start_time = 1000.0
         controller.last_change_time = start_time
@@ -174,7 +182,7 @@ class TestDeadTimePatienceInZoneC:
                 hvac_mode="heat",
                 current_fan="low",
             )
-        assert result["fan_mode"] == "medium"
+        assert result["fan_mode"] == "high"
         assert "recovery" in result["reason"].lower()
 
 
@@ -278,7 +286,11 @@ class TestCoolModePhaseDetection:
         assert "Strong favorable slope" in result["reason"]
 
     def test_zone_c_boosts_after_dead_time_cool(self):
-        """In cool mode, zone C boosts after dead time with no improvement."""
+        """In cool mode, zone C boosts after dead time with no improvement.
+
+        With error=0.5 > 0.75*hard_error, the controller now requests +2 steps
+        for faster recovery (low → high).
+        """
         controller = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
         start_time = 1000.0
         controller.last_change_time = start_time
@@ -293,11 +305,15 @@ class TestCoolModePhaseDetection:
                 hvac_mode="cool",
                 current_fan="low",
             )
-        assert result["fan_mode"] == "medium"
+        assert result["fan_mode"] == "high"
         assert "recovery" in result["reason"].lower()
 
     def test_zone_c_boosts_in_transient_without_waiting_for_effective_timeout_cool(self):
-        """Cool mode should also relaunch once dead time ends, even during TRANSIENT."""
+        """Cool mode should also relaunch once dead time ends, even during TRANSIENT.
+
+        With error=0.5 > 0.75*hard_error, the controller now requests +2 steps
+        for faster recovery (low → high).
+        """
         controller = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
         start_time = 1000.0
         controller.last_change_time = start_time
@@ -312,7 +328,7 @@ class TestCoolModePhaseDetection:
                 hvac_mode="cool",
                 current_fan="low",
             )
-        assert result["fan_mode"] == "medium"
+        assert result["fan_mode"] == "high"
         assert "recovery" in result["reason"].lower()
 
 

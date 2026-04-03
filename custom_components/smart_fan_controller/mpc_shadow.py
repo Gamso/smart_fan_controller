@@ -20,16 +20,16 @@ MIN_INTERVAL_CHANGE_PENALTY = 25.0
 DISTURBANCE_EMA_ALPHA = 0.2
 DISTURBANCE_DECAY = 0.85
 MAX_DISTURBANCE_BIAS = 2.0
-BASE_SWITCH_GAIN_MARGIN = 0.2
-NEAR_TARGET_SWITCH_GAIN_MARGIN = 0.75
-APPROACHING_TARGET_SWITCH_GAIN_MARGIN = 0.45
-PHASE_SWITCH_MARGIN_BONUS = 0.2
-STEP_SWITCH_MARGIN = 0.15
-UNDER_TARGET_STEPDOWN_GAIN_MARGIN = 0.45
-UNDER_TARGET_STEPDOWN_GAIN_PER_DEG = 1.2
+BASE_SWITCH_GAIN_MARGIN = 0.1
+NEAR_TARGET_SWITCH_GAIN_MARGIN = 0.3
+APPROACHING_TARGET_SWITCH_GAIN_MARGIN = 0.15
+PHASE_SWITCH_MARGIN_BONUS = 0.1
+STEP_SWITCH_MARGIN = 0.05
+UNDER_TARGET_STEPDOWN_GAIN_MARGIN = 0.2
+UNDER_TARGET_STEPDOWN_GAIN_PER_DEG = 0.5
 UNDER_TARGET_SHORTFALL_RESERVE = 0.1
-FLOOR_VIOLATION_LINEAR_WEIGHT = 8.0
-FLOOR_VIOLATION_QUADRATIC_WEIGHT = 20.0
+FLOOR_VIOLATION_LINEAR_WEIGHT = 12.0
+FLOOR_VIOLATION_QUADRATIC_WEIGHT = 30.0
 
 
 @dataclass(slots=True)
@@ -407,7 +407,7 @@ class MPCShadowController:
         """Simulate one constant fan mode over the prediction horizon."""
         steps = max(1, int(self._horizon_minutes / self._cycle_minutes))
         step_hours = self._cycle_minutes / 60.0
-        blend = 0.35
+        blend = 0.45
         shadow_temp = current_temp
         predicted_10m = None
         predicted_30m = None
@@ -415,6 +415,9 @@ class MPCShadowController:
         thermal_power = current_effective_slope
         change_delay = 0.0 if candidate_fan == current_fan else dead_time
         candidate_effective_slope = candidate_mode_slope + self._disturbance_bias
+
+        current_error = self._temperature_error(current_temp, target_temp, hvac_mode)
+        urgency_weight = 1.0 + max(current_error - self._deadband, 0.0) * 2.0
 
         for step in range(1, steps + 1):
             elapsed = step * self._cycle_minutes
@@ -435,14 +438,14 @@ class MPCShadowController:
             error = self._temperature_error(shadow_temp, target_temp, hvac_mode)
             comfort_error = max(abs(error) - self._deadband, 0.0)
             overshoot = max(-error, 0.0)
-            floor_violation = max(target_temp - shadow_temp, 0.0)
-            cost += comfort_error
-            cost += 4.0 * overshoot * overshoot
-            cost += FLOOR_VIOLATION_LINEAR_WEIGHT * floor_violation
+            floor_violation = max(target_temp - shadow_temp, 0.0) if hvac_mode == "heat" else max(shadow_temp - target_temp, 0.0)
+            cost += comfort_error * urgency_weight
+            cost += 3.0 * overshoot * overshoot
+            cost += FLOOR_VIOLATION_LINEAR_WEIGHT * floor_violation * urgency_weight
             cost += FLOOR_VIOLATION_QUADRATIC_WEIGHT * floor_violation * floor_violation
 
-        cost += 0.4 * abs(candidate_index - current_index)
-        cost += 0.15 * (candidate_index + 1)
+        cost += 0.15 * abs(candidate_index - current_index)
+        cost += 0.05 * (candidate_index + 1)
         if candidate_fan != current_fan and not change_allowed:
             cost += MIN_INTERVAL_CHANGE_PENALTY
 
@@ -520,9 +523,18 @@ class MPCShadowController:
         simulations: list[ModeSimulation],
         fan_modes: list[str],
     ) -> ModeSimulation:
-        """Allow at most one downward fan step per cycle, like the live controller."""
+        """Allow at most one downward fan step per cycle, like the live controller.
+
+        Upward moves are unrestricted so the MPC can ramp up aggressively.
+        """
         current_index = fan_modes.index(active_fan)
         best_index = fan_modes.index(best.fan_mode)
+
+        # Upward moves: no limit
+        if best_index >= current_index:
+            return best
+
+        # Downward moves: limit to one step
         if best_index >= current_index - 1:
             return best
 

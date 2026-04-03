@@ -51,9 +51,10 @@ class TestSmartFanControllerSystem:
 
         # 3. Try to change at T + 10 minutes
         # Fan speed should be allowed to change now
+        # With error=0.5 > 0.75*hard_error, controller steps up +2 (low → high)
         with patch('time.time', return_value=start_time + 10*60):
             result = controller.calculate_decision(19.5, 20.0, -0.5, "heat", "low")
-            assert result["fan_mode"] == "medium"
+            assert result["fan_mode"] == "high"
 
     def test_emergency_overrides_interval(self, controller):
         """Test that Emergency bypasses the min_interval timer."""
@@ -91,10 +92,11 @@ class TestSmartFanControllerSystem:
     def test_hvac_mode_switch_mid_operation(self, controller):
         """Test switching from Heat to Cool mode maintains logic integrity."""
         # 1. Operating in Heat: error=0.5 > soft_error, interval expired → Strong recovery
+        # With error=0.5 > 0.75*hard_error, controller steps up +2 (low → high)
         result = controller.calculate_decision(19.5, 20.0, 0.2, "heat", "low")
         assert controller.last_hvac_mode == "heat"
         assert "Strong recovery: Drop predicted " in result["reason"]
-        assert result["fan_mode"] == "medium"
+        assert result["fan_mode"] == "high"
 
         # 2. Instant switch to Cool: hvac_mode change resets _previous_slope and
         # _thermal_acceleration so no spurious slope_change is triggered.
@@ -136,9 +138,10 @@ class TestSmartFanControllerSystem:
     def test_learning_records_current_fan_not_decided_fan(self, controller):
         """Verify that the slope sample is attributed to the ACTIVE fan mode, not the decided one."""
         controller.last_change_time = 0  # interval expired immediately
-        # current_fan='low', error=0.5 (soft zone), slope=-0.5 (falling, not improving) → boosts to 'medium'
+        # current_fan='low', error=0.5 (soft zone), slope=-0.5 (falling, not improving)
+        # With error=0.5 > 0.75*hard_error, controller steps up +2 (low → high)
         result = controller.calculate_decision(19.5, 20.0, -0.5, "heat", "low")
-        assert result["fan_mode"] == "medium"  # decision changed from low to medium
+        assert result["fan_mode"] == "high"  # decision changed from low to high
         # But the learning sample must carry 'low' (the mode that produced the measured slope)
         assert len(controller.learning.slope_samples) > 0
         sample = controller.learning.slope_samples[-1]

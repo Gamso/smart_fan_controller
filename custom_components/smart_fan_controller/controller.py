@@ -155,16 +155,23 @@ class SmartFanController:
             return PHASE_TRANSIENT
         return PHASE_ESTABLISHED
 
-    def _apply_step_limit(self, current_index: int, new_index: int) -> int:
+    def _apply_step_limit(self, current_index: int, new_index: int, current_error: float = 0.0) -> int:
         """
         Ensure the fan speed decreases by no more than one step at a time
         to maintain system stability.
+        Allow +2 step-up when error exceeds soft_error for faster recovery.
         """
         if (new_index - current_index) < -1:
             return current_index - 1
+        if (new_index - current_index) > 2:
+            if current_error > self._soft_error:
+                return current_index + 2
+            return current_index + 1
+        if (new_index - current_index) == 2 and current_error <= self._soft_error:
+            return current_index + 1
         return new_index
 
-    def determine_final_index(self, current_index: int, new_index: int, minutes_since_change: float, force: bool) -> int:
+    def determine_final_index(self, current_index: int, new_index: int, minutes_since_change: float, force: bool, current_error: float = 0.0) -> int:
         """Limit fan speed changes with safety guards."""
         if force:
             # Emergency and setpoint-drop bypass all guards (timer + step limit).
@@ -175,7 +182,7 @@ class SmartFanController:
         if minutes_since_change < self._min_interval:
             return current_index
 
-        return self._apply_step_limit(current_index, new_index)
+        return self._apply_step_limit(current_index, new_index, current_error)
 
     def record_manual_override(self, new_fan: str) -> dict:
         """Persist last change timestamp and return manual override payload."""
@@ -347,10 +354,10 @@ class SmartFanController:
         elif above_soft_error:
             if phase == PHASE_DEAD_TIME:
                 reason = "Patience: Waiting for thermal response"
-            elif is_slope_improving:
+            elif is_slope_improving and projected_temperature_error <= 0:
                 reason = "Patience: Trend is improving"
             elif min_interval_expired:
-                new_index = min(max_index, current_index + 1)
+                new_index = min(max_index, current_index + 2) if current_temperature_error > self._hard_error * 0.75 else min(max_index, current_index + 1)
                 intensity = "Strong" if projected_temperature_error > self._projected_error_threshold else "Soft"
                 reason = f"{intensity} recovery: Drop predicted to {round(projected_temperature, 2)}°C"
             else:
@@ -391,7 +398,7 @@ class SmartFanController:
                 reason = "Comfort: Stable"
 
         # FINAL GUARDS & STEP-DOWN
-        final_index = self.determine_final_index(current_index, new_index, minutes_since_change, force)
+        final_index = self.determine_final_index(current_index, new_index, minutes_since_change, force, current_temperature_error)
         target_fan = self._fan_modes[final_index]
 
         # Update memory

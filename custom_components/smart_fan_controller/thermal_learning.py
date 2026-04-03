@@ -240,6 +240,13 @@ class ThermalLearning:
         """Return the number of collected samples for one fan/HVAC profile."""
         return sum(1 for (_, fm, _, hm) in self._slope_samples if fm == fan_mode and hm == hvac_mode)
 
+    def get_known_fan_modes(self) -> list[str]:
+        """Return unique fan modes seen in slope samples, preserving first-seen order."""
+        seen: dict[str, None] = {}
+        for _, fan_mode, _, _ in self._slope_samples:
+            seen[fan_mode] = None
+        return list(seen.keys())
+
     def get_mode_profiles(self, hvac_mode: str, fan_modes: list[str] | None = None) -> dict[str, dict]:
         """Return the learned profile summary for one HVAC mode."""
         if fan_modes:

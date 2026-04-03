@@ -61,7 +61,15 @@ def _extract_supported_fan_modes(state) -> list[str]:
 
 async def _async_migrate_entity_registry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Migrate Smart Fan Controller entity IDs and unique IDs to the canonical naming."""
-    entity_registry = er.async_get(hass)
+    try:
+        entity_registry = er.async_get(hass)
+    except KeyError:
+        _LOGGER.debug(
+            "Skipping entity registry migration for %s because the registry is not initialized yet",
+            entry.entry_id,
+        )
+        return
+
     if not hasattr(entity_registry, "entities"):
         try:
             await entity_registry.async_load()
@@ -231,6 +239,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "ensure_profile_sensors": None,
         "store": store,
     }
+
+    # If the climate entity wasn't available at startup, try to restore fan modes from
+    # historical learning data so that profile slope sensors can be created immediately
+    # without waiting up to 2 minutes for the first control loop.
+    if not controller.fan_modes and learning_data:
+        learned_fan_modes = controller.learning.get_known_fan_modes()
+        if learned_fan_modes:
+            controller.fan_modes = learned_fan_modes
+            shadow_controller.fan_modes = learned_fan_modes
+            _LOGGER.info(
+                "Restored fan modes from learning history for %s: %s",
+                climate_id,
+                learned_fan_modes,
+            )
 
     await _async_migrate_entity_registry(hass, entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

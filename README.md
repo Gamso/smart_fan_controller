@@ -188,7 +188,7 @@ Where `volatility_factor = min(slope_stdev / slope_mean, 3.0)`.
 
 Once learning is ready, parameters are **automatically applied** and the integration reloads. To apply manually, use the `apply_learned_settings` service. To start over, use `reset_learning`.
 
-**Control**: Enable or disable learning at any time via `switch.smart_fan_learning_enabled`. Existing data is preserved when disabled.
+**Control**: Enable or disable learning at any time via `switch.smart_fan_controller_learning_enabled`. Existing data is preserved when disabled.
 
 ### Per-Mode Fan Profiles
 
@@ -217,42 +217,42 @@ This prevents window-open periods from corrupting the learned profiles.
 
 ### Main Entities
 
-| Entity                              | Type   | Description                                 |
-| ----------------------------------- | ------ | ------------------------------------------- |
-| `sensor.smart_fan_fan_mode`         | Sensor | Current fan mode selected by the controller |
-| `sensor.smart_fan_status`           | Sensor | Current control zone and decision reason    |
-| `switch.smart_fan_learning_enabled` | Switch | Enable / disable the learning system        |
-| `switch.smart_fan_mpc_shadow_mode`  | Switch | Enable / disable observation-only MPC shadow mode |
+| Entity                                        | Type   | Description                                 |
+| --------------------------------------------- | ------ | ------------------------------------------- |
+| `sensor.smart_fan_controller_fan_mode`        | Sensor | Current fan mode selected by the controller |
+| `sensor.smart_fan_controller_status`          | Sensor | Current control zone and decision reason    |
+| `switch.smart_fan_controller_learning_enabled` | Switch | Enable / disable the learning system        |
+| `switch.smart_fan_controller_mpc_shadow_mode` | Switch | Enable / disable observation-only MPC shadow mode |
 
 ### Diagnostic Sensors
 
-| Entity                                         | Unit  | Description                                         |
-| ---------------------------------------------- | ----- | --------------------------------------------------- |
-| `sensor.smart_fan_temperature_error`           | °C    | Current temperature error (positive = needs action) |
-| `sensor.smart_fan_projected_temperature`       | °C    | Predicted temperature 10 minutes ahead              |
-| `sensor.smart_fan_projected_temperature_error` | °C    | Predicted error 10 minutes ahead                    |
-| `sensor.smart_fan_minutes_since_last_change`   | min   | Time elapsed since last fan mode change             |
-| `sensor.smart_fan_learning_progress`           | %     | Learning completion (100% = ≥240 samples)           |
-| `sensor.smart_fan_learning_status`             | —     | `"Learning (45%)"` or `"Ready"`                     |
-| `sensor.smart_fan_learning_samples`            | count | Number of slope samples collected                   |
-| `sensor.smart_fan_learning_response_events`    | count | Number of thermal response time measurements        |
-| `sensor.smart_fan_learned_dead_time`           | min   | Median learned thermal response delay (`dead_time`) |
-| `sensor.smart_fan_effective_timeout`           | min   | Actual non-emergency timeout currently used         |
-| `sensor.smart_fan_learned_deadband`            | °C    | Learned optimal deadband                            |
-| `sensor.smart_fan_learned_soft_error`          | °C    | Learned optimal soft error threshold                |
-| `sensor.smart_fan_learned_hard_error`          | °C    | Learned optimal hard error threshold                |
-| `sensor.smart_fan_learned_limit_timeout`       | min   | Learned base timeout stored in config               |
-| `sensor.smart_fan_mpc_shadow_status`           | —     | Shadow controller state (`Disabled`, `Ready`, etc.) |
-| `sensor.smart_fan_mpc_shadow_reason`           | —     | Explanation of the current shadow recommendation    |
-| `sensor.smart_fan_mpc_shadow_fan_mode`         | —     | Fan mode the MPC shadow would choose                |
-| `sensor.smart_fan_mpc_shadow_match`            | —     | Whether the shadow recommendation matches the live heuristic |
-| `sensor.smart_fan_mpc_shadow_would_change_now` | —     | Whether the shadow controller would actively change the fan right now |
-| `sensor.smart_fan_mpc_shadow_confidence`       | %     | Confidence derived from learned profile coverage    |
-| `sensor.smart_fan_mpc_shadow_predicted_temperature_10_min` | °C | Predicted temperature after 10 minutes with the recommended mode |
-| `sensor.smart_fan_mpc_shadow_predicted_temperature_30_min` | °C | Predicted temperature after 30 minutes with the recommended mode |
-| `sensor.smart_fan_mpc_shadow_dead_time`        | min   | Dead time currently used by the shadow simulator    |
-| `sensor.smart_fan_mpc_shadow_known_profiles`   | count | Number of reliable learned fan-mode profiles used by the shadow controller |
-| `sensor.smart_fan_mpc_shadow_disturbance_bias` | °C/h  | Learned disturbance correction currently applied by the shadow model |
+| Entity                                                     | Unit  | Description                                         |
+| ---------------------------------------------------------- | ----- | --------------------------------------------------- |
+| `sensor.smart_fan_controller_temperature_error`            | °C    | Current temperature error (positive = needs action) |
+| `sensor.smart_fan_controller_temperature_projected_10_min` | °C    | Predicted temperature 10 minutes ahead              |
+| `sensor.smart_fan_controller_temperature_projected_error_10_min` | °C    | Predicted error 10 minutes ahead                    |
+| `sensor.smart_fan_controller_fan_mode_last_change`         | min   | Time elapsed since last fan mode change             |
+| `sensor.smart_fan_controller_learning_progress`            | %     | Learning completion (100% = ≥240 samples)           |
+| `sensor.smart_fan_controller_learning_status`              | —     | `"Learning (45%)"` or `"Ready"`                     |
+| `sensor.smart_fan_controller_learning_samples`             | count | Number of slope samples collected                   |
+| `sensor.smart_fan_controller_learning_response_events`     | count | Number of thermal response time measurements        |
+| `sensor.smart_fan_controller_learned_dead_time`            | min   | Median learned thermal response delay (`dead_time`) |
+| `sensor.smart_fan_controller_effective_timeout`            | min   | Actual non-emergency timeout currently used         |
+| `sensor.smart_fan_controller_learned_deadband`             | °C    | Learned optimal deadband                            |
+| `sensor.smart_fan_controller_learned_soft_error`           | °C    | Learned optimal soft error threshold                |
+| `sensor.smart_fan_controller_learned_hard_error`           | °C    | Learned optimal hard error threshold                |
+| `sensor.smart_fan_controller_learned_limit_timeout`        | min   | Learned base timeout stored in config               |
+| `sensor.smart_fan_controller_mpc_shadow_status`            | —     | Shadow controller state (`Disabled`, `Ready`, etc.) |
+| `sensor.smart_fan_controller_mpc_shadow_reason`            | —     | Explanation of the current shadow recommendation    |
+| `sensor.smart_fan_controller_mpc_shadow_fan_mode`          | —     | Fan mode the MPC shadow would choose                |
+| `sensor.smart_fan_controller_mpc_shadow_match`             | —     | Whether the shadow recommendation matches the live heuristic |
+| `sensor.smart_fan_controller_mpc_shadow_would_change_now`  | —     | Whether the shadow controller would actively change the fan right now |
+| `sensor.smart_fan_controller_mpc_shadow_confidence`        | %     | Confidence derived from learned profile coverage    |
+| `sensor.smart_fan_controller_mpc_shadow_predicted_temperature_10_min` | °C | Predicted temperature after 10 minutes with the recommended mode |
+| `sensor.smart_fan_controller_mpc_shadow_predicted_temperature_30_min` | °C | Predicted temperature after 30 minutes with the recommended mode |
+| `sensor.smart_fan_controller_mpc_shadow_dead_time`         | min   | Dead time currently used by the shadow simulator    |
+| `sensor.smart_fan_controller_mpc_shadow_known_profiles`    | count | Number of reliable learned fan-mode profiles used by the shadow controller |
+| `sensor.smart_fan_controller_mpc_shadow_disturbance_bias`  | °C/h  | Learned disturbance correction currently applied by the shadow model |
 
 See [docs/mpc_shadow_mode.md](docs/mpc_shadow_mode.md) for the full technical design of the learned model and MPC-lite shadow mode.
 
@@ -264,7 +264,7 @@ See [docs/mpc_shadow_mode.md](docs/mpc_shadow_mode.md) for the full technical de
 
 Manually apply the parameters computed by the learning system. Useful when auto-apply is disabled or to re-apply after a manual change.
 
-**Requirement**: `sensor.smart_fan_learning_status` must be `"Ready"`.
+**Requirement**: `sensor.smart_fan_controller_learning_status` must be `"Ready"`.
 
 ### `smart_fan_controller.reset_learning`
 
@@ -276,11 +276,11 @@ Clear all learning data and start fresh. Use after HVAC maintenance or a signifi
 
 | Symptom                      | What to check / do                                                                                                                           |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Fan not changing**         | Check `sensor.smart_fan_status`. Check `sensor.smart_fan_minutes_since_last_change` — min interval or dead-time patience may be active.      |
+| **Fan not changing**         | Check `sensor.smart_fan_controller_status`. Check `sensor.smart_fan_controller_fan_mode_last_change` — min interval or dead-time patience may be active.      |
 | **Too many fan changes**     | Increase `deadband` or `min_interval`. Enable learning to auto-optimize.                                                                     |
 | **Temperature overshoots**   | Decrease `deadband`. Verify Versatile Thermostat is providing an accurate slope.                                                             |
-| **Learning not progressing** | Verify `switch.smart_fan_learning_enabled` is on. Check HVAC is running and windows are closed.                                              |
-| **Auto-apply not working**   | Verify `sensor.smart_fan_learning_status` is `"Ready"` and learning is on. Auto-apply fires once — use `apply_learned_settings` to re-apply. |
+| **Learning not progressing** | Verify `switch.smart_fan_controller_learning_enabled` is on. Check HVAC is running and windows are closed.                                              |
+| **Auto-apply not working**   | Verify `sensor.smart_fan_controller_learning_status` is `"Ready"` and learning is on. Auto-apply fires once — use `apply_learned_settings` to re-apply. |
 
 ---
 
