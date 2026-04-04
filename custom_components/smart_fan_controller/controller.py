@@ -292,6 +292,8 @@ class SmartFanController:
         effective_slope: float,
         slope_change: bool,
         is_window_open: bool = False,
+        is_defrost_active: bool = False,
+        is_hvac_idle: bool = False,
     ):
         """Update controller state and learn response times when conditions are clean."""
         if target_fan != current_fan:
@@ -315,7 +317,7 @@ class SmartFanController:
             response_time = (self._now - self._last_change_time) / 60
             # Only record reasonable response times (between 2 and 60 minutes)
             # Very short times might be noise, very long times might be system off or other issues
-            if 2.0 <= response_time <= 60.0 and self.learning_enabled and not is_window_open:
+            if 2.0 <= response_time <= 60.0 and self.learning_enabled and not is_window_open and not is_defrost_active and not is_hvac_idle:
                 self.learning.add_response_event(response_time)
                 _LOGGER.debug(
                     "Recorded thermal response event: %.1f min after last fan change",
@@ -323,15 +325,19 @@ class SmartFanController:
                 )
             else:
                 _LOGGER.debug(
-                    "Ignored thermal response event: response_time=%.1f learning_enabled=%s window_open=%s",
+                    "Ignored thermal response event: response_time=%.1f learning_enabled=%s window_open=%s defrost=%s hvac_idle=%s",
                     response_time,
                     self.learning_enabled,
                     is_window_open,
+                    is_defrost_active,
+                    is_hvac_idle,
                 )
             # Track when the last slope change occurred (for reference, not used in calculation)
             self._last_slope_significant_change = self._now
 
-    def calculate_decision(self, current_temp: float, target_temp: float, vtherm_slope: float, hvac_mode: str, current_fan: str | None, is_window_open: bool = False) -> dict:
+    def calculate_decision(
+        self, current_temp: float, target_temp: float, vtherm_slope: float, hvac_mode: str, current_fan: str | None, is_window_open: bool = False, is_hvac_idle: bool = False
+    ) -> dict:
         """Compute new fan speed."""
         self._now = time.time()
 
@@ -437,7 +443,9 @@ class SmartFanController:
 
         # C. RECOVERY ANTICIPATION (Under-target predicted)
         elif above_soft_error:
-            if phase == PHASE_DEAD_TIME:
+            if is_hvac_idle:
+                reason = "HVAC idle: compressor off, holding current speed"
+            elif phase == PHASE_DEAD_TIME:
                 reason = "Patience: Waiting for thermal response"
             elif is_slope_improving and projected_temperature_error <= 0:
                 reason = "Patience: Trend is improving"
@@ -450,8 +458,10 @@ class SmartFanController:
 
         # D. DRIFT IN COMFORT ZONE
         elif current_temperature_error > 0:
+            if is_hvac_idle:
+                reason = "HVAC idle: compressor off, holding current speed"
             # Descent: strong favorable slope in established phase → reduce only when close enough to target
-            if effective_slope > THRESHOLD_SLOPE * 2 and phase == PHASE_ESTABLISHED and interval_expired:
+            elif effective_slope > THRESHOLD_SLOPE * 2 and phase == PHASE_ESTABLISHED and interval_expired:
                 if defrost_protection:
                     reason = "Defrost hold: blocking speed reduction during defrost recovery"
                 elif can_reduce_on_favorable_slope:
@@ -496,12 +506,14 @@ class SmartFanController:
             effective_slope,
             slope_change,
             is_window_open,
+            defrost_protection,
+            is_hvac_idle,
         )
 
         # Collect learning data using the fan mode CURRENTLY active (not the decided one),
         # so the slope observation is correctly attributed to the mode that produced it.
-        # Skip during defrost: the slope is distorted and would corrupt learned profiles.
-        if self.learning_enabled and current_fan is not None and current_fan in self._fan_modes and not defrost_protection:
+        # Skip during defrost and HVAC idle: the slope is distorted and would corrupt learned profiles.
+        if self.learning_enabled and current_fan is not None and current_fan in self._fan_modes and not defrost_protection and not is_hvac_idle:
             self.learning.add_slope_sample(current_fan, vtherm_slope, current_temperature_error, hvac_mode, is_window_open)
 
         _LOGGER.debug(
@@ -509,7 +521,7 @@ class SmartFanController:
                 "Decision: hvac=%s current=%.2f target=%.2f err=%.2f proj=%.2f proj_err=%.2f "
                 "slope=%.3f eff_slope=%.3f phase=%s minutes=%.1f timeout=%.1f "
                 "slope_change=%s improving=%s interval_expired=%s min_interval_expired=%s "
-                "window_open=%s defrost=%s idx=%d->%d->%d force=%s -> %s (%s)"
+                "window_open=%s defrost=%s hvac_idle=%s idx=%d->%d->%d force=%s -> %s (%s)"
             ),
             hvac_mode,
             current_temp,
@@ -528,6 +540,7 @@ class SmartFanController:
             min_interval_expired,
             is_window_open,
             defrost_protection,
+            is_hvac_idle,
             current_index,
             new_index,
             final_index,
@@ -544,4 +557,5 @@ class SmartFanController:
             "minutes_since_last_change": round(minutes_since_change, 1),
             "reason": reason,
             "defrost_active": defrost_protection,
+            "hvac_idle": is_hvac_idle,
         }

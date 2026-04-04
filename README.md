@@ -21,11 +21,13 @@ Predictive fan speed control for HVAC systems, designed to work with Versatile T
     - [Phase Detection](#phase-detection)
     - [Safety Constraints](#safety-constraints)
     - [Defrost Detection](#defrost-detection)
+    - [HVAC Idle Detection](#hvac-idle-detection)
   - [Learning System](#learning-system)
     - [Per-Mode Fan Profiles](#per-mode-fan-profiles)
     - [Dead Time Calibration](#dead-time-calibration)
     - [Window-Open Filtering](#window-open-filtering)
     - [Defrost Learning Exclusion](#defrost-learning-exclusion)
+    - [HVAC Idle Learning Exclusion](#hvac-idle-learning-exclusion)
   - [Sensors & Entities](#sensors--entities)
   - [Services](#services)
   - [Troubleshooting](#troubleshooting)
@@ -180,6 +182,22 @@ When a heat pump defrosts its outdoor coil, the heat output drops sharply — th
 - The decision reason appears as `"Defrost hold: …"`
 - **Learning samples are excluded**: slope data during defrost is not added to per-mode profiles, preventing corrupted calibration
 
+### HVAC Idle Detection
+
+When the heat pump compressor is off (setpoint reached, system coasting) the HVAC is not actively heating or cooling and the fan should not be increased in response to a small temperature drift.
+
+**Operating entity (optional)**: Configure a `binary_sensor`, `sensor`, or `input_boolean` from your PAC integration that reports whether the compressor is running. When this entity is `off`/`false`/`0`, the compressor is considered idle.
+
+**Power consumption entity (optional fallback)**: If no operating entity is available, configure a `sensor` that measures HVAC power consumption (watts). When the measured power is below the configured **Idle power threshold** (default 20 W), the compressor is considered idle.
+
+> Both entities are optional. When neither is configured, HVAC idle detection is disabled.
+
+**During HVAC idle**:
+- **Zones C and D are held**: no step-up decisions while the compressor is off
+- The decision reason appears as `"HVAC idle: compressor off, holding current speed"`
+- **Zones A, A-bis, B, and E are unaffected**: emergency, setpoint-drop, braking, and step-down decisions still operate normally
+- **Learning samples are excluded**: slope and response-time data while idle is not added to profiles (see [HVAC Idle Learning Exclusion](#hvac-idle-learning-exclusion))
+
 ---
 
 ## Learning System
@@ -232,6 +250,10 @@ This prevents window-open periods from corrupting the learned profiles.
 ### Defrost Learning Exclusion
 
 Slope samples and response-time events collected during an active defrost period (auto-detected or via external entity, including the 20-minute cooldown) are **not added to learned profiles**. Defrost distorts the effective slope per fan mode and would bias the learning system toward lower heating capacity estimates.
+
+### HVAC Idle Learning Exclusion
+
+Slope samples and response-time events collected while the compressor is detected as idle (via `operating_entity` or `power_entity`) are **not added to learned profiles**. When the compressor is off the measured slope reflects ambient drift rather than active heating or cooling capacity, and recording it would corrupt per-mode profiles and dead-time calibration.
 
 ---
 

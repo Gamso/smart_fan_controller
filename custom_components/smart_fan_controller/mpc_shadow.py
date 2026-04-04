@@ -98,6 +98,7 @@ class MPCShadowController:
         live_decision_fan: str | None,
         is_window_open: bool = False,
         is_defrost_active: bool = False,
+        is_hvac_idle: bool = False,
         minutes_since_change: float = 0.0,
     ) -> dict:
         """Evaluate the best shadow fan mode for the current cycle."""
@@ -161,6 +162,7 @@ class MPCShadowController:
             phase=phase,
             is_window_open=is_window_open,
             is_defrost_active=is_defrost_active,
+            is_hvac_idle=is_hvac_idle,
         )
 
         if is_window_open:
@@ -179,6 +181,17 @@ class MPCShadowController:
                 status="Disturbed",
                 fan_mode=active_fan,
                 reason="Defrost active: shadow model paused",
+                matches_live="n/a",
+                would_change_now="no",
+                dead_time=dead_time,
+                disturbance_bias=self._disturbance_bias,
+            )
+
+        if is_hvac_idle:
+            return self._payload(
+                status="Disturbed",
+                fan_mode=active_fan,
+                reason="HVAC idle: compressor off, shadow model paused",
                 matches_live="n/a",
                 would_change_now="no",
                 dead_time=dead_time,
@@ -392,14 +405,21 @@ class MPCShadowController:
         phase: str,
         is_window_open: bool,
         is_defrost_active: bool = False,
+        is_hvac_idle: bool = False,
     ) -> None:
         """Track slow external disturbances such as solar gains or occupancy."""
-        if is_window_open or is_defrost_active:
+        if is_window_open or is_defrost_active or is_hvac_idle:
             self._disturbance_bias *= DISTURBANCE_DECAY
+            if is_window_open:
+                decay_reason = "window is open"
+            elif is_defrost_active:
+                decay_reason = "defrost is active"
+            else:
+                decay_reason = "HVAC compressor is idle"
             _LOGGER.debug(
                 "Shadow disturbance bias decayed to %.3f because %s",
                 self._disturbance_bias,
-                "window is open" if is_window_open else "defrost is active",
+                decay_reason,
             )
             return
 

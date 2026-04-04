@@ -19,6 +19,9 @@ from .const import (
     CONF_DATA_COLLECTION,
     CONF_MPC_SHADOW_ENABLED,
     CONF_DEFROST_ENTITY,
+    CONF_OPERATING_ENTITY,
+    CONF_POWER_ENTITY,
+    CONF_IDLE_POWER_THRESHOLD,
     DEFAULT_DEADBAND,
     DEFAULT_MIN_INTERVAL,
     DEFAULT_SOFT_ERROR,
@@ -27,6 +30,7 @@ from .const import (
     DEFAULT_LEARNING_ENABLED,
     DEFAULT_DATA_COLLECTION,
     DEFAULT_MPC_SHADOW_ENABLED,
+    DEFAULT_IDLE_POWER_THRESHOLD,
 )
 
 
@@ -122,6 +126,11 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_DATA_COLLECTION, default=DEFAULT_DATA_COLLECTION): selector.BooleanSelector(),
                 vol.Optional(CONF_MPC_SHADOW_ENABLED, default=DEFAULT_MPC_SHADOW_ENABLED): selector.BooleanSelector(),
                 vol.Optional(CONF_DEFROST_ENTITY): selector.EntitySelector(selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])),
+                vol.Optional(CONF_OPERATING_ENTITY): selector.EntitySelector(selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])),
+                vol.Optional(CONF_POWER_ENTITY): selector.EntitySelector(selector.EntitySelectorConfig(domain=["sensor"])),
+                vol.Optional(CONF_IDLE_POWER_THRESHOLD, default=DEFAULT_IDLE_POWER_THRESHOLD): selector.NumberSelector(
+                    selector.NumberSelectorConfig(min=1, max=500, step=1, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="W")
+                ),
             }
         )
 
@@ -198,6 +207,11 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(CONF_DATA_COLLECTION, default=current_data.get(CONF_DATA_COLLECTION, DEFAULT_DATA_COLLECTION)): selector.BooleanSelector(),
                 vol.Optional(CONF_MPC_SHADOW_ENABLED, default=current_data.get(CONF_MPC_SHADOW_ENABLED, DEFAULT_MPC_SHADOW_ENABLED)): selector.BooleanSelector(),
                 vol.Optional(CONF_DEFROST_ENTITY, default=current_data.get(CONF_DEFROST_ENTITY, vol.UNDEFINED)): selector.EntitySelector(selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])),
+                vol.Optional(CONF_OPERATING_ENTITY, default=current_data.get(CONF_OPERATING_ENTITY, vol.UNDEFINED)): selector.EntitySelector(selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])),
+                vol.Optional(CONF_POWER_ENTITY, default=current_data.get(CONF_POWER_ENTITY, vol.UNDEFINED)): selector.EntitySelector(selector.EntitySelectorConfig(domain=["sensor"])),
+                vol.Optional(CONF_IDLE_POWER_THRESHOLD, default=current_data.get(CONF_IDLE_POWER_THRESHOLD, DEFAULT_IDLE_POWER_THRESHOLD)): selector.NumberSelector(
+                    selector.NumberSelectorConfig(min=1, max=500, step=1, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="W")
+                ),
             }
         )
 

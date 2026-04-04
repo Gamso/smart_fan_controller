@@ -220,6 +220,26 @@ class TestDefrostLearningProtection:
 
         assert controller.learning.slope_sample_count() == initial_count
 
+    def test_response_events_excluded_during_defrost(self, controller):
+        """Response time events should NOT be recorded during active defrost."""
+        controller._defrost_active = True
+        controller._defrost_start_time = 1000.0
+        controller.previous_slope = 0.0
+        controller._last_change_time = 1000.0 - (5 * 60)  # 5 min ago
+        initial_events = controller.learning.response_event_count()
+
+        # slope change from 0.0 → 0.8 would normally trigger a response event
+        with patch("time.time", return_value=1000.0):
+            controller.calculate_decision(
+                current_temp=19.5,
+                target_temp=20.0,
+                vtherm_slope=0.8,
+                hvac_mode="heat",
+                current_fan="high",
+            )
+
+        assert controller.learning.response_event_count() == initial_events
+
     def test_learning_resumes_after_defrost_expires(self, controller):
         """Learning should resume after defrost cooldown expires."""
         controller._defrost_active = True

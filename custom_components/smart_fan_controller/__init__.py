@@ -17,14 +17,18 @@ from .const import (
     CONF_DEADBAND,
     CONF_DEFROST_ENTITY,
     CONF_HARD_ERROR,
+    CONF_IDLE_POWER_THRESHOLD,
     CONF_LEARNING_ENABLED,
     CONF_LIMIT_TIMEOUT,
     CONF_MIN_INTERVAL,
     CONF_MPC_SHADOW_ENABLED,
+    CONF_OPERATING_ENTITY,
+    CONF_POWER_ENTITY,
     CONF_SOFT_ERROR,
     DEFAULT_DATA_COLLECTION,
     DEFAULT_DEADBAND,
     DEFAULT_HARD_ERROR,
+    DEFAULT_IDLE_POWER_THRESHOLD,
     DEFAULT_LEARNING_ENABLED,
     DEFAULT_LIMIT_TIMEOUT,
     DEFAULT_MIN_INTERVAL,
@@ -306,6 +310,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 controller._defrost_active = True
                 controller._defrost_start_time = controller._now
 
+        # HVAC idle detection: compressor not running (optional entities)
+        is_hvac_idle = False
+        operating_entity_id = conf.get(CONF_OPERATING_ENTITY)
+        if operating_entity_id:
+            operating_state = hass.states.get(operating_entity_id)
+            if operating_state and operating_state.state in ("off", "false", "False", "0"):
+                is_hvac_idle = True
+        elif conf.get(CONF_POWER_ENTITY):
+            power_state = hass.states.get(conf[CONF_POWER_ENTITY])
+            if power_state:
+                try:
+                    power_value = float(power_state.state)
+                    idle_threshold = conf.get(CONF_IDLE_POWER_THRESHOLD, DEFAULT_IDLE_POWER_THRESHOLD)
+                    if power_value < idle_threshold:
+                        is_hvac_idle = True
+                except (ValueError, TypeError):
+                    pass
+
         if vtherm_slope is None:
             _LOGGER.warning("%s is missing VTherm temperature_slope; skipping control cycle", climate_id)
             return
@@ -337,6 +359,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             str(hvac_mode),
             current_fan,
             is_window_open,
+            is_hvac_idle,
         )
 
         shadow_decision = shadow_controller.evaluate(
@@ -348,6 +371,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             live_decision_fan=decision.get("fan_mode"),
             is_window_open=is_window_open,
             is_defrost_active=controller.is_defrost_active,
+            is_hvac_idle=is_hvac_idle,
             minutes_since_change=decision.get("minutes_since_last_change", 0.0),
         )
         combined_decision = {**decision, **shadow_decision}

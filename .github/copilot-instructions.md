@@ -20,6 +20,7 @@ The integration lives under `custom_components/smart_fan_controller/`. Key modul
 - **effective_slope**: `vtherm_slope` (°C/h, EMA-smoothed by Versatile Thermostat)
 - **dead_time**: thermal lag between a fan change and first observable slope response
 - **defrost_active**: heat-pump defrost cycle (auto-detected or via external entity); blocks step-down decisions and learning samples
+- **hvac_idle**: heat-pump compressor is off (detected via operating entity or power consumption); blocks step-up decisions (zones C, D) and learning samples — no cooldown unlike defrost
 - **Zones A–F**: priority-ordered decision rules; zone A = emergency/setpoint-drop, F = comfort hold
 
 ## Decision Engine Zones (in priority order)
@@ -63,6 +64,9 @@ python -m pytest tests/test_X.py -q # run one file
 - `THRESHOLD_TARGET_DROP = -1.0` — setpoint-drop trigger (°C)
 - `DEFAULT_DEADBAND`, `DEFAULT_SOFT_ERROR`, `DEFAULT_HARD_ERROR` — all tunable via options flow
 - `CONF_DEFROST_ENTITY` — optional entity for external defrost signal
+- `CONF_OPERATING_ENTITY` — optional entity for heat-pump compressor running state
+- `CONF_POWER_ENTITY` — optional sensor for heat-pump power consumption (idle detection fallback)
+- `DEFAULT_IDLE_POWER_THRESHOLD = 20` — below this wattage the compressor is considered idle
 
 ## Important Constraints
 
@@ -70,5 +74,6 @@ python -m pytest tests/test_X.py -q # run one file
 - **No second-order slope terms**: VTherm slope is already EMA-smoothed; parabolic projection amplifies noise
 - **One step at a time**: fan speed changes are always limited to ±1 step (braking, recovery)
 - **MPC shadow is read-only**: it must never call any HA service or modify controller state
-- **MPC shadow pauses during defrost**: like window-open, it returns "Disturbed" and decays the disturbance bias without updating it
-- **Learning data integrity**: exclude window-open and defrost periods from slope samples and response-time events
+protoart climate control- **MPC shadow pauses during defrost**: like window-open, it returns "Disturbed" and decays the disturbance bias without updating it
+- **MPC shadow pauses during HVAC idle**: same as defrost — returns "Disturbed" and decays the disturbance bias
+- **Learning data integrity**: exclude window-open, defrost, and HVAC idle periods from slope samples and response-time events
