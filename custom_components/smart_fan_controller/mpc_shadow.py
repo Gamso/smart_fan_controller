@@ -11,6 +11,7 @@ from .const import (
     PHASE_DEAD_TIME,
     PHASE_ESTABLISHED,
     PHASE_TRANSIENT,
+    THRESHOLD_TARGET_DROP,
 )
 from .thermal_learning import ThermalLearning
 
@@ -96,6 +97,7 @@ class MPCShadowController:
         current_fan: str | None,
         live_decision_fan: str | None,
         is_window_open: bool = False,
+        is_defrost_active: bool = False,
         minutes_since_change: float = 0.0,
     ) -> dict:
         """Evaluate the best shadow fan mode for the current cycle."""
@@ -158,6 +160,7 @@ class MPCShadowController:
             known_profile=current_known_profile,
             phase=phase,
             is_window_open=is_window_open,
+            is_defrost_active=is_defrost_active,
         )
 
         if is_window_open:
@@ -167,6 +170,35 @@ class MPCShadowController:
                 reason="Window open detected: shadow model paused",
                 matches_live="n/a",
                 would_change_now="no",
+                dead_time=dead_time,
+                disturbance_bias=self._disturbance_bias,
+            )
+
+        if is_defrost_active:
+            return self._payload(
+                status="Disturbed",
+                fan_mode=active_fan,
+                reason="Defrost active: shadow model paused",
+                matches_live="n/a",
+                would_change_now="no",
+                dead_time=dead_time,
+                disturbance_bias=self._disturbance_bias,
+            )
+
+        # Setpoint drop: mirror the live controller's immediate minimum-speed rule.
+        # When the target moves far away (e.g. night setpoint), there is no point
+        # running the full MPC cost optimisation — the answer is always the lowest mode.
+        current_error = self._temperature_error(current_temp, target_temp, hvac_mode)
+        if current_error < THRESHOLD_TARGET_DROP:
+            lowest_fan = fan_modes[0]
+            matches_live = "n/a" if live_decision_fan is None else ("yes" if live_decision_fan == lowest_fan else "no")
+            would_change = "yes" if active_fan != lowest_fan else "no"
+            return self._payload(
+                status="Setpoint drop",
+                fan_mode=lowest_fan,
+                reason=f"Setpoint drop: target moved away ({current_error:.1f}°C), minimum speed",
+                matches_live=matches_live,
+                would_change_now=would_change,
                 dead_time=dead_time,
                 disturbance_bias=self._disturbance_bias,
             )
@@ -202,7 +234,6 @@ class MPCShadowController:
 
         current_simulation = next(sim for sim in simulations if sim.fan_mode == active_fan)
         best = min(simulations, key=lambda item: item.total_cost)
-        current_error = self._temperature_error(current_temp, target_temp, hvac_mode)
         selection_note = ""
 
         if not change_allowed and best.fan_mode != active_fan:
@@ -360,11 +391,16 @@ class MPCShadowController:
         known_profile: bool,
         phase: str,
         is_window_open: bool,
+        is_defrost_active: bool = False,
     ) -> None:
         """Track slow external disturbances such as solar gains or occupancy."""
-        if is_window_open:
+        if is_window_open or is_defrost_active:
             self._disturbance_bias *= DISTURBANCE_DECAY
-            _LOGGER.debug("Shadow disturbance bias decayed to %.3f because window is open", self._disturbance_bias)
+            _LOGGER.debug(
+                "Shadow disturbance bias decayed to %.3f because %s",
+                self._disturbance_bias,
+                "window is open" if is_window_open else "defrost is active",
+            )
             return
 
         if not known_profile or phase != PHASE_ESTABLISHED:

@@ -15,6 +15,7 @@ from .const import (
     CONF_CLIMATE_ENTITY,
     CONF_DATA_COLLECTION,
     CONF_DEADBAND,
+    CONF_DEFROST_ENTITY,
     CONF_HARD_ERROR,
     CONF_LEARNING_ENABLED,
     CONF_LIMIT_TIMEOUT,
@@ -295,6 +296,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             or attrs.get("specific_states", {}).get("hvac_off_reason") == "Window"
         )
 
+        # External defrost entity (optional): force defrost state when the PAC reports it
+        defrost_entity_id = conf.get(CONF_DEFROST_ENTITY)
+        if defrost_entity_id:
+            defrost_state = hass.states.get(defrost_entity_id)
+            if defrost_state and defrost_state.state in ("on", "true", "True", "1"):
+                if not controller.is_defrost_active:
+                    _LOGGER.info("External defrost entity %s reports active defrost", defrost_entity_id)
+                controller._defrost_active = True
+                controller._defrost_start_time = controller._now
+
         if vtherm_slope is None:
             _LOGGER.warning("%s is missing VTherm temperature_slope; skipping control cycle", climate_id)
             return
@@ -336,6 +347,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             current_fan=current_fan,
             live_decision_fan=decision.get("fan_mode"),
             is_window_open=is_window_open,
+            is_defrost_active=controller.is_defrost_active,
             minutes_since_change=decision.get("minutes_since_last_change", 0.0),
         )
         combined_decision = {**decision, **shadow_decision}

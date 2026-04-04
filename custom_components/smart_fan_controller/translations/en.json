@@ -13,7 +13,8 @@
                     "limit_timeout": "Interval Before Forcing Change (minutes)",
                     "learning_enabled": "Enable Automatic Learning",
                     "data_collection": "Enable Data Collection (beta)",
-                    "mpc_shadow_enabled": "Enable MPC Shadow Mode"
+                    "mpc_shadow_enabled": "Enable MPC Shadow Mode",
+                    "defrost_entity": "Defrost Entity (optional)"
                 },
                 "data_description": {
                     "climate_entity": "Must come from a Versatile Thermostat.",
@@ -24,7 +25,8 @@
                     "limit_timeout": "Range: 10-120 min. Default: 15 min.",
                     "learning_enabled": "Enable automatic learning of optimal parameters. When ready, settings will be applied automatically.",
                     "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
-                    "mpc_shadow_enabled": "Runs the learned model + MPC-lite in the background for comparison only. No real fan command is applied from the shadow controller."
+                    "mpc_shadow_enabled": "Runs the learned model + MPC-lite in the background for comparison only. No real fan command is applied from the shadow controller.",
+                    "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode. Leave empty to use automatic detection."
                 },
                 "error": {
                     "invalid_climate_entity": "This entity must come from Versatile Thermostat.",
@@ -47,7 +49,8 @@
                     "limit_timeout": "Interval Before Forcing Change (minutes)",
                     "learning_enabled": "Enable Automatic Learning",
                     "data_collection": "Enable Data Collection (beta)",
-                    "mpc_shadow_enabled": "Enable MPC Shadow Mode"
+                    "mpc_shadow_enabled": "Enable MPC Shadow Mode",
+                    "defrost_entity": "Defrost Entity (optional)"
                 },
                 "data_description": {
                     "climate_entity": "Must come from a Versatile Thermostat.",
@@ -58,7 +61,8 @@
                     "limit_timeout": "Range: 10-120 min. Default: 15 min.",
                     "learning_enabled": "Enable automatic learning of optimal parameters. When ready, settings will be applied automatically.",
                     "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
-                    "mpc_shadow_enabled": "Runs the learned model + MPC-lite in the background for comparison only. No real fan command is applied from the shadow controller."
+                    "mpc_shadow_enabled": "Runs the learned model + MPC-lite in the background for comparison only. No real fan command is applied from the shadow controller.",
+                    "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode. Leave empty to use automatic detection."
                 },
                 "error": {
                     "invalid_climate_entity": "This entity must come from Versatile Thermostat.",

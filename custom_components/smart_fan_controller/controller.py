@@ -55,6 +55,12 @@ class SmartFanController:
         self._last_slope_significant_change: float = self._now
         self._last_hvac_mode: str | None = None
 
+        # Defrost detection
+        self._defrost_active: bool = False
+        self._defrost_start_time: float = 0.0
+        self._defrost_cooldown_minutes: float = 20.0  # protect decisions for 20 min after defrost
+        self._last_effective_slope: float | None = None
+
         # Learning system
         self.learning_enabled = learning_enabled
         if learning_data:
@@ -108,6 +114,78 @@ class SmartFanController:
     def limit_timeout(self) -> int:
         """Configured static limit timeout (minutes)."""
         return self._limit_timeout
+
+    @property
+    def is_defrost_active(self) -> bool:
+        """Return whether defrost (or its cooldown) is currently active."""
+        if not self._defrost_active:
+            return False
+        elapsed = (self._now - self._defrost_start_time) / 60.0
+        if elapsed > self._defrost_cooldown_minutes:
+            self._defrost_active = False
+            _LOGGER.debug("Defrost cooldown expired after %.1f min", elapsed)
+            return False
+        return True
+
+    def _detect_defrost(
+        self,
+        effective_slope: float,
+        current_fan: str | None,
+        hvac_mode: str,
+        current_temperature_error: float,
+    ) -> bool:
+        """Detect a heat-pump defrost cycle from the thermal signature.
+
+        A defrost is suspected when ALL of the following hold:
+        - HVAC mode is 'heat'
+        - Fan is running at a high speed (top 2 modes)
+        - We are under target (positive error)
+        - The effective slope drops sharply from a positive value
+          (the room was warming, then suddenly stops or reverses)
+
+        The cooldown protects decisions for ~20 min after detection because
+        defrost effects can propagate with delay through the thermal mass.
+        """
+        if hvac_mode != "heat" or self._last_effective_slope is None:
+            self._last_effective_slope = effective_slope
+            return False
+
+        if self._defrost_active:
+            self._last_effective_slope = effective_slope
+            return True
+
+        is_high_fan = False
+        if self._fan_modes and current_fan is not None:
+            try:
+                idx = self._fan_modes.index(current_fan)
+                is_high_fan = idx >= len(self._fan_modes) - 2
+            except ValueError:
+                pass
+
+        slope_drop = self._last_effective_slope - effective_slope
+        defrost_detected = (
+            is_high_fan
+            and current_temperature_error > 0
+            and self._last_effective_slope > THRESHOLD_SLOPE
+            and slope_drop > 0.5
+        )
+
+        self._last_effective_slope = effective_slope
+
+        if defrost_detected:
+            self._defrost_active = True
+            self._defrost_start_time = self._now
+            _LOGGER.info(
+                "Defrost detected: slope dropped %.2f°C/h (%.2f -> %.2f) while fan=%s err=%.2f",
+                slope_drop,
+                self._last_effective_slope + slope_drop,
+                effective_slope,
+                current_fan,
+                current_temperature_error,
+            )
+            return True
+
+        return False
 
     @property
     def _projected_error_threshold(self) -> float:
@@ -332,6 +410,10 @@ class SmartFanController:
         force = False
         reason = "Unknown"
 
+        # Defrost detection: check for heat-pump defrost signature
+        self._detect_defrost(effective_slope, current_fan, hvac_mode, current_temperature_error)
+        defrost_protection = self.is_defrost_active
+
         # A. EMERGENCY (High real-time error) => highest fan speed immediatly
         if current_temperature_error >= self._hard_error:
             new_index = max_index
@@ -347,8 +429,11 @@ class SmartFanController:
 
         # B. BRAKING ANTICIPATION (Overshoot predicted)
         elif projected_temperature_error < -self._deadband and slope_change:
-            new_index = max(0, current_index - 1)
-            reason = f"Braking: Target overshoot predicted ({round(projected_temperature, 2)}°C)"
+            if defrost_protection and current_temperature_error > 0:
+                reason = "Defrost hold: blocking braking during defrost recovery"
+            else:
+                new_index = max(0, current_index - 1)
+                reason = f"Braking: Target overshoot predicted ({round(projected_temperature, 2)}°C)"
 
         # C. RECOVERY ANTICIPATION (Under-target predicted)
         elif above_soft_error:
@@ -367,7 +452,9 @@ class SmartFanController:
         elif current_temperature_error > 0:
             # Descent: strong favorable slope in established phase → reduce only when close enough to target
             if effective_slope > THRESHOLD_SLOPE * 2 and phase == PHASE_ESTABLISHED and interval_expired:
-                if can_reduce_on_favorable_slope:
+                if defrost_protection:
+                    reason = "Defrost hold: blocking speed reduction during defrost recovery"
+                elif can_reduce_on_favorable_slope:
                     new_index = max(0, current_index - 1)
                     reason = "Maintenance: Strong favorable slope, reducing"
                 else:
@@ -413,7 +500,8 @@ class SmartFanController:
 
         # Collect learning data using the fan mode CURRENTLY active (not the decided one),
         # so the slope observation is correctly attributed to the mode that produced it.
-        if self.learning_enabled and current_fan is not None and current_fan in self._fan_modes:
+        # Skip during defrost: the slope is distorted and would corrupt learned profiles.
+        if self.learning_enabled and current_fan is not None and current_fan in self._fan_modes and not defrost_protection:
             self.learning.add_slope_sample(current_fan, vtherm_slope, current_temperature_error, hvac_mode, is_window_open)
 
         _LOGGER.debug(
@@ -421,7 +509,7 @@ class SmartFanController:
                 "Decision: hvac=%s current=%.2f target=%.2f err=%.2f proj=%.2f proj_err=%.2f "
                 "slope=%.3f eff_slope=%.3f phase=%s minutes=%.1f timeout=%.1f "
                 "slope_change=%s improving=%s interval_expired=%s min_interval_expired=%s "
-                "window_open=%s idx=%d->%d->%d force=%s -> %s (%s)"
+                "window_open=%s defrost=%s idx=%d->%d->%d force=%s -> %s (%s)"
             ),
             hvac_mode,
             current_temp,
@@ -439,6 +527,7 @@ class SmartFanController:
             interval_expired,
             min_interval_expired,
             is_window_open,
+            defrost_protection,
             current_index,
             new_index,
             final_index,
@@ -453,5 +542,6 @@ class SmartFanController:
             "projected_temperature_error": round(projected_temperature_error, 2),
             "temperature_error": round(current_temperature_error, 2),
             "minutes_since_last_change": round(minutes_since_change, 1),
-            "reason": reason
+            "reason": reason,
+            "defrost_active": defrost_protection,
         }

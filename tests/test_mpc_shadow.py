@@ -19,6 +19,7 @@ FAN_MODES = ["low", "medium", "high"]
 
 
 def _build_controller(*, fan_modes=None, min_interval: int = 10) -> SmartFanController:
+    """Build a SmartFanController with default test parameters."""
     return SmartFanController(
         fan_modes=fan_modes or FAN_MODES,
         deadband=0.3,
@@ -30,6 +31,7 @@ def _build_controller(*, fan_modes=None, min_interval: int = 10) -> SmartFanCont
 
 
 def _prime_learning_profiles(controller: SmartFanController) -> None:
+    """Feed enough slope samples for all profiles to become ready."""
     for _ in range(60):
         controller.learning.add_slope_sample("low", 0.25, 0.8, "heat")
         controller.learning.add_slope_sample("medium", 0.9, 0.8, "heat")
@@ -40,9 +42,11 @@ def _prime_learning_profiles(controller: SmartFanController) -> None:
 
 
 def _make_executor_hass() -> MagicMock:
+    """Create a mock HomeAssistant with synchronous executor."""
     hass = MagicMock()
 
     async def run_in_executor(target, *args):
+        """Run target synchronously for tests."""
         return target(*args)
 
     hass.async_add_executor_job = AsyncMock(side_effect=run_in_executor)
@@ -50,6 +54,7 @@ def _make_executor_hass() -> MagicMock:
 
 
 def test_shadow_disabled_reports_disabled_status() -> None:
+    """Shadow reports disabled status when not enabled."""
     controller = _build_controller()
     shadow = MPCShadowController(
         learning=controller.learning,
@@ -76,6 +81,7 @@ def test_shadow_disabled_reports_disabled_status() -> None:
 
 
 def test_shadow_prefers_stronger_fan_when_profiles_support_it() -> None:
+    """Shadow picks a stronger fan mode when learned profiles support it."""
     controller = _build_controller()
     _prime_learning_profiles(controller)
     shadow = MPCShadowController(
@@ -104,6 +110,7 @@ def test_shadow_prefers_stronger_fan_when_profiles_support_it() -> None:
 
 
 def test_shadow_holds_superhigh_while_still_below_target() -> None:
+    """Shadow holds superhigh when temperature is still below target."""
     fan_modes = ["low", "medium", "high", "superhigh"]
     controller = _build_controller(fan_modes=fan_modes)
     for _ in range(60):
@@ -138,6 +145,7 @@ def test_shadow_holds_superhigh_while_still_below_target() -> None:
 
 
 def test_shadow_pauses_when_window_is_open() -> None:
+    """Shadow pauses evaluation when a window is open."""
     controller = _build_controller()
     _prime_learning_profiles(controller)
     shadow = MPCShadowController(
@@ -166,6 +174,7 @@ def test_shadow_pauses_when_window_is_open() -> None:
 
 
 def test_shadow_sensor_can_clear_to_none() -> None:
+    """Shadow sensor value can be cleared to None."""
     sensor = SmartFanSensor(
         "entry-1",
         "MPC Shadow Cost",
@@ -184,6 +193,7 @@ def test_shadow_sensor_can_clear_to_none() -> None:
 
 
 def test_mpc_profiles_sensor_exposes_per_mode_values() -> None:
+    """MPC profiles sensor exposes per-mode effective slope values."""
     controller = _build_controller()
     controller.fan_modes = FAN_MODES
     for _ in range(15):
@@ -207,6 +217,7 @@ def test_mpc_profiles_sensor_exposes_per_mode_values() -> None:
 
 
 def test_profile_effective_slope_sensor_exposes_historizable_state() -> None:
+    """Profile effective slope sensor is historizable with correct attributes."""
     controller = _build_controller()
     for _ in range(12):
         controller.learning.add_slope_sample("high", 0.9, 0.3, "heat")
@@ -220,6 +231,7 @@ def test_profile_effective_slope_sensor_exposes_historizable_state() -> None:
 
 
 def test_live_controller_holds_favorable_slope_until_close_to_target() -> None:
+    """Live controller holds current fan while slope is favorable near target."""
     controller = _build_controller(fan_modes=["low", "high"])
     controller.previous_slope = 0.0
     controller.now = 0.0
@@ -233,6 +245,7 @@ def test_live_controller_holds_favorable_slope_until_close_to_target() -> None:
 
 
 def test_response_time_learning_skips_window_open_disturbances() -> None:
+    """Response-time learning skips events disturbed by open window."""
     controller = _build_controller()
     for _ in range(250):
         controller.learning.add_slope_sample("medium", 0.3, 0.1)
@@ -254,6 +267,7 @@ def test_response_time_learning_skips_window_open_disturbances() -> None:
 
 @pytest.mark.asyncio
 async def test_data_collector_records_shadow_columns(tmp_path: Path) -> None:
+    """Data collector CSV includes shadow-specific columns."""
     hass = _make_executor_hass()
     collector = DataCollector(hass, str(tmp_path), "entry123456")
 
@@ -305,3 +319,156 @@ async def test_data_collector_records_shadow_columns(tmp_path: Path) -> None:
     assert row[header.index("mpc_shadow_would_change")] == "yes"
     assert row[header.index("mpc_shadow_known_profiles")] == "3"
     assert row[header.index("mpc_shadow_disturbance")] == "-0.25"
+
+
+def test_shadow_setpoint_drop_forces_lowest_mode() -> None:
+    """When target drops significantly, shadow should go to the lowest fan mode."""
+    controller = _build_controller()
+    _prime_learning_profiles(controller)
+    shadow = MPCShadowController(
+        learning=controller.learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=FAN_MODES,
+        enabled=True,
+    )
+
+    result = shadow.evaluate(
+        current_temp=20.4,
+        target_temp=17.5,
+        vtherm_slope=0.0,
+        hvac_mode="heat",
+        current_fan="high",
+        live_decision_fan="low",
+        is_window_open=False,
+        minutes_since_change=5.0,
+    )
+
+    assert result["mpc_shadow_status"] == "Setpoint drop"
+    assert result["mpc_shadow_fan_mode"] == "low"
+    assert "Setpoint drop" in result["mpc_shadow_reason"]
+
+
+def test_shadow_setpoint_drop_matches_live() -> None:
+    """Setpoint drop should report match with live when both choose lowest."""
+    controller = _build_controller()
+    shadow = MPCShadowController(
+        learning=controller.learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=FAN_MODES,
+        enabled=True,
+    )
+
+    result = shadow.evaluate(
+        current_temp=20.0,
+        target_temp=17.5,
+        vtherm_slope=-0.2,
+        hvac_mode="heat",
+        current_fan="medium",
+        live_decision_fan="low",
+        is_window_open=False,
+        minutes_since_change=15.0,
+    )
+
+    assert result["mpc_shadow_fan_mode"] == "low"
+    assert result["mpc_shadow_matches_live"] == "yes"
+
+
+def test_shadow_no_setpoint_drop_when_error_above_threshold() -> None:
+    """Normal over-target should NOT trigger setpoint drop."""
+    controller = _build_controller()
+    _prime_learning_profiles(controller)
+    shadow = MPCShadowController(
+        learning=controller.learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=FAN_MODES,
+        enabled=True,
+    )
+
+    result = shadow.evaluate(
+        current_temp=20.3,
+        target_temp=20.0,
+        vtherm_slope=0.0,
+        hvac_mode="heat",
+        current_fan="high",
+        live_decision_fan="medium",
+        is_window_open=False,
+        minutes_since_change=15.0,
+    )
+
+    assert result["mpc_shadow_status"] != "Setpoint drop"
+
+
+def test_shadow_pauses_during_defrost() -> None:
+    """Shadow should pause when defrost is active, like window-open."""
+    controller = _build_controller()
+    _prime_learning_profiles(controller)
+    shadow = MPCShadowController(
+        learning=controller.learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=FAN_MODES,
+        enabled=True,
+    )
+
+    result = shadow.evaluate(
+        current_temp=19.3,
+        target_temp=20.0,
+        vtherm_slope=0.2,
+        hvac_mode="heat",
+        current_fan="high",
+        live_decision_fan="high",
+        is_window_open=False,
+        is_defrost_active=True,
+        minutes_since_change=12.0,
+    )
+
+    assert result["mpc_shadow_status"] == "Disturbed"
+    assert result["mpc_shadow_fan_mode"] == "high"
+    assert result["mpc_shadow_would_change_now"] == "no"
+    assert "Defrost" in result["mpc_shadow_reason"]
+
+
+def test_shadow_disturbance_bias_decays_during_defrost() -> None:
+    """Disturbance bias should decay, not update, during defrost."""
+    controller = _build_controller()
+    _prime_learning_profiles(controller)
+    shadow = MPCShadowController(
+        learning=controller.learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=FAN_MODES,
+        enabled=True,
+    )
+
+    # Prime the disturbance bias with a normal cycle
+    shadow.evaluate(
+        current_temp=19.5,
+        target_temp=20.0,
+        vtherm_slope=0.5,
+        hvac_mode="heat",
+        current_fan="medium",
+        live_decision_fan="medium",
+        is_window_open=False,
+        minutes_since_change=20.0,
+    )
+    bias_before = shadow._disturbance_bias  # pylint: disable=protected-access
+
+    # Defrost cycle with sharp slope drop — should NOT poison the bias
+    shadow.evaluate(
+        current_temp=19.5,
+        target_temp=20.0,
+        vtherm_slope=-1.0,
+        hvac_mode="heat",
+        current_fan="high",
+        live_decision_fan="high",
+        is_window_open=False,
+        is_defrost_active=True,
+        minutes_since_change=25.0,
+    )
+    bias_after = shadow._disturbance_bias  # pylint: disable=protected-access
+
+    # Bias should have decayed, not grown from the -1.0 slope residual
+    assert abs(bias_after) <= abs(bias_before)

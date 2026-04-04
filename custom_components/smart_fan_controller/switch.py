@@ -51,7 +51,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     async_add_entities(entities)
 
 
-class SmartFanLearningSwitch(_SmartFanSwitchEntity):
+class SmartFanLearningSwitch(_SmartFanSwitchEntity):  # pylint: disable=abstract-method
     """Switch to enable or disable learning mode."""
 
     def __init__(self, entry_id: str, controller, entry: ConfigEntry, hass: HomeAssistant) -> None:
@@ -92,7 +92,7 @@ class SmartFanLearningSwitch(_SmartFanSwitchEntity):
         self.async_write_ha_state()
 
 
-class SmartFanMpcShadowSwitch(_SmartFanSwitchEntity):
+class SmartFanMpcShadowSwitch(_SmartFanSwitchEntity):  # pylint: disable=abstract-method
     """Switch to enable or disable MPC shadow mode."""
 
     def __init__(self, entry_id: str, shadow_controller, entry: ConfigEntry, hass: HomeAssistant) -> None:

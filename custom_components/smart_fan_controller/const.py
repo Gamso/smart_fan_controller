@@ -17,6 +17,7 @@ CONF_LIMIT_TIMEOUT = "limit_timeout"
 CONF_LEARNING_ENABLED = "learning_enabled"
 CONF_DATA_COLLECTION = "data_collection"
 CONF_MPC_SHADOW_ENABLED = "mpc_shadow_enabled"
+CONF_DEFROST_ENTITY = "defrost_entity"
 
 # Default values
 DEFAULT_DEADBAND = 0.2

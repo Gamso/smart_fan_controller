@@ -20,10 +20,12 @@ Predictive fan speed control for HVAC systems, designed to work with Versatile T
     - [Temperature Projection](#temperature-projection)
     - [Phase Detection](#phase-detection)
     - [Safety Constraints](#safety-constraints)
+    - [Defrost Detection](#defrost-detection)
   - [Learning System](#learning-system)
     - [Per-Mode Fan Profiles](#per-mode-fan-profiles)
     - [Dead Time Calibration](#dead-time-calibration)
     - [Window-Open Filtering](#window-open-filtering)
+    - [Defrost Learning Exclusion](#defrost-learning-exclusion)
   - [Sensors & Entities](#sensors--entities)
   - [Services](#services)
   - [Troubleshooting](#troubleshooting)
@@ -102,6 +104,7 @@ All parameters can be changed at any time via **Settings → Devices & Services 
 | **Limit Timeout**    | `15 min` | `10` – `120 min` | Maximum time before forcing a re-evaluation, even without significant slope change.             |
 | **Learning Enabled** | `true`   | —                | Enables the automatic learning system. Disable for fully manual tuning.                         |
 | **MPC Shadow Mode**  | `false`  | —                | Runs the learned model + MPC-lite in the background for comparison only. No real fan command is applied. |
+| **Defrost Entity**   | *(none)* | —                | Optional entity (`binary_sensor`, `sensor`, or `input_boolean`) that reports when the heat pump is in defrost cycle. When active, defrost protection is applied. See [Defrost Detection](#defrost-detection). |
 
 > **Tip — recommended ratios**: `deadband < soft_error < hard_error`, e.g. `0.2 / 0.3 / 0.6`.
 
@@ -162,6 +165,21 @@ The default dead time is 10 minutes. When the learning system is ready, it is re
 - **Step-down protection**: Fan speed can only decrease by one step at a time (e.g., `turbo → high`), preventing abrupt pressure changes and protecting the motor.
 - **Min interval**: Non-emergency changes respect the effective timeout. Emergency (Zone A) and setpoint drop (Zone A-bis) override it.
 
+### Defrost Detection
+
+When a heat pump defrosts its outdoor coil, the heat output drops sharply — the HVAC is working to melt ice, not heat the room. Without defrost awareness, the controller would misinterpret the falling temperature slope as insufficient fan speed and try to increase it, or worse, would reduce the fan thinking the slope is already favorable when in fact the defrost is about to end.
+
+**Automatic detection (always active)**: The controller watches for a sharp slope drop (>0.5 °C/h) while running at a high fan speed with a positive temperature error in heat mode. When detected, defrost protection activates for a **20-minute cooldown**.
+
+**External entity (optional)**: You can configure a `binary_sensor`, `sensor`, or `input_boolean` from your PAC integration that reports defrost state. When this entity is `on`/`true`/`1`, defrost protection is activated and the 20-minute cooldown timer is refreshed every control cycle — protection stays active *as long as the entity reports defrost*, then the cooldown applies after it clears. This is more reliable than heuristic detection for hardware that exposes defrost state natively.
+
+> Both mechanisms are independent and additive: either one triggers defrost protection. Configuring the external entity does **not** disable the software detection.
+
+**During defrost protection**:
+- **Zones B and D are blocked**: no step-down decisions (braking or favorable-slope reduction)
+- The decision reason appears as `"Defrost hold: …"`
+- **Learning samples are excluded**: slope data during defrost is not added to per-mode profiles, preventing corrupted calibration
+
 ---
 
 ## Learning System
@@ -211,6 +229,10 @@ When Versatile Thermostat reports a window as open (via the `window_manager.wind
 
 This prevents window-open periods from corrupting the learned profiles.
 
+### Defrost Learning Exclusion
+
+Slope samples and response-time events collected during an active defrost period (auto-detected or via external entity, including the 20-minute cooldown) are **not added to learned profiles**. Defrost distorts the effective slope per fan mode and would bias the learning system toward lower heating capacity estimates.
+
 ---
 
 ## Sensors & Entities
@@ -256,6 +278,12 @@ This prevents window-open periods from corrupting the learned profiles.
 
 See [docs/mpc_shadow_mode.md](docs/mpc_shadow_mode.md) for the full technical design of the learned model and MPC-lite shadow mode.
 
+### Defrost Diagnostic
+
+| Entity | Type | Description |
+| ------ | ---- | ----------- |
+| `sensor.smart_fan_controller_status` | Sensor | Shows `"Defrost hold: …"` when defrost protection is active |
+
 ---
 
 ## Services
@@ -281,6 +309,8 @@ Clear all learning data and start fresh. Use after HVAC maintenance or a signifi
 | **Temperature overshoots**   | Decrease `deadband`. Verify Versatile Thermostat is providing an accurate slope.                                                             |
 | **Learning not progressing** | Verify `switch.smart_fan_controller_learning_enabled` is on. Check HVAC is running and windows are closed.                                              |
 | **Auto-apply not working**   | Verify `sensor.smart_fan_controller_learning_status` is `"Ready"` and learning is on. Auto-apply fires once — use `apply_learned_settings` to re-apply. |
+| **Defrost triggering too often** | If auto-detection fires spuriously (noisy slope), configure a physical defrost entity from your PAC integration. This replaces heuristic guesses with the actual defrost signal. |
+| **Step-down blocked during defrost** | Normal behavior — zones B and D are intentionally suspended during the 20 min defrost cooldown to avoid fan reduction while the PAC recovers. |
 
 ---
 

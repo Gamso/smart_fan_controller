@@ -13,7 +13,8 @@
                     "limit_timeout": "Intervalle avant de forcer un changement (minutes)",
                     "learning_enabled": "Activer l'apprentissage automatique",
                     "data_collection": "Activer la collecte de données (bêta)",
-                    "mpc_shadow_enabled": "Activer le mode shadow MPC"
+                    "mpc_shadow_enabled": "Activer le mode shadow MPC",
+                    "defrost_entity": "Entité dégivrage (optionnel)"
                 },
                 "data_description": {
                     "climate_entity": "Doit provenir de Versatile Thermostat.",
@@ -24,7 +25,8 @@
                     "limit_timeout": "Plage : 10-120 min. Défaut : 15 min.",
                     "learning_enabled": "Activer l'apprentissage automatique des paramètres optimaux. Quand prêt, les paramètres seront appliqués automatiquement.",
                     "data_collection": "Enregistre une ligne CSV toutes les 2 minutes dans le dossier de configuration Home Assistant, à côté de configuration.yaml : smart_fan_controller_data_XXXXXXXX.csv (max 10 Mo, rotation automatique). Utile pour reproduire le comportement de l'algorithme et identifier des améliorations pendant la phase bêta.",
-                    "mpc_shadow_enabled": "Exécute le modèle appris + MPC-lite en arrière-plan uniquement pour comparaison. Aucune commande réelle de ventilation n'est appliquée par le contrôleur shadow."
+                    "mpc_shadow_enabled": "Exécute le modèle appris + MPC-lite en arrière-plan uniquement pour comparaison. Aucune commande réelle de ventilation n'est appliquée par le contrôleur shadow.",
+                    "defrost_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand la PAC est en dégivrage. Laisser vide pour utiliser la détection automatique."
                 },
                 "error": {
                     "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",
@@ -47,7 +49,8 @@
                     "limit_timeout": "Intervalle avant de forcer un changement (minutes)",
                     "learning_enabled": "Activer l'apprentissage automatique",
                     "data_collection": "Activer la collecte de données (bêta)",
-                    "mpc_shadow_enabled": "Activer le mode shadow MPC"
+                    "mpc_shadow_enabled": "Activer le mode shadow MPC",
+                    "defrost_entity": "Entité dégivrage (optionnel)"
                 },
                 "data_description": {
                     "climate_entity": "Doit provenir de Versatile Thermostat.",
@@ -58,7 +61,8 @@
                     "limit_timeout": "Plage : 10-120 min. Défaut : 15 min.",
                     "learning_enabled": "Activer l'apprentissage automatique des paramètres optimaux. Quand prêt, les paramètres seront appliqués automatiquement.",
                     "data_collection": "Enregistre une ligne CSV toutes les 2 minutes dans le dossier de configuration Home Assistant, à côté de configuration.yaml : smart_fan_controller_data_XXXXXXXX.csv (max 10 Mo, rotation automatique). Utile pour reproduire le comportement de l'algorithme et identifier des améliorations pendant la phase bêta.",
-                    "mpc_shadow_enabled": "Exécute le modèle appris + MPC-lite en arrière-plan uniquement pour comparaison. Aucune commande réelle de ventilation n'est appliquée par le contrôleur shadow."
+                    "mpc_shadow_enabled": "Exécute le modèle appris + MPC-lite en arrière-plan uniquement pour comparaison. Aucune commande réelle de ventilation n'est appliquée par le contrôleur shadow.",
+                    "defrost_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand la PAC est en dégivrage. Laisser vide pour utiliser la détection automatique."
                 },
                 "error": {
                     "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",
