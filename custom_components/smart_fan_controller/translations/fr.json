@@ -15,9 +15,7 @@
                     "data_collection": "Activer la collecte de données (bêta)",
                     "mpc_shadow_enabled": "Activer le mode shadow MPC",
                     "defrost_entity": "Entité dégivrage (optionnel)",
-                    "operating_entity": "Entité fonctionnement PAC (optionnel)",
-                    "power_entity": "Entité consommation électrique PAC (optionnel)",
-                    "idle_power_threshold": "Seuil de puissance au repos (W)"
+                    "operating_entity": "Entité fonctionnement PAC (optionnel)"
                 },
                 "data_description": {
                     "climate_entity": "Doit provenir de Versatile Thermostat.",
@@ -29,10 +27,8 @@
                     "learning_enabled": "Activer l'apprentissage automatique des paramètres optimaux. Quand prêt, les paramètres seront appliqués automatiquement.",
                     "data_collection": "Enregistre une ligne CSV toutes les 2 minutes dans le dossier de configuration Home Assistant, à côté de configuration.yaml : smart_fan_controller_data_XXXXXXXX.csv (max 10 Mo, rotation automatique). Utile pour reproduire le comportement de l'algorithme et identifier des améliorations pendant la phase bêta.",
                     "mpc_shadow_enabled": "Exécute le modèle appris + MPC-lite en arrière-plan uniquement pour comparaison. Aucune commande réelle de ventilation n'est appliquée par le contrôleur shadow.",
-                    "defrost_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand la PAC est en dégivrage. Laisser vide pour utiliser la détection automatique.",
-                    "operating_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand le compresseur de la PAC est en marche. Utilisé pour éviter des changements de ventilation inutiles quand le compresseur est à l'arrêt.",
-                    "power_entity": "Optionnel : sensor indiquant la consommation électrique de la PAC en watts. Utilisé en alternative pour détecter le repos du compresseur quand aucune entité de fonctionnement n'est configurée.",
-                    "idle_power_threshold": "En dessous de ce seuil de puissance (en watts), le compresseur est considéré au repos. Défaut : 20 W."
+                    "defrost_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand la PAC est en dégivrage.",
+                    "operating_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand le compresseur de la PAC est en marche. Utilisé pour éviter des changements de ventilation inutiles quand le compresseur est à l'arrêt."
                 },
                 "error": {
                     "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",
@@ -57,9 +53,7 @@
                     "data_collection": "Activer la collecte de données (bêta)",
                     "mpc_shadow_enabled": "Activer le mode shadow MPC",
                     "defrost_entity": "Entité dégivrage (optionnel)",
-                    "operating_entity": "Entité fonctionnement PAC (optionnel)",
-                    "power_entity": "Entité consommation électrique PAC (optionnel)",
-                    "idle_power_threshold": "Seuil de puissance au repos (W)"
+                    "operating_entity": "Entité fonctionnement PAC (optionnel)"
                 },
                 "data_description": {
                     "climate_entity": "Doit provenir de Versatile Thermostat.",
@@ -71,10 +65,8 @@
                     "learning_enabled": "Activer l'apprentissage automatique des paramètres optimaux. Quand prêt, les paramètres seront appliqués automatiquement.",
                     "data_collection": "Enregistre une ligne CSV toutes les 2 minutes dans le dossier de configuration Home Assistant, à côté de configuration.yaml : smart_fan_controller_data_XXXXXXXX.csv (max 10 Mo, rotation automatique). Utile pour reproduire le comportement de l'algorithme et identifier des améliorations pendant la phase bêta.",
                     "mpc_shadow_enabled": "Exécute le modèle appris + MPC-lite en arrière-plan uniquement pour comparaison. Aucune commande réelle de ventilation n'est appliquée par le contrôleur shadow.",
-                    "defrost_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand la PAC est en dégivrage. Laisser vide pour utiliser la détection automatique.",
-                    "operating_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand le compresseur de la PAC est en marche. Utilisé pour éviter des changements de ventilation inutiles quand le compresseur est à l'arrêt.",
-                    "power_entity": "Optionnel : sensor indiquant la consommation électrique de la PAC en watts. Utilisé en alternative pour détecter le repos du compresseur quand aucune entité de fonctionnement n'est configurée.",
-                    "idle_power_threshold": "En dessous de ce seuil de puissance (en watts), le compresseur est considéré au repos. Défaut : 20 W."
+                    "defrost_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand la PAC est en dégivrage.",
+                    "operating_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand le compresseur de la PAC est en marche. Utilisé pour éviter des changements de ventilation inutiles quand le compresseur est à l'arrêt."
                 },
                 "error": {
                     "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",

@@ -17,18 +17,15 @@ from .const import (
     CONF_DEADBAND,
     CONF_DEFROST_ENTITY,
     CONF_HARD_ERROR,
-    CONF_IDLE_POWER_THRESHOLD,
     CONF_LEARNING_ENABLED,
     CONF_LIMIT_TIMEOUT,
     CONF_MIN_INTERVAL,
     CONF_MPC_SHADOW_ENABLED,
     CONF_OPERATING_ENTITY,
-    CONF_POWER_ENTITY,
     CONF_SOFT_ERROR,
     DEFAULT_DATA_COLLECTION,
     DEFAULT_DEADBAND,
     DEFAULT_HARD_ERROR,
-    DEFAULT_IDLE_POWER_THRESHOLD,
     DEFAULT_LEARNING_ENABLED,
     DEFAULT_LIMIT_TIMEOUT,
     DEFAULT_MIN_INTERVAL,
@@ -245,20 +242,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "store": store,
     }
 
-    # If the climate entity wasn't available at startup, try to restore fan modes from
-    # historical learning data so that profile slope sensors can be created immediately
-    # without waiting up to 2 minutes for the first control loop.
-    if not controller.fan_modes and learning_data:
-        learned_fan_modes = controller.learning.get_known_fan_modes()
-        if learned_fan_modes:
-            controller.fan_modes = learned_fan_modes
-            shadow_controller.fan_modes = learned_fan_modes
-            _LOGGER.info(
-                "Restored fan modes from learning history for %s: %s",
-                climate_id,
-                learned_fan_modes,
-            )
-
     await _async_migrate_entity_registry(hass, entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -317,16 +300,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             operating_state = hass.states.get(operating_entity_id)
             if operating_state and operating_state.state in ("off", "false", "False", "0"):
                 is_hvac_idle = True
-        elif conf.get(CONF_POWER_ENTITY):
-            power_state = hass.states.get(conf[CONF_POWER_ENTITY])
-            if power_state:
-                try:
-                    power_value = float(power_state.state)
-                    idle_threshold = conf.get(CONF_IDLE_POWER_THRESHOLD, DEFAULT_IDLE_POWER_THRESHOLD)
-                    if power_value < idle_threshold:
-                        is_hvac_idle = True
-                except (ValueError, TypeError):
-                    pass
 
         if vtherm_slope is None:
             _LOGGER.warning("%s is missing VTherm temperature_slope; skipping control cycle", climate_id)
@@ -402,6 +375,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 learning_ready=controller.learning_enabled and controller.learning.is_ready(),
                 dead_time=controller.learning.get_dead_time() if controller.learning_enabled else 0.0,
                 shadow=shadow_decision,
+                defrost_active=controller.is_defrost_active,
+                is_hvac_idle=is_hvac_idle,
             )
 
         sensors = hass.data[DOMAIN][entry.entry_id].get("sensors")

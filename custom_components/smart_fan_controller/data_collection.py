@@ -55,6 +55,8 @@ _HEADER = [
     "mpc_shadow_temp_30m",
     "mpc_shadow_known_profiles",
     "mpc_shadow_disturbance",
+    "defrost_active",
+    "hvac_idle",
 ]
 
 # Rotate the file when it exceeds this size (bytes). 10 MB keeps ~200 000 rows.
@@ -91,6 +93,8 @@ class DataCollector:
         learning_ready: bool,
         dead_time: float,
         shadow: dict | None = None,
+        defrost_active: bool = False,
+        is_hvac_idle: bool = False,
     ) -> None:
         """Append one row to the CSV file outside the event loop."""
         shadow = shadow or {}
@@ -130,6 +134,8 @@ class DataCollector:
             round(shadow.get("mpc_shadow_disturbance_bias", 0.0), 3)
             if shadow.get("mpc_shadow_disturbance_bias") is not None
             else "",
+            int(defrost_active),
+            int(is_hvac_idle),
         ]
         async with self._io_lock:
             await self._hass.async_add_executor_job(self._write_row, row)

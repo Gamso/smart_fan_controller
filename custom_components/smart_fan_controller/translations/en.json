@@ -15,9 +15,7 @@
                     "data_collection": "Enable Data Collection (beta)",
                     "mpc_shadow_enabled": "Enable MPC Shadow Mode",
                     "defrost_entity": "Defrost Entity (optional)",
-                    "operating_entity": "Heat Pump Operating Entity (optional)",
-                    "power_entity": "Heat Pump Power Consumption Entity (optional)",
-                    "idle_power_threshold": "Idle Power Threshold (W)"
+                    "operating_entity": "Heat Pump Operating Entity (optional)"
                 },
                 "data_description": {
                     "climate_entity": "Must come from a Versatile Thermostat.",
@@ -29,10 +27,8 @@
                     "learning_enabled": "Enable automatic learning of optimal parameters. When ready, settings will be applied automatically.",
                     "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
                     "mpc_shadow_enabled": "Runs the learned model + MPC-lite in the background for comparison only. No real fan command is applied from the shadow controller.",
-                    "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode. Leave empty to use automatic detection.",
-                    "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off.",
-                    "power_entity": "Optional: sensor that reports the heat pump power consumption in watts. Used as a fallback to detect compressor idle when no operating entity is configured.",
-                    "idle_power_threshold": "Power below this threshold (in watts) means the compressor is idle. Default: 20 W."
+                    "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode.",
+                    "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off."
                 },
                 "error": {
                     "invalid_climate_entity": "This entity must come from Versatile Thermostat.",
@@ -57,9 +53,7 @@
                     "data_collection": "Enable Data Collection (beta)",
                     "mpc_shadow_enabled": "Enable MPC Shadow Mode",
                     "defrost_entity": "Defrost Entity (optional)",
-                    "operating_entity": "Heat Pump Operating Entity (optional)",
-                    "power_entity": "Heat Pump Power Consumption Entity (optional)",
-                    "idle_power_threshold": "Idle Power Threshold (W)"
+                    "operating_entity": "Heat Pump Operating Entity (optional)"
                 },
                 "data_description": {
                     "climate_entity": "Must come from a Versatile Thermostat.",
@@ -71,10 +65,8 @@
                     "learning_enabled": "Enable automatic learning of optimal parameters. When ready, settings will be applied automatically.",
                     "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
                     "mpc_shadow_enabled": "Runs the learned model + MPC-lite in the background for comparison only. No real fan command is applied from the shadow controller.",
-                    "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode. Leave empty to use automatic detection.",
-                    "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off.",
-                    "power_entity": "Optional: sensor that reports the heat pump power consumption in watts. Used as a fallback to detect compressor idle when no operating entity is configured.",
-                    "idle_power_threshold": "Power below this threshold (in watts) means the compressor is idle. Default: 20 W."
+                    "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode.",
+                    "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off."
                 },
                 "error": {
                     "invalid_climate_entity": "This entity must come from Versatile Thermostat.",

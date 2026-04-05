@@ -19,8 +19,6 @@ CONF_DATA_COLLECTION = "data_collection"
 CONF_MPC_SHADOW_ENABLED = "mpc_shadow_enabled"
 CONF_DEFROST_ENTITY = "defrost_entity"
 CONF_OPERATING_ENTITY = "operating_entity"
-CONF_POWER_ENTITY = "power_entity"
-CONF_IDLE_POWER_THRESHOLD = "idle_power_threshold"
 
 # Default values
 DEFAULT_DEADBAND = 0.2
@@ -31,7 +29,6 @@ DEFAULT_LIMIT_TIMEOUT = 15
 DEFAULT_LEARNING_ENABLED = True
 DEFAULT_DATA_COLLECTION = True
 DEFAULT_MPC_SHADOW_ENABLED = False
-DEFAULT_IDLE_POWER_THRESHOLD = 20  # Watts — below this the heat pump is considered idle
 
 DELTA_TIME_CONTROL_LOOP = 2  # minutes between each control loop execution
 

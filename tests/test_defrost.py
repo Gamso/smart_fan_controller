@@ -1,4 +1,4 @@
-"""Tests for defrost detection and protection in the controller."""
+"""Tests for defrost protection in the controller."""
 # pylint: disable=redefined-outer-name,protected-access
 from unittest.mock import patch
 
@@ -25,101 +25,6 @@ DEFAULT_CONFIG = {
 def controller():
     """Create a SmartFanController instance for testing."""
     return SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
-
-
-class TestDefrostDetection:
-    """Tests for automatic defrost detection from thermal signature."""
-
-    def test_defrost_detected_on_sharp_slope_drop(self, controller):
-        """Defrost is detected when slope drops sharply at high fan with positive error."""
-        # Prime the last effective slope
-        controller._last_effective_slope = 1.5
-        controller._now = 1000.0
-
-        detected = controller._detect_defrost(
-            effective_slope=-0.1,
-            current_fan="superhigh",
-            hvac_mode="heat",
-            current_temperature_error=1.0,
-        )
-
-        assert detected is True
-        assert controller._defrost_active is True
-        assert controller.is_defrost_active is True
-
-    def test_no_defrost_on_small_slope_drop(self, controller):
-        """Small slope changes should NOT trigger defrost."""
-        controller._last_effective_slope = 0.8
-        controller._now = 1000.0
-
-        detected = controller._detect_defrost(
-            effective_slope=0.5,
-            current_fan="superhigh",
-            hvac_mode="heat",
-            current_temperature_error=0.5,
-        )
-
-        assert detected is False
-        assert controller._defrost_active is False
-
-    def test_no_defrost_at_low_fan_speed(self, controller):
-        """Defrost detection only triggers at high fan speeds (top 2 modes)."""
-        controller._last_effective_slope = 1.5
-        controller._now = 1000.0
-
-        detected = controller._detect_defrost(
-            effective_slope=-0.1,
-            current_fan="med",
-            hvac_mode="heat",
-            current_temperature_error=1.0,
-        )
-
-        assert detected is False
-
-    def test_no_defrost_in_cool_mode(self, controller):
-        """Defrost only applies to heating mode."""
-        controller._last_effective_slope = 1.5
-        controller._now = 1000.0
-
-        detected = controller._detect_defrost(
-            effective_slope=-0.1,
-            current_fan="superhigh",
-            hvac_mode="cool",
-            current_temperature_error=1.0,
-        )
-
-        assert detected is False
-
-    def test_no_defrost_when_over_target(self, controller):
-        """No defrost detection when temperature error is negative (over-target)."""
-        controller._last_effective_slope = 1.5
-        controller._now = 1000.0
-
-        detected = controller._detect_defrost(
-            effective_slope=-0.1,
-            current_fan="superhigh",
-            hvac_mode="heat",
-            current_temperature_error=-0.5,
-        )
-
-        assert detected is False
-
-    def test_defrost_cooldown_expires(self, controller):
-        """Defrost protection should expire after cooldown period."""
-        controller._defrost_active = True
-        controller._defrost_start_time = 1000.0
-        controller._now = 1000.0 + (21 * 60)  # 21 minutes later
-
-        assert controller.is_defrost_active is False
-        assert controller._defrost_active is False
-
-    def test_defrost_remains_active_within_cooldown(self, controller):
-        """Defrost protection should remain active within cooldown."""
-        controller._defrost_active = True
-        controller._defrost_start_time = 1000.0
-        controller._now = 1000.0 + (10 * 60)  # 10 minutes later
-
-        assert controller.is_defrost_active is True
 
 
 class TestDefrostProtection:

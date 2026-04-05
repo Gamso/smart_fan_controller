@@ -65,8 +65,6 @@ python -m pytest tests/test_X.py -q # run one file
 - `DEFAULT_DEADBAND`, `DEFAULT_SOFT_ERROR`, `DEFAULT_HARD_ERROR` — all tunable via options flow
 - `CONF_DEFROST_ENTITY` — optional entity for external defrost signal
 - `CONF_OPERATING_ENTITY` — optional entity for heat-pump compressor running state
-- `CONF_POWER_ENTITY` — optional sensor for heat-pump power consumption (idle detection fallback)
-- `DEFAULT_IDLE_POWER_THRESHOLD = 20` — below this wattage the compressor is considered idle
 
 ## Important Constraints
 
