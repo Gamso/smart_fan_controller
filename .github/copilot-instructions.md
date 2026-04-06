@@ -70,8 +70,5 @@ python -m pytest tests/test_X.py -q # run one file
 
 - **Avoid over-engineering**: only add code that directly addresses the requirement
 - **No second-order slope terms**: VTherm slope is already EMA-smoothed; parabolic projection amplifies noise
-- **One step at a time**: fan speed changes are always limited to ±1 step (braking, recovery)
-- **MPC shadow is read-only**: it must never call any HA service or modify controller state
-protoart climate control- **MPC shadow pauses during defrost**: like window-open, it returns "Disturbed" and decays the disturbance bias without updating it
-- **MPC shadow pauses during HVAC idle**: same as defrost — returns "Disturbed" and decays the disturbance bias
+- **Step-limited fan changes**: braking is limited to -1 step; recovery is usually +1 step, but Zone C may step up by +2 when error exceeds `0.75*hard_error`
 - **Learning data integrity**: exclude window-open, defrost, and HVAC idle periods from slope samples and response-time events
