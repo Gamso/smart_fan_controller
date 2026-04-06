@@ -375,12 +375,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 decision["fan_mode"],
                 decision["reason"],
             )
-            await hass.services.async_call(
-                "climate",
-                "set_fan_mode",
-                {"entity_id": climate_id, "fan_mode": decision["fan_mode"]},
-            )
-            controller.confirm_fan_change()
+            try:
+                await hass.services.async_call(
+                    "climate",
+                    "set_fan_mode",
+                    {"entity_id": climate_id, "fan_mode": decision["fan_mode"]},
+                    blocking=True,
+                )
+                controller.confirm_fan_change()
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.exception(
+                    "Failed to set fan mode %s on %s; cooldown not advanced",
+                    decision["fan_mode"],
+                    climate_id,
+                )
         else:
             _LOGGER.debug("No fan mode change required for %s (%s)", climate_id, decision["reason"])
 
