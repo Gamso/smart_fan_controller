@@ -17,6 +17,7 @@ class ThermalLearning:
         self._learning_window_hours = 168  # 7 days sliding window
         self._min_samples = MIN_SAMPLES_LEARNING  # Minimum samples for initial readiness (48-72h typical activity)
         self._ready_once = False  # Flag to track if we've ever reached ready state
+        self._profile_ready_logged: set[tuple[str, str]] = set()
 
         # Incremental statistics using Welford's algorithm
         self._slope_count = 0  # Number of slope samples processed
@@ -37,6 +38,7 @@ class ThermalLearning:
         self._slope_max = 0.0
         self._ready_once = False
         self._optimal_cache = None
+        self._profile_ready_logged.clear()
         _LOGGER.info("Learning: reset requested; data cleared")
 
     def add_slope_sample(self, fan_mode: str, slope: float, temperature_error: float = 0, hvac_mode: str = "unknown", is_window_open: bool = False):
@@ -60,11 +62,37 @@ class ThermalLearning:
             return
 
         self._slope_samples.append((time.time(), fan_mode, slope, hvac_mode))
-        _LOGGER.debug("Learning: Collected slope sample #%d (fan=%s, slope=%.2f, err=%.2f, hvac=%s)", len(self._slope_samples), fan_mode, slope, temperature_error, hvac_mode)
+        profile_samples = self.get_mode_sample_count(fan_mode, hvac_mode)
+        _LOGGER.debug(
+            "Learning: Collected slope sample #%d (fan=%s, slope=%.2f, err=%.2f, hvac=%s, profile=%d/%d)",
+            len(self._slope_samples),
+            fan_mode,
+            slope,
+            temperature_error,
+            hvac_mode,
+            profile_samples,
+            MIN_MODE_PROFILE_SAMPLES,
+        )
 
         self._optimal_cache = None
 
         self._update_slope_stats(abs(slope))
+
+        profile_key = (hvac_mode, fan_mode)
+        if (
+            hvac_mode != "unknown"
+            and profile_samples >= MIN_MODE_PROFILE_SAMPLES
+            and profile_key not in self._profile_ready_logged
+        ):
+            self._profile_ready_logged.add(profile_key)
+            effective_slope = self.get_mode_effective_slope(fan_mode, hvac_mode)
+            _LOGGER.info(
+                "Learning: profile %s/%s is ready with %d samples (effective_slope=%s)",
+                hvac_mode,
+                fan_mode,
+                profile_samples,
+                f"{effective_slope:.3f}" if effective_slope is not None else "n/a",
+            )
 
         # Cleanup: keep only data within sliding window (7 days)
         cutoff_time = time.time() - (self._learning_window_hours * 3600)
@@ -73,6 +101,10 @@ class ThermalLearning:
 
         if len(self._slope_samples) < before:
             self.recompute_slope_stats()
+            _LOGGER.debug(
+                "Learning: dropped %d expired slope samples from the sliding window",
+                before - len(self._slope_samples),
+            )
 
     def _update_slope_stats(self, abs_slope: float) -> None:
         """Update slope statistics incrementally using Welford's algorithm."""
@@ -94,7 +126,13 @@ class ThermalLearning:
 
         # Cleanup: keep only data within sliding window (7 days)
         cutoff_time = time.time() - (self._learning_window_hours * 3600)
+        before = len(self._response_events)
         self._response_events = [(ts, t) for ts, t in self._response_events if ts > cutoff_time]
+        if len(self._response_events) < before:
+            _LOGGER.debug(
+                "Learning: dropped %d expired response events from the sliding window",
+                before - len(self._response_events),
+            )
 
     def slope_sample_count(self) -> int:
         """Return number of collected slope samples."""
@@ -198,6 +236,35 @@ class ThermalLearning:
         avg = statistics.mean(matching_slopes)
         return -avg if hvac_mode == "cool" else avg
 
+    def get_mode_sample_count(self, fan_mode: str, hvac_mode: str) -> int:
+        """Return the number of collected samples for one fan/HVAC profile."""
+        return sum(1 for (_, fm, _, hm) in self._slope_samples if fm == fan_mode and hm == hvac_mode)
+
+    def get_known_fan_modes(self) -> list[str]:
+        """Return unique fan modes seen in slope samples, preserving first-seen order."""
+        seen: dict[str, None] = {}
+        for _, fan_mode, _, _ in self._slope_samples:
+            seen[fan_mode] = None
+        return list(seen.keys())
+
+    def get_mode_profiles(self, hvac_mode: str, fan_modes: list[str] | None = None) -> dict[str, dict]:
+        """Return the learned profile summary for one HVAC mode."""
+        if fan_modes:
+            ordered_modes = list(dict.fromkeys(fan_modes))
+        else:
+            ordered_modes = sorted({fm for (_, fm, _, hm) in self._slope_samples if hm == hvac_mode})
+
+        profiles: dict[str, dict] = {}
+        for fan_mode in ordered_modes:
+            effective_slope = self.get_mode_effective_slope(fan_mode, hvac_mode)
+            sample_count = self.get_mode_sample_count(fan_mode, hvac_mode)
+            profiles[fan_mode] = {
+                "effective_slope": round(effective_slope, 3) if effective_slope is not None else None,
+                "samples": sample_count,
+                "ready": effective_slope is not None,
+            }
+        return profiles
+
     def compute_optimal_parameters(self) -> dict:
         """Calculate optimal parameters from learned data.
 
@@ -280,6 +347,11 @@ class ThermalLearning:
         self._slope_m2 = 0.0
         self._slope_max = 0.0
         self._optimal_cache = None  # Invalidate cache when stats are rebuilt
+        self._profile_ready_logged = {
+            (hm, fm)
+            for (_, fm, _, hm) in self._slope_samples
+            if hm != "unknown" and self.get_mode_sample_count(fm, hm) >= MIN_MODE_PROFILE_SAMPLES
+        }
 
         for sample in self._slope_samples:
             self._update_slope_stats(abs(sample[2]))
@@ -303,9 +375,11 @@ class ThermalLearning:
         # Migrate slope_samples: support both 3-tuple (old) and 4-tuple (new)
         raw_samples = data.get("slope_samples", [])
         instance._slope_samples = []
+        migrated_legacy_samples = 0
         for sample in raw_samples:
             if len(sample) == 3:
                 instance._slope_samples.append((sample[0], sample[1], sample[2], "unknown"))
+                migrated_legacy_samples += 1
             else:
                 instance._slope_samples.append(tuple(sample))
 
@@ -330,5 +404,12 @@ class ThermalLearning:
             instance._ready_once = True
 
         instance._optimal_cache = None
+        if migrated_legacy_samples:
+            _LOGGER.info("Learning: migrated %d legacy slope samples to include hvac_mode", migrated_legacy_samples)
+        _LOGGER.debug(
+            "Learning: restored %d slope samples and %d response events from storage",
+            len(instance._slope_samples),
+            len(instance._response_events),
+        )
 
         return instance

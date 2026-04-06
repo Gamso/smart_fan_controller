@@ -7,17 +7,21 @@ CSV columns (in order):
   timestamp, hvac_mode, current_temp, target_temp, current_error,
   vtherm_slope, effective_slope, projected_temp, projected_error,
   phase, minutes_since_change, effective_timeout, current_fan, decided_fan,
-  force, reason, learning_ready, dead_time, is_window_open
+  force, reason, learning_ready, dead_time, is_window_open,
+  defrost_active, hvac_idle
 """
 
+import asyncio
 import csv
 import logging
 import os
 from datetime import datetime, timezone
 
+from homeassistant.core import HomeAssistant
+
 _LOGGER = logging.getLogger(__name__)
 
-# Header used when creating a new file.  Keep in sync with _row() below.
+# Header used when creating a new file. Keep in sync with async_record() below.
 _HEADER = [
     "timestamp",
     "hvac_mode",
@@ -38,25 +42,29 @@ _HEADER = [
     "learning_ready",
     "dead_time",
     "is_window_open",
+    "defrost_active",
+    "hvac_idle",
 ]
 
-# Rotate the file when it exceeds this size (bytes).  10 MB keeps ~200 000 rows.
+# Rotate the file when it exceeds this size (bytes). 10 MB keeps ~200 000 rows.
 _MAX_FILE_SIZE = 10 * 1024 * 1024
 
 
 class DataCollector:
     """Appends one CSV row per control cycle to a rotating log file."""
 
-    def __init__(self, config_dir: str, entry_id: str) -> None:
+    def __init__(self, hass: HomeAssistant, config_dir: str, entry_id: str) -> None:
+        self._hass = hass
         self._path = os.path.join(config_dir, f"smart_fan_controller_data_{entry_id[:8]}.csv")
         self._rotated_path = self._path.replace(".csv", "_old.csv")
-        self._ensure_header()
+        self._io_lock = asyncio.Lock()
 
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
+    async def async_initialize(self) -> None:
+        """Create or validate the CSV file outside the event loop."""
+        async with self._io_lock:
+            await self._hass.async_add_executor_job(self._ensure_header)
 
-    def record(
+    async def async_record(
         self,
         *,
         hvac_mode: str,
@@ -71,8 +79,10 @@ class DataCollector:
         force: bool,
         learning_ready: bool,
         dead_time: float,
+        defrost_active: bool = False,
+        is_hvac_idle: bool = False,
     ) -> None:
-        """Append one row to the CSV file."""
+        """Append one row to the CSV file outside the event loop."""
         row = [
             datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             hvac_mode,
@@ -93,25 +103,29 @@ class DataCollector:
             int(learning_ready),
             round(dead_time, 2),
             int(is_window_open),
+            int(defrost_active),
+            int(is_hvac_idle),
         ]
-        try:
-            self._rotate_if_needed()
-            with open(self._path, "a", newline="", encoding="utf-8") as fh:
-                csv.writer(fh).writerow(row)
-        except OSError as exc:
-            _LOGGER.warning("DataCollector: could not write to %s: %s", self._path, exc)
+        async with self._io_lock:
+            await self._hass.async_add_executor_job(self._write_row, row)
 
     @property
     def path(self) -> str:
         """Return the active CSV file path."""
         return self._path
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
+    def _write_row(self, row: list[object]) -> None:
+        """Write one row to disk, rotating the file first if needed."""
+        try:
+            self._rotate_if_needed()
+            self._ensure_header()
+            with open(self._path, "a", newline="", encoding="utf-8") as fh:
+                csv.writer(fh).writerow(row)
+        except OSError as exc:
+            _LOGGER.warning("DataCollector: could not write to %s: %s", self._path, exc)
 
     def _ensure_header(self) -> None:
-        """Write the header row if the file does not exist yet."""
+        """Write the header row if missing, or rotate when the schema changes."""
         if not os.path.exists(self._path):
             try:
                 with open(self._path, "w", newline="", encoding="utf-8") as fh:
@@ -119,6 +133,20 @@ class DataCollector:
                 _LOGGER.info("DataCollector: created %s", self._path)
             except OSError as exc:
                 _LOGGER.warning("DataCollector: could not create %s: %s", self._path, exc)
+            return
+
+        try:
+            with open(self._path, newline="", encoding="utf-8") as fh:
+                current_header = next(csv.reader(fh), [])
+            if current_header != _HEADER:
+                if os.path.exists(self._rotated_path):
+                    os.remove(self._rotated_path)
+                os.rename(self._path, self._rotated_path)
+                with open(self._path, "w", newline="", encoding="utf-8") as fh:
+                    csv.writer(fh).writerow(_HEADER)
+                _LOGGER.info("DataCollector: rotated %s due to header change", self._path)
+        except OSError as exc:
+            _LOGGER.warning("DataCollector: could not validate %s: %s", self._path, exc)
 
     def _rotate_if_needed(self) -> None:
         """Rename current file to *_old.csv when it exceeds _MAX_FILE_SIZE."""
@@ -128,6 +156,6 @@ class DataCollector:
                     os.remove(self._rotated_path)
                 os.rename(self._path, self._rotated_path)
                 self._ensure_header()
-                _LOGGER.info("DataCollector: rotated %s → %s", self._path, self._rotated_path)
+                _LOGGER.info("DataCollector: rotated %s -> %s", self._path, self._rotated_path)
         except OSError as exc:
             _LOGGER.warning("DataCollector: rotation error for %s: %s", self._path, exc)
