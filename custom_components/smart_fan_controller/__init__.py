@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
@@ -277,7 +278,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if not controller.is_defrost_active:
                     _LOGGER.info("External defrost entity %s reports active defrost", defrost_entity_id)
                 controller._defrost_active = True
-                controller._defrost_start_time = controller._now
+                controller._defrost_start_time = time.time()
 
         # HVAC idle detection: compressor not running (optional entities)
         is_hvac_idle = False
