@@ -13,6 +13,7 @@
                     "limit_timeout": "Interval Before Forcing Change (minutes)",
                     "learning_enabled": "Enable Automatic Learning",
                     "data_collection": "Enable Data Collection (beta)",
+                    "mpc_production_enabled": "Enable MPC Production Mode",
                     "defrost_entity": "Defrost Entity (optional)",
                     "operating_entity": "Heat Pump Operating Entity (optional)"
                 },
@@ -25,6 +26,7 @@
                     "limit_timeout": "Range: 10-120 min. Default: 15 min.",
                     "learning_enabled": "Enable automatic learning of optimal parameters. When ready, settings will be applied automatically.",
                     "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
+                    "mpc_production_enabled": "When enabled, the MPC controller directly controls the fan mode instead of the rule-based algorithm. The MPC shadow observation always runs regardless of this setting.",
                     "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode.",
                     "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off."
                 },
@@ -49,6 +51,7 @@
                     "limit_timeout": "Interval Before Forcing Change (minutes)",
                     "learning_enabled": "Enable Automatic Learning",
                     "data_collection": "Enable Data Collection (beta)",
+                    "mpc_production_enabled": "Enable MPC Production Mode",
                     "defrost_entity": "Defrost Entity (optional)",
                     "operating_entity": "Heat Pump Operating Entity (optional)"
                 },
@@ -61,6 +64,7 @@
                     "limit_timeout": "Range: 10-120 min. Default: 15 min.",
                     "learning_enabled": "Enable automatic learning of optimal parameters. When ready, settings will be applied automatically.",
                     "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
+                    "mpc_production_enabled": "When enabled, the MPC controller directly controls the fan mode instead of the rule-based algorithm. The MPC shadow observation always runs regardless of this setting.",
                     "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode.",
                     "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off."
                 },

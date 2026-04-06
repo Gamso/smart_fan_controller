@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from custom_components.smart_fan_controller.controller import SmartFanController
+from custom_components.smart_fan_controller.mpc_controller import MPCController
 from custom_components.smart_fan_controller.const import (
     DEFAULT_DEADBAND,
     DEFAULT_MIN_INTERVAL,
@@ -194,6 +195,109 @@ class TestHvacIdleLearningExclusion:
                 is_hvac_idle=True,
             )
         assert controller.learning.response_event_count() == initial_events
+
+
+class TestHvacIdleMpc:
+    """MPC shadow should pause during HVAC idle."""
+
+    def test_shadow_pauses_during_hvac_idle(self):
+        """Shadow should return Disturbed when compressor is off."""
+        ctrl = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
+        _prime_learning_profiles(ctrl)
+        shadow = MPCController(
+            learning=ctrl.learning,
+            deadband=0.3,
+            min_interval=10,
+            fan_modes=FAN_MODES,
+            enabled=True,
+        )
+
+        result = shadow.evaluate(
+            current_temp=19.5,
+            target_temp=20.0,
+            vtherm_slope=0.2,
+            hvac_mode="heat",
+            current_fan="high",
+            live_decision_fan="high",
+            is_window_open=False,
+            is_defrost_active=False,
+            is_hvac_idle=True,
+            minutes_since_change=12.0,
+        )
+
+        assert result["mpc_status"] == "Disturbed"
+        assert result["mpc_fan_mode"] == "high"
+        assert result["mpc_would_change_now"] == "no"
+        assert "HVAC idle" in result["mpc_reason"]
+
+    def test_shadow_active_when_not_idle(self):
+        """Shadow should produce a normal recommendation when compressor is running."""
+        ctrl = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
+        _prime_learning_profiles(ctrl)
+        shadow = MPCController(
+            learning=ctrl.learning,
+            deadband=0.3,
+            min_interval=10,
+            fan_modes=FAN_MODES,
+            enabled=True,
+        )
+
+        result = shadow.evaluate(
+            current_temp=19.5,
+            target_temp=20.0,
+            vtherm_slope=0.2,
+            hvac_mode="heat",
+            current_fan="high",
+            live_decision_fan="high",
+            is_window_open=False,
+            is_defrost_active=False,
+            is_hvac_idle=False,
+            minutes_since_change=12.0,
+        )
+
+        assert result["mpc_status"] != "Disturbed"
+
+    def test_shadow_disturbance_bias_decays_during_idle(self):
+        """Disturbance bias should decay, not update, during HVAC idle."""
+        ctrl = SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
+        _prime_learning_profiles(ctrl)
+        shadow = MPCController(
+            learning=ctrl.learning,
+            deadband=0.3,
+            min_interval=10,
+            fan_modes=FAN_MODES,
+            enabled=True,
+        )
+
+        # Prime the disturbance bias with a normal cycle
+        shadow.evaluate(
+            current_temp=19.5,
+            target_temp=20.0,
+            vtherm_slope=0.5,
+            hvac_mode="heat",
+            current_fan="med",
+            live_decision_fan="med",
+            is_window_open=False,
+            minutes_since_change=20.0,
+        )
+        bias_before = shadow._disturbance_bias
+
+        # HVAC idle cycle — should NOT poison the bias
+        shadow.evaluate(
+            current_temp=19.5,
+            target_temp=20.0,
+            vtherm_slope=-0.5,
+            hvac_mode="heat",
+            current_fan="med",
+            live_decision_fan="med",
+            is_window_open=False,
+            is_hvac_idle=True,
+            minutes_since_change=25.0,
+        )
+        bias_after = shadow._disturbance_bias
+
+        # Bias should have decayed, not grown from the negative slope residual
+        assert abs(bias_after) <= abs(bias_before)
 
 
 class TestHvacIdleCoolMode:

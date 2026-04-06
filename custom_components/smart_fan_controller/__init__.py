@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
@@ -21,6 +20,7 @@ from .const import (
     CONF_LEARNING_ENABLED,
     CONF_LIMIT_TIMEOUT,
     CONF_MIN_INTERVAL,
+    CONF_MPC_PRODUCTION_ENABLED,
     CONF_OPERATING_ENTITY,
     CONF_SOFT_ERROR,
     DEFAULT_DATA_COLLECTION,
@@ -29,6 +29,7 @@ from .const import (
     DEFAULT_LEARNING_ENABLED,
     DEFAULT_LIMIT_TIMEOUT,
     DEFAULT_MIN_INTERVAL,
+    DEFAULT_MPC_PRODUCTION_ENABLED,
     DEFAULT_SOFT_ERROR,
     DELTA_TIME_CONTROL_LOOP,
     DOMAIN,
@@ -40,6 +41,7 @@ from .const import (
 )
 from .controller import SmartFanController
 from .data_collection import DataCollector
+from .mpc_controller import MPCController
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.SENSOR, Platform.SWITCH]
@@ -164,6 +166,121 @@ async def _apply_optimal_parameters(
     await hass.config_entries.async_reload(entry.entry_id)
 
 
+# MPC statuses that mean the controller is paused; in production mode the
+# rule-based heuristic is used as fallback when the MPC is in one of these states.
+_MPC_PAUSED_STATUSES = frozenset({"Disabled", "Idle", "Disturbed", "Not ready"})
+
+
+def _read_climate_cycle_data(
+    state,
+    climate_id: str,
+) -> tuple[float, float, float, str, str | None, bool] | None:
+    """Return cycle inputs parsed from a climate entity state.
+
+    Returns (vtherm_slope, current_temp, target_temp, hvac_mode, current_fan, is_window_open)
+    or None when mandatory data is missing.
+    """
+    attrs = state.attributes
+    vtherm_slope = attrs.get("specific_states", {}).get("temperature_slope", 0)
+    current_temp = attrs.get("current_temperature")
+    target_temp = attrs.get("temperature")
+    hvac_mode = attrs.get("hvac_mode")
+    current_fan = attrs.get("fan_mode")
+
+    if vtherm_slope is None:
+        _LOGGER.warning("%s is missing VTherm temperature_slope; skipping control cycle", climate_id)
+        return None
+    if current_temp is None or target_temp is None:
+        _LOGGER.debug(
+            "Skipping control cycle for %s because temperature data is incomplete (current=%s, target=%s)",
+            climate_id,
+            current_temp,
+            target_temp,
+        )
+        return None
+
+    window_mgr = attrs.get("window_manager", {})
+    is_window_open = window_mgr.get("window_state") == "on" or window_mgr.get("window_auto_state") == "on" or attrs.get("specific_states", {}).get("hvac_off_reason") == "Window"
+    return (
+        float(vtherm_slope),
+        float(current_temp),
+        float(target_temp),
+        str(hvac_mode),
+        current_fan,
+        is_window_open,
+    )
+
+
+def _detect_disturbances(hass, conf: dict, controller: SmartFanController) -> bool:
+    """Check external entities and update the controller defrost state.
+
+    Returns True when the HVAC compressor is reported as idle.
+    """
+    defrost_entity_id = conf.get(CONF_DEFROST_ENTITY)
+    if defrost_entity_id:
+        defrost_state = hass.states.get(defrost_entity_id)
+        if defrost_state and defrost_state.state in ("on", "true", "True", "1"):
+            if not controller.is_defrost_active:
+                _LOGGER.info("External defrost entity %s reports active defrost", defrost_entity_id)
+            controller.activate_defrost()
+
+    operating_entity_id = conf.get(CONF_OPERATING_ENTITY)
+    if operating_entity_id:
+        operating_state = hass.states.get(operating_entity_id)
+        if operating_state and operating_state.state in ("off", "false", "False", "0"):
+            return True
+    return False
+
+
+def _pick_effective_fan(
+    mpc_controller: MPCController,
+    decision: dict,
+    shadow_decision: dict,
+) -> tuple[str, str]:
+    """Return (fan_mode, reason) for the current control cycle.
+
+    When MPC production mode is active and the MPC is not paused, the MPC
+    decision takes precedence; otherwise the rule-based heuristic is used.
+    """
+    if mpc_controller.production_mode and shadow_decision.get("mpc_status") not in _MPC_PAUSED_STATUSES and shadow_decision.get("mpc_fan_mode"):
+        return shadow_decision["mpc_fan_mode"], f"MPC: {shadow_decision.get('mpc_reason', 'MPC')}"
+    return decision["fan_mode"], decision["reason"]
+
+
+async def _async_apply_fan_change(
+    hass,
+    climate_id: str,
+    effective_fan: str,
+    current_fan: str | None,
+    reason: str,
+    controller: SmartFanController,
+) -> None:
+    """Send a fan-mode command to the climate entity and confirm on success."""
+    _LOGGER.info(
+        "Changing %s fan mode from %s to %s (%s)",
+        climate_id,
+        current_fan,
+        effective_fan,
+        reason,
+    )
+    try:
+        await hass.services.async_call(
+            "climate",
+            "set_fan_mode",
+            {"entity_id": climate_id, "fan_mode": effective_fan},
+            blocking=True,
+        )
+    except Exception:  # pylint: disable=broad-exception-caught  # pragma: no cover
+        _LOGGER.exception(
+            "Failed to change %s fan mode from %s to %s",
+            climate_id,
+            current_fan,
+            effective_fan,
+        )
+    else:
+        controller.confirm_fan_change()
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the integration from a config entry."""
     conf = {**entry.data, **entry.options}
@@ -172,9 +289,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     initial_fan_modes = _extract_supported_fan_modes(current_state)
 
     _LOGGER.info(
-        "Setting up Smart Fan Controller for %s (learning=%s, data_collection=%s)",
+        "Setting up Smart Fan Controller for %s (learning=%s, mpc_production=%s, data_collection=%s)",
         climate_id,
         conf.get(CONF_LEARNING_ENABLED, DEFAULT_LEARNING_ENABLED),
+        conf.get(CONF_MPC_PRODUCTION_ENABLED, DEFAULT_MPC_PRODUCTION_ENABLED),
         conf.get(CONF_DATA_COLLECTION, DEFAULT_DATA_COLLECTION),
     )
 
@@ -186,17 +304,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY}.{entry.entry_id}")
 
     learning_data = await store.async_load()
-    learning_data_source = "storage"
     if not learning_data:
         learning_data = entry.data.get("learning_data")
-        learning_data_source = "config_entry"
         _LOGGER.debug("No persistent storage found for %s, using config entry data", entry.entry_id)
 
     if learning_data:
         _LOGGER.info(
-            "Restored learning data for %s from %s (%d slope samples, %d response events)",
+            "Restored learning data for %s (%d slope samples, %d response events)",
             entry.entry_id,
-            learning_data_source,
             len(learning_data.get("slope_samples", [])),
             len(learning_data.get("response_events", [])),
         )
@@ -212,18 +327,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         learning_enabled=conf.get(CONF_LEARNING_ENABLED, DEFAULT_LEARNING_ENABLED),
     )
 
-    data_collection_enabled = conf.get(CONF_DATA_COLLECTION, DEFAULT_DATA_COLLECTION)
-    collector: DataCollector | None = (
-        DataCollector(hass, hass.config.config_dir, entry.entry_id)
-        if data_collection_enabled
-        else None
+    mpc_controller = MPCController(
+        learning=controller.learning,
+        deadband=conf.get(CONF_DEADBAND, DEFAULT_DEADBAND),
+        min_interval=conf.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL),
+        fan_modes=initial_fan_modes or None,
+        enabled=True,
     )
+    mpc_controller.production_mode = conf.get(CONF_MPC_PRODUCTION_ENABLED, DEFAULT_MPC_PRODUCTION_ENABLED)
+
+    collector: DataCollector | None = DataCollector(hass, hass.config.config_dir, entry.entry_id) if conf.get(CONF_DATA_COLLECTION, DEFAULT_DATA_COLLECTION) else None
     if collector:
         await collector.async_initialize()
         _LOGGER.info("DataCollector enabled for %s, writing to %s", entry.entry_id, collector.path)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "controller": controller,
+        "mpc_controller": mpc_controller,
         "climate_entity": climate_id,
         "sensors": [],
         "ensure_profile_sensors": None,
@@ -242,7 +362,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def run_control_loop(_):
         """Main control loop executed every 2 minutes."""
         current_state = hass.states.get(climate_id)
-
         if not current_state:
             _LOGGER.warning("Climate entity %s not found; skipping control cycle", climate_id)
             return
@@ -250,56 +369,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not controller.fan_modes:
             detected_modes = _extract_supported_fan_modes(current_state)
             if detected_modes:
-                controller.fan_modes = detected_modes
+                controller.fan_modes = mpc_controller.fan_modes = detected_modes
                 _LOGGER.info("Detected fan modes for %s during runtime: %s", climate_id, detected_modes)
                 _ensure_profile_sensors()
             else:
-                _LOGGER.debug("Climate entity %s has no supported fan modes yet, will retry next cycle", climate_id)
+                _LOGGER.debug("No fan modes available yet for %s, retrying next cycle", climate_id)
 
-        attrs = current_state.attributes
-        vtherm_slope = attrs.get("specific_states", {}).get("temperature_slope", 0)
-        current_temp = attrs.get("current_temperature")
-        target_temp = attrs.get("temperature")
-        hvac_mode = attrs.get("hvac_mode")
-        current_fan = attrs.get("fan_mode")
-
-        window_mgr = attrs.get("window_manager", {})
-        is_window_open = (
-            window_mgr.get("window_state") == "on"
-            or window_mgr.get("window_auto_state") == "on"
-            or attrs.get("specific_states", {}).get("hvac_off_reason") == "Window"
-        )
-
-        # External defrost entity (optional): force defrost state when the PAC reports it
-        defrost_entity_id = conf.get(CONF_DEFROST_ENTITY)
-        if defrost_entity_id:
-            defrost_state = hass.states.get(defrost_entity_id)
-            if defrost_state and defrost_state.state in ("on", "true", "True", "1"):
-                if not controller.is_defrost_active:
-                    _LOGGER.info("External defrost entity %s reports active defrost", defrost_entity_id)
-                controller._defrost_active = True
-                controller._defrost_start_time = time.time()
-
-        # HVAC idle detection: compressor not running (optional entities)
-        is_hvac_idle = False
-        operating_entity_id = conf.get(CONF_OPERATING_ENTITY)
-        if operating_entity_id:
-            operating_state = hass.states.get(operating_entity_id)
-            if operating_state and operating_state.state in ("off", "false", "False", "0"):
-                is_hvac_idle = True
-
-        if vtherm_slope is None:
-            _LOGGER.warning("%s is missing VTherm temperature_slope; skipping control cycle", climate_id)
+        cycle_data = _read_climate_cycle_data(current_state, climate_id)
+        if cycle_data is None:
             return
-
-        if current_temp is None or target_temp is None:
-            _LOGGER.debug(
-                "Skipping control cycle for %s because temperature data is incomplete (current=%s, target=%s)",
-                climate_id,
-                current_temp,
-                target_temp,
-            )
-            return
+        vtherm_slope, current_temp, target_temp, hvac_mode, current_fan, is_window_open = cycle_data
+        is_hvac_idle = _detect_disturbances(hass, conf, controller)
 
         _LOGGER.debug(
             "Cycle start for %s: temp=%.2f target=%.2f slope=%.3f fan=%s hvac=%s window_open=%s",
@@ -313,84 +393,75 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
         decision = controller.calculate_decision(
-            float(current_temp),
-            float(target_temp),
-            float(vtherm_slope),
-            str(hvac_mode),
+            current_temp,
+            target_temp,
+            vtherm_slope,
+            hvac_mode,
             current_fan,
             is_window_open,
             is_hvac_idle,
         )
+        shadow_decision = mpc_controller.evaluate(
+            current_temp=current_temp,
+            target_temp=target_temp,
+            vtherm_slope=vtherm_slope,
+            hvac_mode=hvac_mode,
+            current_fan=current_fan,
+            live_decision_fan=decision.get("fan_mode"),
+            is_window_open=is_window_open,
+            is_defrost_active=controller.is_defrost_active,
+            is_hvac_idle=is_hvac_idle,
+            minutes_since_change=decision.get("minutes_since_last_change", 0.0),
+        )
 
         _LOGGER.debug(
-            "Cycle result for %s: live=%s reason=%s",
+            "Cycle result for %s: live=%s mpc=%s mpc_status=%s mpc_confidence=%s%%",
             climate_id,
             decision.get("fan_mode"),
-            decision.get("reason"),
+            shadow_decision.get("mpc_fan_mode"),
+            shadow_decision.get("mpc_status"),
+            shadow_decision.get("mpc_confidence"),
         )
 
         if collector:
-            effective_slope = -float(vtherm_slope) if str(hvac_mode) == "cool" else float(vtherm_slope)
-            minutes_since = decision.get("minutes_since_last_change", 0.0)
             await collector.async_record(
-                hvac_mode=str(hvac_mode),
-                current_temp=float(current_temp),
-                target_temp=float(target_temp),
-                vtherm_slope=float(vtherm_slope),
+                hvac_mode=hvac_mode,
+                current_temp=current_temp,
+                target_temp=target_temp,
+                vtherm_slope=vtherm_slope,
                 is_window_open=is_window_open,
                 decision={**decision, "current_fan": current_fan},
-                phase=controller.detect_phase(minutes_since),
-                effective_slope=effective_slope,
+                phase=controller.detect_phase(decision.get("minutes_since_last_change", 0.0)),
+                effective_slope=-float(vtherm_slope) if hvac_mode == "cool" else float(vtherm_slope),
                 effective_timeout=controller.get_effective_timeout(),
                 force=decision.get("reason", "").startswith(("Emergency", "Setpoint drop")),
                 learning_ready=controller.learning_enabled and controller.learning.is_ready(),
                 dead_time=controller.learning.get_dead_time() if controller.learning_enabled else 0.0,
+                shadow=shadow_decision,
                 defrost_active=controller.is_defrost_active,
                 is_hvac_idle=is_hvac_idle,
             )
 
-        sensors = hass.data[DOMAIN][entry.entry_id].get("sensors")
-        if sensors:
-            _LOGGER.debug("Updating %d Smart Fan Controller sensors for %s", len(sensors), climate_id)
-            for sensor in sensors:
-                if hasattr(sensor, "update_from_controller"):
-                    sensor.update_from_controller(decision)
-                sensor.async_write_ha_state()
+        for sensor in hass.data[DOMAIN][entry.entry_id].get("sensors") or []:
+            if hasattr(sensor, "update_from_controller"):
+                sensor.update_from_controller({**decision, **shadow_decision})
+            sensor.async_write_ha_state()
 
         if (
             controller.learning_enabled
             and controller.learning.is_ready()
             and not entry.data.get("learning_auto_applied", False)
         ):
-            optimal = controller.learning.compute_optimal_parameters()
-            if optimal:
+            learned_params = controller.learning.compute_optimal_parameters()
+            if learned_params:
                 _LOGGER.info("Learning is ready for %s, scheduling auto-apply of learned parameters", climate_id)
-                hass.async_create_task(_apply_optimal_parameters(hass, entry, optimal))
+                hass.async_create_task(_apply_optimal_parameters(hass, entry, learned_params))
 
-        if decision["fan_mode"] != current_fan:
-            _LOGGER.info(
-                "Changing %s fan mode from %s to %s (%s)",
-                climate_id,
-                current_fan,
-                decision["fan_mode"],
-                decision["reason"],
-            )
-            try:
-                await hass.services.async_call(
-                    "climate",
-                    "set_fan_mode",
-                    {"entity_id": climate_id, "fan_mode": decision["fan_mode"]},
-                    blocking=True,
-                )
-                controller.confirm_fan_change()
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception(
-                    "Failed to set fan mode %s on %s; cooldown not advanced",
-                    decision["fan_mode"],
-                    climate_id,
-                )
+        effective_fan, effective_reason = _pick_effective_fan(mpc_controller, decision, shadow_decision)
+        if effective_fan != current_fan:
+            await _async_apply_fan_change(hass, climate_id, effective_fan, current_fan, effective_reason, controller)
         else:
-            _LOGGER.debug("No fan mode change required for %s (%s)", climate_id, decision["reason"])
+            _LOGGER.debug("No fan mode change required for %s (%s)", climate_id, effective_reason)
 
     async def _handle_manual_change(event):
         """Track manual fan mode changes to reset the controller cooldown."""
@@ -415,10 +486,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 sensor.update_from_controller(manual_data)
             sensor.async_write_ha_state()
 
-    remove_timer = async_track_time_interval(hass, run_control_loop, timedelta(minutes=DELTA_TIME_CONTROL_LOOP))
-    manual_change = async_track_state_change_event(hass, [climate_id], _handle_manual_change)
-    entry.async_on_unload(remove_timer)
-    entry.async_on_unload(manual_change)
+    entry.async_on_unload(async_track_time_interval(hass, run_control_loop, timedelta(minutes=DELTA_TIME_CONTROL_LOOP)))
+    entry.async_on_unload(async_track_state_change_event(hass, [climate_id], _handle_manual_change))
 
     hass.async_create_task(run_control_loop(None))
 
@@ -433,8 +502,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             len(learning_data_to_save.get("response_events", [])),
         )
 
-    remove_periodic_save = async_track_time_interval(hass, periodic_save_learning, LEARNING_DATA_SAVE_INTERVAL)
-    entry.async_on_unload(remove_periodic_save)
+    entry.async_on_unload(async_track_time_interval(hass, periodic_save_learning, LEARNING_DATA_SAVE_INTERVAL))
 
     async def apply_learned_settings(_):
         """Service to apply optimal parameters from learning."""

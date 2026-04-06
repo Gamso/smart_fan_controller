@@ -68,42 +68,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     sensor_definitions = [
         ("Status", "status", "reason", None, None, "mdi:information-outline", EntityCategory.DIAGNOSTIC),
         ("Fan Mode", "fan_mode", "fan_mode", None, SensorDeviceClass.ENUM, "mdi:fan", None),
-        (
-            "Fan Mode Last Change",
-            "fan_mode_last_change",
-            "minutes_since_last_change",
-            UnitOfTime.MINUTES,
-            SensorDeviceClass.DURATION,
-            "mdi:clock-outline",
-            EntityCategory.DIAGNOSTIC,
-        ),
-        (
-            "Temperature Projected 10 Min",
-            "temperature_projected_10_min",
-            "projected_temperature",
-            UnitOfTemperature.CELSIUS,
-            SensorDeviceClass.TEMPERATURE,
-            "mdi:chart-bell-curve",
-            EntityCategory.DIAGNOSTIC,
-        ),
-        (
-            "Temperature Projected Error 10 Min",
-            "temperature_projected_error_10_min",
-            "projected_temperature_error",
-            UnitOfTemperature.CELSIUS,
-            SensorDeviceClass.TEMPERATURE,
-            "mdi:chart-bell-curve",
-            EntityCategory.DIAGNOSTIC,
-        ),
-        (
-            "Temperature Error",
-            "temperature_error",
-            "temperature_error",
-            UnitOfTemperature.CELSIUS,
-            SensorDeviceClass.TEMPERATURE,
-            "mdi:thermometer-lines",
-            EntityCategory.DIAGNOSTIC,
-        ),
+        ("Fan Mode Last Change", "fan_mode_last_change", "minutes_since_last_change", UnitOfTime.MINUTES, SensorDeviceClass.DURATION, "mdi:clock-outline", EntityCategory.DIAGNOSTIC),
+        ("Temperature Projected 10 Min", "temperature_projected_10_min", "projected_temperature", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:chart-bell-curve", EntityCategory.DIAGNOSTIC),
+        ("Temperature Projected Error 10 Min", "temperature_projected_error_10_min", "projected_temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:chart-bell-curve", EntityCategory.DIAGNOSTIC),
+        ("Temperature Error", "temperature_error", "temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:thermometer-lines", EntityCategory.DIAGNOSTIC),
+        ("MPC Status", "mpc_status", "mpc_status", None, None, "mdi:robot-outline", EntityCategory.DIAGNOSTIC),
+        ("MPC Reason", "mpc_reason", "mpc_reason", None, None, "mdi:text-box-search-outline", EntityCategory.DIAGNOSTIC),
+        ("MPC Fan Mode", "mpc_fan_mode", "mpc_fan_mode", None, None, "mdi:fan-chevron-up", EntityCategory.DIAGNOSTIC),
+        ("MPC Match", "mpc_match", "mpc_matches_live", None, None, "mdi:compare", EntityCategory.DIAGNOSTIC),
+        ("MPC Would Change Now", "mpc_would_change_now", "mpc_would_change_now", None, None, "mdi:swap-horizontal", EntityCategory.DIAGNOSTIC),
+        ("MPC Cost", "mpc_cost", "mpc_cost", None, None, "mdi:calculator", EntityCategory.DIAGNOSTIC),
+        ("MPC Confidence", "mpc_confidence", "mpc_confidence", PERCENTAGE, None, "mdi:chart-line", EntityCategory.DIAGNOSTIC),
+        ("MPC Predicted Temperature 10 Min", "mpc_predicted_temperature_10_min", "mpc_predicted_temperature_10m", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:chart-timeline-variant", EntityCategory.DIAGNOSTIC),
+        ("MPC Predicted Temperature 30 Min", "mpc_predicted_temperature_30_min", "mpc_predicted_temperature_30m", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:chart-timeline-variant", EntityCategory.DIAGNOSTIC),
+        ("MPC Dead Time", "mpc_dead_time", "mpc_dead_time", UnitOfTime.MINUTES, SensorDeviceClass.DURATION, "mdi:timer-sand", EntityCategory.DIAGNOSTIC),
+        ("MPC Known Profiles", "mpc_known_profiles", "mpc_known_profiles", None, None, "mdi:database-search-outline", EntityCategory.DIAGNOSTIC),
+        ("MPC Disturbance Bias", "mpc_disturbance_bias", "mpc_disturbance_bias", EFFECTIVE_SLOPE_UNIT, None, "mdi:weather-windy", EntityCategory.DIAGNOSTIC),
     ]
 
     entities: list[SensorEntity] = [
@@ -119,6 +99,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             SmartFanLearningResponseSensor(entry.entry_id, controller),
             SmartFanLearnedDeadTimeSensor(entry.entry_id, controller),
             SmartFanEffectiveTimeoutSensor(entry.entry_id, controller),
+            SmartFanMpcProfilesSensor(entry.entry_id, controller, "heat"),
+            SmartFanMpcProfilesSensor(entry.entry_id, controller, "cool"),
             SmartFanLearnedDeadbandSensor(entry.entry_id, controller),
             SmartFanLearnedSoftErrorSensor(entry.entry_id, controller),
             SmartFanLearnedHardErrorSensor(entry.entry_id, controller),
@@ -378,6 +360,42 @@ class SmartFanEffectiveTimeoutSensor(_SmartFanEntity):
             "is_ready": self._controller.learning.is_ready(),
             "learned_dead_time": round(self._controller.learning.get_dead_time(), 2),
             "configured_limit_timeout": round(self._controller.limit_timeout, 2),
+        }
+
+
+class SmartFanMpcProfilesSensor(_SmartFanEntity):
+    """Sensor exposing the learned per-mode profiles used by the shadow MPC."""
+
+    def __init__(self, entry_id: str, controller, hvac_mode: str) -> None:
+        self._entry_id = entry_id
+        self._controller = controller
+        self._hvac_mode = hvac_mode
+        self._attr_name = f"MPC {hvac_mode.title()} Profiles"
+        self._attr_unique_id = build_unique_id(f"mpc_{hvac_mode}_profiles", entry_id)
+        self._attr_icon = "mdi:chart-timeline-variant-shimmer"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self.entity_id = build_entity_id("sensor", f"mpc_{hvac_mode}_profiles")
+
+    @property
+    def native_value(self) -> int:
+        """Return the number of reliable profiles currently available."""
+        profiles = self._controller.learning.get_mode_profiles(self._hvac_mode, self._controller.fan_modes)
+        return sum(1 for profile in profiles.values() if profile["ready"])
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Expose the learned effective slope for each fan mode."""
+        profiles = self._controller.learning.get_mode_profiles(self._hvac_mode, self._controller.fan_modes)
+        return {
+            "hvac_mode": self._hvac_mode,
+            "fan_modes_total": len(profiles),
+            "known_profiles": sum(1 for profile in profiles.values() if profile["ready"]),
+            "min_samples_required_per_profile": MIN_MODE_PROFILE_SAMPLES,
+            "profile_effective_slope_sensors": {
+                fan_mode: build_entity_id("sensor", _profile_effective_slope_object_key(self._hvac_mode, fan_mode))
+                for fan_mode in profiles
+            },
+            "profiles": profiles,
         }
 
 

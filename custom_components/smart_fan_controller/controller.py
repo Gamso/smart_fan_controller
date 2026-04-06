@@ -126,6 +126,11 @@ class SmartFanController:
             return False
         return True
 
+    def activate_defrost(self) -> None:
+        """Activate defrost protection from an external entity trigger."""
+        self._defrost_active = True
+        self._defrost_start_time = self._now
+
     @property
     def _projected_error_threshold(self) -> float:
         """Calculate projected error threshold as midpoint between soft and hard error."""

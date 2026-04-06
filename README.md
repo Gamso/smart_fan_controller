@@ -34,6 +34,8 @@ Predictive fan speed control for HVAC systems, designed to work with Versatile T
   - [Sensors \& Entities](#sensors--entities)
     - [Main Entities](#main-entities)
     - [Diagnostic Sensors](#diagnostic-sensors)
+    - [MPC Sensors](#mpc-sensors)
+    - [Learning Profile Sensors](#learning-profile-sensors)
     - [Defrost Diagnostic](#defrost-diagnostic)
   - [Services](#services)
     - [`smart_fan_controller.apply_learned_settings`](#smart_fan_controllerapply_learned_settings)
@@ -78,9 +80,9 @@ Smart Fan Controller is a custom Home Assistant integration that **adjusts HVAC 
 4. Evaluates six priority zones (A–F) and selects the first matching action
 5. Applies safety guards (step-down limit, min interval) and changes fan speed if needed
 6. Collects learning data to automatically calibrate parameters over time
-7. Optionally runs an MPC shadow controller in the background for dry-run comparison
+7. Runs an MPC controller in the background; optionally activates MPC production mode for direct fan control
 
-> Experimental: **MPC Shadow Mode** runs a learned temperature-state model and MPC-lite in observation-only mode. It owns its own runtime parameters (`deadband`, `min_interval`, fan modes), never applies real fan commands, pauses itself during disturbed periods such as an open window, and keeps those periods out of dead-time learning. See [docs/mpc_shadow_mode.md](docs/mpc_shadow_mode.md).
+> **MPC Controller** always runs a learned temperature-state model and MPC-lite in observation mode. When **MPC Production Mode** is enabled, the MPC directly controls the fan instead of the rule-based algorithm. It owns its own runtime parameters (`deadband`, `min_interval`, fan modes), pauses itself during disturbed periods such as an open window, and keeps those periods out of dead-time learning. See [docs/mpc_mode.md](docs/mpc_mode.md).
 > It supports both `heat` and `cool`, and includes a hysteresis guard so tiny cost differences do not create fan yo-yo around the setpoint.
 
 ---
@@ -113,8 +115,10 @@ All parameters can be changed at any time via **Settings → Devices & Services 
 | **Hard Error**       | `0.6°C`  | `0.0` – `10.0°C` | Error threshold that triggers emergency mode (max fan, bypasses min interval).                                                                                                                                |
 | **Limit Timeout**    | `15 min` | `10` – `120 min` | Maximum time before forcing a re-evaluation, even without significant slope change.                                                                                                                           |
 | **Learning Enabled** | `true`   | —                | Enables the automatic learning system. Disable for fully manual tuning.                                                                                                                                       |
-| **MPC Shadow Mode**  | `false`  | —                | Runs the learned model + MPC-lite in the background for comparison only. No real fan command is applied.                                                                                                      |
+| **MPC Production Mode** | `false` | —               | When enabled, the MPC controller directly controls the fan mode instead of the rule-based algorithm. Shadow observation always runs.                                                                          |
+| **Data Collection**  | `true`   | —                | Records one CSV row every 2 minutes in the HA config folder (`smart_fan_controller_data_XXXXXXXX.csv`, max 10 MB, auto-rotated). Useful for offline analysis.                                                |
 | **Defrost Entity**   | *(none)* | —                | Optional entity (`binary_sensor`, `sensor`, or `input_boolean`) that reports when the heat pump is in defrost cycle. When active, defrost protection is applied. See [Defrost Detection](#defrost-detection). |
+| **Operating Entity** | *(none)* | —                | Optional entity (`binary_sensor`, `sensor`, or `input_boolean`) that reports whether the heat pump compressor is actively running. Used to block fan increases and exclude learning data while the compressor is off. See [HVAC Idle Detection](#hvac-idle-detection). |
 
 > **Tip — recommended ratios**: `deadband < soft_error < hard_error`, e.g. `0.2 / 0.3 / 0.6`.
 
@@ -245,7 +249,7 @@ Response events are only recorded when the delay is between 2 and 60 minutes (fi
 When Versatile Thermostat reports a window as open (via the `window_manager.window_state` attribute), the controller:
 - **Continues making live heuristic fan decisions** normally (the HVAC system is still running)
 - **Stops collecting learning data**, including both per-mode slope samples and response-time events used to learn `dead_time`
-- **Pauses the MPC shadow model**, marking it as disturbed instead of trusting predictions during the perturbation
+- **Pauses the MPC model**, marking it as disturbed instead of trusting predictions during the perturbation
 
 This prevents window-open periods from corrupting the learned profiles.
 
@@ -268,7 +272,7 @@ Slope samples and response-time events collected while the compressor is detecte
 | `sensor.smart_fan_controller_fan_mode`         | Sensor | Current fan mode selected by the controller       |
 | `sensor.smart_fan_controller_status`           | Sensor | Current control zone and decision reason          |
 | `switch.smart_fan_controller_learning_enabled` | Switch | Enable / disable the learning system              |
-| `switch.smart_fan_controller_mpc_shadow_mode`  | Switch | Enable / disable observation-only MPC shadow mode |
+| `switch.smart_fan_controller_mpc_production_mode` | Switch | Enable / disable MPC production mode (MPC controls the fan) |
 
 ### Diagnostic Sensors
 
@@ -288,19 +292,41 @@ Slope samples and response-time events collected while the compressor is detecte
 | `sensor.smart_fan_controller_learned_soft_error`                      | °C    | Learned optimal soft error threshold                                       |
 | `sensor.smart_fan_controller_learned_hard_error`                      | °C    | Learned optimal hard error threshold                                       |
 | `sensor.smart_fan_controller_learned_limit_timeout`                   | min   | Learned base timeout stored in config                                      |
-| `sensor.smart_fan_controller_mpc_shadow_status`                       | —     | Shadow controller state (`Disabled`, `Ready`, etc.)                        |
-| `sensor.smart_fan_controller_mpc_shadow_reason`                       | —     | Explanation of the current shadow recommendation                           |
-| `sensor.smart_fan_controller_mpc_shadow_fan_mode`                     | —     | Fan mode the MPC shadow would choose                                       |
-| `sensor.smart_fan_controller_mpc_shadow_match`                        | —     | Whether the shadow recommendation matches the live heuristic               |
-| `sensor.smart_fan_controller_mpc_shadow_would_change_now`             | —     | Whether the shadow controller would actively change the fan right now      |
-| `sensor.smart_fan_controller_mpc_shadow_confidence`                   | %     | Confidence derived from learned profile coverage                           |
-| `sensor.smart_fan_controller_mpc_shadow_predicted_temperature_10_min` | °C    | Predicted temperature after 10 minutes with the recommended mode           |
-| `sensor.smart_fan_controller_mpc_shadow_predicted_temperature_30_min` | °C    | Predicted temperature after 30 minutes with the recommended mode           |
-| `sensor.smart_fan_controller_mpc_shadow_dead_time`                    | min   | Dead time currently used by the shadow simulator                           |
-| `sensor.smart_fan_controller_mpc_shadow_known_profiles`               | count | Number of reliable learned fan-mode profiles used by the shadow controller |
-| `sensor.smart_fan_controller_mpc_shadow_disturbance_bias`             | °C/h  | Learned disturbance correction currently applied by the shadow model       |
 
-See [docs/mpc_shadow_mode.md](docs/mpc_shadow_mode.md) for the full technical design of the learned model and MPC-lite shadow mode.
+### MPC Sensors
+
+| Entity                                                                | Unit  | Description                                                                |
+| --------------------------------------------------------------------- | ----- | -------------------------------------------------------------------------- |
+| `sensor.smart_fan_controller_mpc_status`                       | —     | Shadow controller state (`Disabled`, `Ready`, `Disturbed`, etc.)           |
+| `sensor.smart_fan_controller_mpc_reason`                       | —     | Explanation of the current MPC recommendation                           |
+| `sensor.smart_fan_controller_mpc_fan_mode`                     | —     | Fan mode the MPC would choose                                       |
+| `sensor.smart_fan_controller_mpc_match`                        | —     | Whether the MPC recommendation matches the live heuristic               |
+| `sensor.smart_fan_controller_mpc_would_change_now`             | —     | Whether the MPC would actively change the fan right now      |
+| `sensor.smart_fan_controller_mpc_cost`                         | —     | Lowest simulation cost returned by the MPC optimizer                       |
+| `sensor.smart_fan_controller_mpc_confidence`                   | %     | Confidence derived from learned profile coverage                           |
+| `sensor.smart_fan_controller_mpc_predicted_temperature_10_min` | °C    | Predicted temperature after 10 minutes with the recommended mode           |
+| `sensor.smart_fan_controller_mpc_predicted_temperature_30_min` | °C    | Predicted temperature after 30 minutes with the recommended mode           |
+| `sensor.smart_fan_controller_mpc_dead_time`                    | min   | Dead time currently used by the MPC simulator                           |
+| `sensor.smart_fan_controller_mpc_known_profiles`               | count | Number of reliable learned fan-mode profiles used by the MPC controller |
+| `sensor.smart_fan_controller_mpc_disturbance_bias`             | °C/h  | Learned disturbance correction currently applied by the MPC model       |
+
+See [docs/mpc_mode.md](docs/mpc_mode.md) for the full technical design of the learned model and MPC-lite observation mode.
+
+### Learning Profile Sensors
+
+Once fan modes are detected, the integration creates per-HVAC-mode profile summary sensors and one effective slope sensor per fan mode:
+
+| Entity (example with `low`/`medium`/`high` fan modes)                     | Unit  | Description                                             |
+| -------------------------------------------------------------------------- | ----- | ------------------------------------------------------- |
+| `sensor.smart_fan_controller_mpc_heat_profiles`                            | —     | JSON summary of learned heat profiles per fan mode      |
+| `sensor.smart_fan_controller_mpc_cool_profiles`                            | —     | JSON summary of learned cool profiles per fan mode      |
+| `sensor.smart_fan_controller_heat_low_effective_slope`                     | °C/h  | Effective slope learned for `low` in heat mode          |
+| `sensor.smart_fan_controller_heat_medium_effective_slope`                  | °C/h  | Effective slope learned for `medium` in heat mode       |
+| `sensor.smart_fan_controller_heat_high_effective_slope`                    | °C/h  | Effective slope learned for `high` in heat mode         |
+| `sensor.smart_fan_controller_cool_low_effective_slope`                     | °C/h  | Effective slope learned for `low` in cool mode          |
+| … (one per fan mode × HVAC mode combination) | … | … |
+
+These sensors appear automatically when the climate entity's fan modes become known and require at least 10 samples per mode to show reliable data.
 
 ### Defrost Diagnostic
 

@@ -16,6 +16,7 @@ CONF_HARD_ERROR = "hard_error"
 CONF_LIMIT_TIMEOUT = "limit_timeout"
 CONF_LEARNING_ENABLED = "learning_enabled"
 CONF_DATA_COLLECTION = "data_collection"
+CONF_MPC_PRODUCTION_ENABLED = "mpc_production_enabled"
 CONF_DEFROST_ENTITY = "defrost_entity"
 CONF_OPERATING_ENTITY = "operating_entity"
 
@@ -27,6 +28,7 @@ DEFAULT_HARD_ERROR = 0.6
 DEFAULT_LIMIT_TIMEOUT = 15
 DEFAULT_LEARNING_ENABLED = True
 DEFAULT_DATA_COLLECTION = True
+DEFAULT_MPC_PRODUCTION_ENABLED = False
 
 DELTA_TIME_CONTROL_LOOP = 2  # minutes between each control loop execution
 
@@ -59,12 +61,40 @@ LEGACY_OBJECT_KEY_MAP = {
     "projected_temperature": "temperature_projected_10_min",
     "projected_temperature_error": "temperature_projected_error_10_min",
     "temperature_error": "temperature_error",
+    # MPC sensors — old object_keys (mpc_shadow_*) → new canonical (mpc_*)
+    "mpc_shadow_status": "mpc_status",
+    "mpc_shadow_reason": "mpc_reason",
+    "mpc_shadow_fan_mode": "mpc_fan_mode",
+    "mpc_shadow_matches_live": "mpc_match",
+    "mpc_shadow_would_change_now": "mpc_would_change_now",
+    "mpc_shadow_cost": "mpc_cost",
+    "mpc_shadow_confidence": "mpc_confidence",
+    "mpc_shadow_predicted_temperature_10m": "mpc_predicted_temperature_10_min",
+    "mpc_shadow_predicted_temperature_30m": "mpc_predicted_temperature_30_min",
+    "mpc_shadow_dead_time": "mpc_dead_time",
+    "mpc_shadow_known_profiles": "mpc_known_profiles",
+    "mpc_shadow_disturbance_bias": "mpc_disturbance_bias",
+    # Current object_keys (identity mapping — required for extract_object_key_from_unique_id)
+    "mpc_status": "mpc_status",
+    "mpc_reason": "mpc_reason",
+    "mpc_fan_mode": "mpc_fan_mode",
+    "mpc_match": "mpc_match",
+    "mpc_would_change_now": "mpc_would_change_now",
+    "mpc_cost": "mpc_cost",
+    "mpc_confidence": "mpc_confidence",
+    "mpc_predicted_temperature_10_min": "mpc_predicted_temperature_10_min",
+    "mpc_predicted_temperature_30_min": "mpc_predicted_temperature_30_min",
+    "mpc_dead_time": "mpc_dead_time",
+    "mpc_known_profiles": "mpc_known_profiles",
+    "mpc_disturbance_bias": "mpc_disturbance_bias",
     "learning_progress": "learning_progress",
     "learning_status": "learning_status",
     "learning_samples": "learning_samples",
     "learning_response_events": "learning_response_events",
     "learned_dead_time": "learned_dead_time",
     "effective_timeout": "effective_timeout",
+    "mpc_profiles_heat": "mpc_heat_profiles",
+    "mpc_profiles_cool": "mpc_cool_profiles",
     "deadband": "learned_deadband",
     "soft_error": "learned_soft_error",
     "hard_error": "learned_hard_error",

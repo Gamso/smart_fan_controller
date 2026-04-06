@@ -8,7 +8,10 @@ CSV columns (in order):
   vtherm_slope, effective_slope, projected_temp, projected_error,
   phase, minutes_since_change, effective_timeout, current_fan, decided_fan,
   force, reason, learning_ready, dead_time, is_window_open,
-  defrost_active, hvac_idle
+  mpc_status, mpc_fan, mpc_match,
+  mpc_would_change, mpc_cost, mpc_confidence,
+  mpc_temp_10m, mpc_temp_30m, mpc_known_profiles,
+  mpc_disturbance, defrost_active, hvac_idle
 """
 
 import asyncio
@@ -42,6 +45,16 @@ _HEADER = [
     "learning_ready",
     "dead_time",
     "is_window_open",
+    "mpc_status",
+    "mpc_fan",
+    "mpc_match",
+    "mpc_would_change",
+    "mpc_cost",
+    "mpc_confidence",
+    "mpc_temp_10m",
+    "mpc_temp_30m",
+    "mpc_known_profiles",
+    "mpc_disturbance",
     "defrost_active",
     "hvac_idle",
 ]
@@ -79,10 +92,12 @@ class DataCollector:
         force: bool,
         learning_ready: bool,
         dead_time: float,
+        shadow: dict | None = None,
         defrost_active: bool = False,
         is_hvac_idle: bool = False,
     ) -> None:
         """Append one row to the CSV file outside the event loop."""
+        shadow = shadow or {}
         row = [
             datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             hvac_mode,
@@ -103,6 +118,22 @@ class DataCollector:
             int(learning_ready),
             round(dead_time, 2),
             int(is_window_open),
+            shadow.get("mpc_status", "Disabled"),
+            shadow.get("mpc_fan_mode", ""),
+            shadow.get("mpc_matches_live", "n/a"),
+            shadow.get("mpc_would_change_now", "no"),
+            round(shadow.get("mpc_cost", 0.0), 3) if shadow.get("mpc_cost") is not None else "",
+            round(shadow.get("mpc_confidence", 0.0), 1) if shadow.get("mpc_confidence") is not None else "",
+            round(shadow.get("mpc_predicted_temperature_10m", 0.0), 3)
+            if shadow.get("mpc_predicted_temperature_10m") is not None
+            else "",
+            round(shadow.get("mpc_predicted_temperature_30m", 0.0), 3)
+            if shadow.get("mpc_predicted_temperature_30m") is not None
+            else "",
+            shadow.get("mpc_known_profiles", 0),
+            round(shadow.get("mpc_disturbance_bias", 0.0), 3)
+            if shadow.get("mpc_disturbance_bias") is not None
+            else "",
             int(defrost_active),
             int(is_hvac_idle),
         ]
