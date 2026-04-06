@@ -2,6 +2,11 @@
 from datetime import timedelta
 
 DOMAIN = "smart_fan_controller"
+DEVICE_NAME = "Smart Fan Controller"
+LEGACY_UNIQUE_ID_PREFIX = "smart_fan"
+ENTITY_UNIQUE_ID_PREFIX = DOMAIN
+EFFECTIVE_SLOPE_UNIT = "°C/h"
+PROFILE_HVAC_MODES = ("heat", "cool")
 
 CONF_CLIMATE_ENTITY = "climate_entity"
 CONF_DEADBAND = "deadband"
@@ -11,6 +16,8 @@ CONF_HARD_ERROR = "hard_error"
 CONF_LIMIT_TIMEOUT = "limit_timeout"
 CONF_LEARNING_ENABLED = "learning_enabled"
 CONF_DATA_COLLECTION = "data_collection"
+CONF_DEFROST_ENTITY = "defrost_entity"
+CONF_OPERATING_ENTITY = "operating_entity"
 
 # Default values
 DEFAULT_DEADBAND = 0.2
@@ -44,3 +51,48 @@ PHASE_ESTABLISHED = "ESTABLISHED"
 MIN_SAMPLES_LEARNING = 240  # Minimum slope samples required for initial readiness
 MIN_LIMIT_TIMEOUT = 5  # Minimum limit_timeout (minutes) derived from learning
 MIN_MODE_PROFILE_SAMPLES = 10  # Minimum samples per fan mode to consider profile reliable
+
+LEGACY_OBJECT_KEY_MAP = {
+    "reason": "status",
+    "fan_mode": "fan_mode",
+    "minutes_since_last_change": "fan_mode_last_change",
+    "projected_temperature": "temperature_projected_10_min",
+    "projected_temperature_error": "temperature_projected_error_10_min",
+    "temperature_error": "temperature_error",
+    "learning_progress": "learning_progress",
+    "learning_status": "learning_status",
+    "learning_samples": "learning_samples",
+    "learning_response_events": "learning_response_events",
+    "learned_dead_time": "learned_dead_time",
+    "effective_timeout": "effective_timeout",
+    "deadband": "learned_deadband",
+    "soft_error": "learned_soft_error",
+    "hard_error": "learned_hard_error",
+    "limit_timeout": "learned_limit_timeout",
+    "learning_enabled": "learning_enabled",
+}
+
+
+def build_unique_id(object_key: str, entry_id: str) -> str:
+    """Build the canonical unique_id for an entity."""
+    return f"{ENTITY_UNIQUE_ID_PREFIX}_{object_key}_{entry_id}"
+
+
+def build_entity_id(platform_domain: str, object_key: str) -> str:
+    """Build the canonical entity_id suggestion for an entity."""
+    return f"{platform_domain}.{DOMAIN}_{object_key}"
+
+
+def extract_object_key_from_unique_id(unique_id: str, entry_id: str) -> str | None:
+    """Extract the logical object key from either a legacy or canonical unique_id."""
+    suffix = f"_{entry_id}"
+    if not unique_id.endswith(suffix):
+        return None
+
+    stem = unique_id[: -len(suffix)]
+    for prefix in (f"{ENTITY_UNIQUE_ID_PREFIX}_", f"{LEGACY_UNIQUE_ID_PREFIX}_"):
+        if stem.startswith(prefix):
+            raw_key = stem[len(prefix):]
+            return LEGACY_OBJECT_KEY_MAP.get(raw_key, raw_key)
+
+    return None
