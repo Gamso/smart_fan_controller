@@ -11,6 +11,8 @@ from .const import (
     PHASE_DEAD_TIME,
     PHASE_TRANSIENT,
     PHASE_ESTABLISHED,
+    SETPOINT_DROP_LEARNING_COOLDOWN,
+    MIN_ESTABLISHED_RATIO,
 )
 from .thermal_learning import ThermalLearning
 
@@ -54,6 +56,7 @@ class SmartFanController:
         self._last_change_time: float = self._now - (self._limit_timeout * 60)
         self._last_slope_significant_change: float = self._now
         self._last_hvac_mode: str | None = None
+        self._last_setpoint_drop_time: float = 0.0  # timestamp of last setpoint-drop event (init: far in the past)
 
         # Defrost state (set externally via CONF_DEFROST_ENTITY; 20-min cooldown applied by __init__.py)
         self._defrost_active: bool = False
@@ -85,6 +88,15 @@ class SmartFanController:
     @previous_slope.setter
     def previous_slope(self, value: float | None) -> None:
         self._previous_slope = value
+
+    @property
+    def slope_at_last_change(self) -> float:
+        """Slope snapshot taken at the moment of the last confirmed fan-speed change."""
+        return self._slope_at_last_change
+
+    @slope_at_last_change.setter
+    def slope_at_last_change(self, value: float) -> None:
+        self._slope_at_last_change = value
 
     @property
     def last_change_time(self) -> float:
@@ -373,6 +385,7 @@ class SmartFanController:
         elif current_temperature_error < THRESHOLD_TARGET_DROP:
             new_index = 0
             force = True
+            self._last_setpoint_drop_time = self._now
             reason = f"Setpoint drop: Target moved away ({round(current_temperature_error, 2)}°C)"
 
         # B. BRAKING ANTICIPATION (Overshoot predicted)
@@ -455,8 +468,30 @@ class SmartFanController:
         # Collect learning data using the fan mode CURRENTLY active (not the decided one),
         # so the slope observation is correctly attributed to the mode that produced it.
         # Skip during defrost and HVAC idle: the slope is distorted and would corrupt learned profiles.
+        # Only learn from ESTABLISHED phase to avoid inheriting residual inertia from previous modes.
+        # Also require the mode to be active for at least MIN_ESTABLISHED_RATIO × dead_time to ensure
+        # the EMA slope has fully decayed from the previous mode.
+        # Block learning for SETPOINT_DROP_LEARNING_COOLDOWN minutes after a setpoint drop event,
+        # because the VTherm EMA slope retains inertia from the pre-drop high-speed mode.
         if self.learning_enabled and current_fan is not None and current_fan in self._fan_modes and not defrost_protection and not is_hvac_idle:
-            self.learning.add_slope_sample(current_fan, vtherm_slope, current_temperature_error, hvac_mode, is_window_open)
+            learned_dead_time = self.learning.get_dead_time() if self.learning.is_ready() else DEFAULT_DEAD_TIME
+            min_stable_minutes = learned_dead_time * MIN_ESTABLISHED_RATIO
+            minutes_since_setpoint_drop = (self._now - self._last_setpoint_drop_time) / 60.0
+
+            if phase != PHASE_ESTABLISHED:
+                pass  # Too early: sensor hasn't stabilized yet
+            elif minutes_since_change < min_stable_minutes:
+                _LOGGER.debug(
+                    "Learning: Skipped sample (mode only active %.1f min, need %.1f min)",
+                    minutes_since_change, min_stable_minutes,
+                )
+            elif self._last_setpoint_drop_time > 0 and minutes_since_setpoint_drop < SETPOINT_DROP_LEARNING_COOLDOWN:
+                _LOGGER.debug(
+                    "Learning: Skipped sample (setpoint drop cooldown, %.1f min ago)",
+                    minutes_since_setpoint_drop,
+                )
+            else:
+                self.learning.add_slope_sample(current_fan, vtherm_slope, current_temperature_error, hvac_mode, is_window_open)
 
         _LOGGER.debug(
             (

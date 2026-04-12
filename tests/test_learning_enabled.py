@@ -1,5 +1,6 @@
 """Test for learning enabled switch functionality."""
 import pytest
+import time
 from custom_components.smart_fan_controller.controller import SmartFanController
 
 
@@ -67,6 +68,9 @@ class TestLearningEnabledFeature:
             learning_enabled=True,
         )
 
+        # Ensure the fan mode has been active long enough for the stable-duration filter
+        controller._last_change_time = time.time() - 1800  # 30 min ago
+
         # Make a decision that would collect learning data
         decision = controller.calculate_decision(
             current_temp=22.0,
@@ -90,6 +94,9 @@ class TestLearningEnabledFeature:
             limit_timeout=15,
             learning_enabled=True,
         )
+
+        # Ensure the fan mode has been active long enough for the stable-duration filter
+        controller._last_change_time = time.time() - 1800  # 30 min ago
 
         # Collect some samples with learning enabled (positive error so it's not skipped)
         controller.calculate_decision(

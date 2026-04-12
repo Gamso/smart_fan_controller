@@ -56,7 +56,7 @@ def _make_executor_hass() -> MagicMock:
 def test_shadow_disabled_reports_disabled_status() -> None:
     """Shadow reports disabled status when not enabled."""
     controller = _build_controller()
-    shadow = MPCController(
+    mpc = MPCController(
         learning=controller.learning,
         deadband=0.3,
         min_interval=10,
@@ -64,7 +64,7 @@ def test_shadow_disabled_reports_disabled_status() -> None:
         enabled=False,
     )
 
-    result = shadow.evaluate(
+    result = mpc.evaluate(
         current_temp=19.2,
         target_temp=20.0,
         vtherm_slope=0.4,
@@ -84,7 +84,7 @@ def test_shadow_prefers_stronger_fan_when_profiles_support_it() -> None:
     """Shadow picks a stronger fan mode when learned profiles support it."""
     controller = _build_controller()
     _prime_learning_profiles(controller)
-    shadow = MPCController(
+    mpc = MPCController(
         learning=controller.learning,
         deadband=0.3,
         min_interval=10,
@@ -92,7 +92,7 @@ def test_shadow_prefers_stronger_fan_when_profiles_support_it() -> None:
         enabled=True,
     )
 
-    result = shadow.evaluate(
+    result = mpc.evaluate(
         current_temp=19.0,
         target_temp=20.0,
         vtherm_slope=0.25,
@@ -120,7 +120,7 @@ def test_shadow_holds_superhigh_while_still_below_target() -> None:
         controller.learning.add_slope_sample("superhigh", 1.0, 0.4, "heat")
     controller.learning.add_response_event(30.0)
 
-    shadow = MPCController(
+    mpc = MPCController(
         learning=controller.learning,
         deadband=0.2,
         min_interval=10,
@@ -128,7 +128,7 @@ def test_shadow_holds_superhigh_while_still_below_target() -> None:
         enabled=True,
     )
 
-    result = shadow.evaluate(
+    result = mpc.evaluate(
         current_temp=19.95,
         target_temp=20.0,
         vtherm_slope=0.2,
@@ -148,7 +148,7 @@ def test_shadow_pauses_when_window_is_open() -> None:
     """Shadow pauses evaluation when a window is open."""
     controller = _build_controller()
     _prime_learning_profiles(controller)
-    shadow = MPCController(
+    mpc = MPCController(
         learning=controller.learning,
         deadband=0.3,
         min_interval=10,
@@ -156,7 +156,7 @@ def test_shadow_pauses_when_window_is_open() -> None:
         enabled=True,
     )
 
-    result = shadow.evaluate(
+    result = mpc.evaluate(
         current_temp=19.3,
         target_temp=20.0,
         vtherm_slope=0.2,
@@ -325,7 +325,7 @@ def test_shadow_setpoint_drop_forces_lowest_mode() -> None:
     """When target drops significantly, shadow should go to the lowest fan mode."""
     controller = _build_controller()
     _prime_learning_profiles(controller)
-    shadow = MPCController(
+    mpc = MPCController(
         learning=controller.learning,
         deadband=0.3,
         min_interval=10,
@@ -333,7 +333,7 @@ def test_shadow_setpoint_drop_forces_lowest_mode() -> None:
         enabled=True,
     )
 
-    result = shadow.evaluate(
+    result = mpc.evaluate(
         current_temp=20.4,
         target_temp=17.5,
         vtherm_slope=0.0,
@@ -352,7 +352,7 @@ def test_shadow_setpoint_drop_forces_lowest_mode() -> None:
 def test_shadow_setpoint_drop_matches_live() -> None:
     """Setpoint drop should report match with live when both choose lowest."""
     controller = _build_controller()
-    shadow = MPCController(
+    mpc = MPCController(
         learning=controller.learning,
         deadband=0.3,
         min_interval=10,
@@ -360,7 +360,7 @@ def test_shadow_setpoint_drop_matches_live() -> None:
         enabled=True,
     )
 
-    result = shadow.evaluate(
+    result = mpc.evaluate(
         current_temp=20.0,
         target_temp=17.5,
         vtherm_slope=-0.2,
@@ -379,7 +379,7 @@ def test_shadow_no_setpoint_drop_when_error_above_threshold() -> None:
     """Normal over-target should NOT trigger setpoint drop."""
     controller = _build_controller()
     _prime_learning_profiles(controller)
-    shadow = MPCController(
+    mpc = MPCController(
         learning=controller.learning,
         deadband=0.3,
         min_interval=10,
@@ -387,7 +387,7 @@ def test_shadow_no_setpoint_drop_when_error_above_threshold() -> None:
         enabled=True,
     )
 
-    result = shadow.evaluate(
+    result = mpc.evaluate(
         current_temp=20.3,
         target_temp=20.0,
         vtherm_slope=0.0,
@@ -405,7 +405,7 @@ def test_shadow_pauses_during_defrost() -> None:
     """Shadow should pause when defrost is active, like window-open."""
     controller = _build_controller()
     _prime_learning_profiles(controller)
-    shadow = MPCController(
+    mpc = MPCController(
         learning=controller.learning,
         deadband=0.3,
         min_interval=10,
@@ -413,7 +413,7 @@ def test_shadow_pauses_during_defrost() -> None:
         enabled=True,
     )
 
-    result = shadow.evaluate(
+    result = mpc.evaluate(
         current_temp=19.3,
         target_temp=20.0,
         vtherm_slope=0.2,
@@ -435,7 +435,7 @@ def test_shadow_disturbance_bias_decays_during_defrost() -> None:
     """Disturbance bias should decay, not update, during defrost."""
     controller = _build_controller()
     _prime_learning_profiles(controller)
-    shadow = MPCController(
+    mpc = MPCController(
         learning=controller.learning,
         deadband=0.3,
         min_interval=10,
@@ -444,7 +444,7 @@ def test_shadow_disturbance_bias_decays_during_defrost() -> None:
     )
 
     # Prime the disturbance bias with a normal cycle
-    shadow.evaluate(
+    mpc.evaluate(
         current_temp=19.5,
         target_temp=20.0,
         vtherm_slope=0.5,
@@ -454,10 +454,10 @@ def test_shadow_disturbance_bias_decays_during_defrost() -> None:
         is_window_open=False,
         minutes_since_change=20.0,
     )
-    bias_before = shadow._disturbance_bias  # pylint: disable=protected-access
+    bias_before = mpc.disturbance_bias
 
     # Defrost cycle with sharp slope drop — should NOT poison the bias
-    shadow.evaluate(
+    mpc.evaluate(
         current_temp=19.5,
         target_temp=20.0,
         vtherm_slope=-1.0,
@@ -468,7 +468,7 @@ def test_shadow_disturbance_bias_decays_during_defrost() -> None:
         is_defrost_active=True,
         minutes_since_change=25.0,
     )
-    bias_after = shadow._disturbance_bias  # pylint: disable=protected-access
+    bias_after = mpc.disturbance_bias
 
     # Bias should have decayed, not grown from the -1.0 slope residual
     assert abs(bias_after) <= abs(bias_before)
@@ -477,7 +477,7 @@ def test_shadow_disturbance_bias_decays_during_defrost() -> None:
 def test_production_mode_property_defaults_to_false() -> None:
     """Production mode should default to False (shadow only)."""
     controller = _build_controller()
-    shadow = MPCController(
+    mpc = MPCController(
         learning=controller.learning,
         deadband=0.3,
         min_interval=10,
@@ -485,13 +485,13 @@ def test_production_mode_property_defaults_to_false() -> None:
         enabled=True,
     )
 
-    assert shadow.production_mode is False
+    assert mpc.production_mode is False
 
 
 def test_production_mode_can_be_toggled() -> None:
     """Production mode can be enabled and disabled."""
     controller = _build_controller()
-    shadow = MPCController(
+    mpc = MPCController(
         learning=controller.learning,
         deadband=0.3,
         min_interval=10,
@@ -499,18 +499,18 @@ def test_production_mode_can_be_toggled() -> None:
         enabled=True,
     )
 
-    shadow.production_mode = True
-    assert shadow.production_mode is True
+    mpc.production_mode = True
+    assert mpc.production_mode is True
 
-    shadow.production_mode = False
-    assert shadow.production_mode is False
+    mpc.production_mode = False
+    assert mpc.production_mode is False
 
 
 def test_shadow_always_evaluates_regardless_of_production_mode() -> None:
     """Shadow evaluates and produces results whether production mode is on or off."""
     controller = _build_controller()
     _prime_learning_profiles(controller)
-    shadow = MPCController(
+    mpc = MPCController(
         learning=controller.learning,
         deadband=0.3,
         min_interval=10,
@@ -519,8 +519,8 @@ def test_shadow_always_evaluates_regardless_of_production_mode() -> None:
     )
 
     for prod_mode in (False, True):
-        shadow.production_mode = prod_mode
-        result = shadow.evaluate(
+        mpc.production_mode = prod_mode
+        result = mpc.evaluate(
             current_temp=19.0,
             target_temp=20.0,
             vtherm_slope=0.25,
@@ -532,3 +532,71 @@ def test_shadow_always_evaluates_regardless_of_production_mode() -> None:
         )
         assert result["mpc_status"] != "Disabled"
         assert result["mpc_fan_mode"] is not None
+
+
+def test_monotone_constraint_enforces_ordering() -> None:
+    """Monotone constraint should clamp a lower mode's slope up to its neighbor when all profiles are ready."""
+    controller = _build_controller(fan_modes=["silent", "low", "med", "high", "superhigh"])
+
+    # Create inverted profiles: silent > med (the real-world bug)
+    controller.learning.set_mode_effective_slope("silent", "heat", 0.53)
+    controller.learning.set_mode_effective_slope("low", "heat", 0.0)
+    controller.learning.set_mode_effective_slope("med", "heat", 0.45)
+    controller.learning.set_mode_effective_slope("high", "heat", 0.96)
+    controller.learning.set_mode_effective_slope("superhigh", "heat", 1.35)
+
+    mpc = MPCController(
+        learning=controller.learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=["silent", "low", "med", "high", "superhigh"],
+        enabled=True,
+    )
+
+    monotone = mpc.build_monotone_slopes(["silent", "low", "med", "high", "superhigh"], "heat")
+    assert monotone is not None
+
+    # silent (0.53) should stay, low (0.0 → clamped to 0.53), med (0.45 → clamped to 0.53)
+    assert monotone["silent"] == pytest.approx(0.53, abs=0.001)
+    assert monotone["low"] >= monotone["silent"]
+    assert monotone["med"] >= monotone["low"]
+    assert monotone["high"] >= monotone["med"]
+    assert monotone["superhigh"] >= monotone["high"]
+
+
+def test_monotone_constraint_returns_none_for_partial_profiles() -> None:
+    """On a fresh install with incomplete profiles, monotone should return None."""
+    controller = _build_controller()
+    mpc = MPCController(
+        learning=controller.learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=FAN_MODES,
+        enabled=True,
+    )
+    # No profiles learned yet
+    result = mpc.build_monotone_slopes(FAN_MODES, "heat")
+    assert result is None
+
+
+def test_monotone_constraint_noop_when_already_ordered() -> None:
+    """When profiles are already monotone, the constraint should not change values."""
+    controller = _build_controller()
+
+    controller.learning.set_mode_effective_slope("low", "heat", 0.15)
+    controller.learning.set_mode_effective_slope("medium", "heat", 0.5)
+    controller.learning.set_mode_effective_slope("high", "heat", 1.0)
+
+    mpc = MPCController(
+        learning=controller.learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=FAN_MODES,
+        enabled=True,
+    )
+
+    monotone = mpc.build_monotone_slopes(FAN_MODES, "heat")
+    assert monotone is not None
+    assert monotone["low"] == pytest.approx(0.15, abs=0.001)
+    assert monotone["medium"] == pytest.approx(0.5, abs=0.001)
+    assert monotone["high"] == pytest.approx(1.0, abs=0.001)

@@ -1,5 +1,7 @@
 """Tests for phase detection, adaptive timeout, descent path, and window filtering."""
+# pylint: disable=redefined-outer-name
 import pytest
+import time
 from unittest.mock import patch
 
 from custom_components.smart_fan_controller.controller import SmartFanController
@@ -28,6 +30,7 @@ DEFAULT_CONFIG = {
 
 @pytest.fixture
 def controller():
+    """Build a SmartFanController with default test configuration."""
     return SmartFanController(fan_modes=FAN_MODES, **DEFAULT_CONFIG)
 
 
@@ -168,7 +171,7 @@ class TestDeadTimePatienceInZoneC:
         start_time = 1000.0
         controller.last_change_time = start_time
         controller.previous_slope = 0.2
-        controller._slope_at_last_change = 1.5
+        controller.slope_at_last_change = 1.5
 
         # 12 minutes -> TRANSIENT with default timings:
         # - dead time has ended (10 min)
@@ -318,7 +321,7 @@ class TestCoolModePhaseDetection:
         start_time = 1000.0
         controller.last_change_time = start_time
         controller.previous_slope = -0.2
-        controller._slope_at_last_change = 1.5
+        controller.slope_at_last_change = 1.5
 
         with patch("time.time", return_value=start_time + 12 * 60):
             result = controller.calculate_decision(
@@ -337,7 +340,7 @@ class TestWindowOpenFiltering:
 
     def test_learning_skips_samples_when_window_open(self, controller):
         """With is_window_open=True, no learning samples should be collected."""
-        result = controller.calculate_decision(
+        controller.calculate_decision(
             current_temp=22.0,
             target_temp=21.0,
             vtherm_slope=0.5,
@@ -349,7 +352,9 @@ class TestWindowOpenFiltering:
 
     def test_learning_collects_when_window_closed(self, controller):
         """With is_window_open=False (default), samples are collected normally."""
-        result = controller.calculate_decision(
+        controller.last_change_time = time.time() - 1800  # 30 min ago
+
+        controller.calculate_decision(
             current_temp=22.0,
             target_temp=21.0,
             vtherm_slope=0.5,
@@ -466,7 +471,6 @@ class TestBackwardCompatibility:
 
     def test_from_dict_old_format(self):
         """Old data with 3-tuples should be upgraded to 4-tuples with 'unknown' hvac_mode."""
-        import time
         ts = time.time() - 3600  # 1 hour ago
         old_data = {
             "slope_samples": [(ts, "medium", 0.5), (ts, "high", 0.8)],
@@ -486,7 +490,6 @@ class TestBackwardCompatibility:
 
     def test_from_dict_new_format(self):
         """New data with 4-tuples round-trips correctly."""
-        import time
         ts = time.time() - 3600
         new_data = {
             "slope_samples": [(ts, "medium", 0.5, "heat"), (ts, "high", -0.8, "cool")],

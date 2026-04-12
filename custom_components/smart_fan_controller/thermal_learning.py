@@ -222,7 +222,10 @@ class ThermalLearning:
         return statistics.median(response_times)
 
     def get_mode_effective_slope(self, fan_mode: str, hvac_mode: str) -> float | None:
-        """Return the average effective slope for a fan mode in a given HVAC mode.
+        """Return the median effective slope for a fan mode in a given HVAC mode.
+
+        Uses median instead of mean for robustness against outlier samples
+        (e.g. residual inertia from a previous high-speed mode).
 
         Effective slope is positive when moving towards target:
         - In heating: positive raw slope is good
@@ -233,8 +236,34 @@ class ThermalLearning:
         matching_slopes = [sl for (_, fm, sl, hm) in self._slope_samples if fm == fan_mode and hm == hvac_mode]
         if len(matching_slopes) < MIN_MODE_PROFILE_SAMPLES:
             return None
-        avg = statistics.mean(matching_slopes)
-        return -avg if hvac_mode == "cool" else avg
+        med = statistics.median(matching_slopes)
+        return -med if hvac_mode == "cool" else med
+
+    def set_mode_effective_slope(self, fan_mode: str, hvac_mode: str, target_slope: float) -> None:
+        """Replace all samples for a fan/HVAC profile with synthetic ones producing target_slope.
+
+        The raw slope stored in samples is the signed VTherm value:
+        - In heating: raw slope == effective slope
+        - In cooling: raw slope == -effective slope (inverted on read)
+        """
+        raw_slope = -target_slope if hvac_mode == "cool" else target_slope
+
+        # Remove existing samples for this profile
+        before = len(self._slope_samples)
+        self._slope_samples = [s for s in self._slope_samples if not (s[1] == fan_mode and s[3] == hvac_mode)]
+        removed = before - len(self._slope_samples)
+
+        # Insert MIN_MODE_PROFILE_SAMPLES synthetic samples at current time
+        now = time.time()
+        for i in range(MIN_MODE_PROFILE_SAMPLES):
+            self._slope_samples.append((now + i, fan_mode, raw_slope, hvac_mode))
+
+        self.recompute_slope_stats()
+
+        _LOGGER.info(
+            "Learning: set_mode_effective_slope %s/%s = %.3f (removed %d, inserted %d synthetic samples)",
+            hvac_mode, fan_mode, target_slope, removed, MIN_MODE_PROFILE_SAMPLES,
+        )
 
     def get_mode_sample_count(self, fan_mode: str, hvac_mode: str) -> int:
         """Return the number of collected samples for one fan/HVAC profile."""

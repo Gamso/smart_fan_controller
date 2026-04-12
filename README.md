@@ -84,6 +84,7 @@ Smart Fan Controller is a custom Home Assistant integration that **adjusts HVAC 
 
 > **MPC Controller** always runs a learned temperature-state model and MPC-lite in observation mode. When **MPC Production Mode** is enabled, the MPC directly controls the fan instead of the rule-based algorithm. It owns its own runtime parameters (`deadband`, `min_interval`, fan modes), pauses itself during disturbed periods such as an open window, and keeps those periods out of dead-time learning. See [docs/mpc_mode.md](docs/mpc_mode.md).
 > It supports both `heat` and `cool`, and includes a hysteresis guard so tiny cost differences do not create fan yo-yo around the setpoint.
+> When all fan-mode profiles are learned, a **monotone constraint** is enforced: higher fan modes are guaranteed to have slopes ≥ lower modes. This prevents contaminated profiles from causing the MPC to rank a weaker mode above a stronger one.
 
 ---
 
@@ -236,7 +237,14 @@ Once learning is ready, parameters are **automatically applied** and the integra
 
 The learning system tracks the **effective slope per fan mode and HVAC mode** (e.g., "medium in heat" vs "high in cool"). This data provides visibility into which fan speeds are most effective for each mode.
 
-Profiles require at least 10 samples per mode to be considered reliable. Samples collected during window-open periods or large setpoint drops (night mode) are automatically filtered out.
+Profiles require at least 10 samples per mode to be considered reliable. Samples are automatically filtered out when:
+- Window is open (external disturbance)
+- Large setpoint drop occurred (night mode) — including a **30-minute cooldown** after the drop to avoid EMA inertia
+- HVAC is idle or defrost is active
+- The fan mode hasn't been active long enough (**2× dead time**) for the VTherm EMA to fully reflect the current mode
+- The phase is not yet ESTABLISHED
+
+The effective slope is computed as the **median** (not mean) of collected samples, providing robustness against occasional outlier readings caused by thermal inertia from previous high-speed modes.
 
 ### Dead Time Calibration
 
@@ -347,6 +355,27 @@ Manually apply the parameters computed by the learning system. Useful when auto-
 ### `smart_fan_controller.reset_learning`
 
 Clear all learning data and start fresh. Use after HVAC maintenance or a significant system change.
+
+### `smart_fan_controller.set_effective_slope`
+
+Manually set the effective slope for a specific fan mode / HVAC mode profile without resetting all learning data. Replaces existing samples for that profile with synthetic ones matching the provided slope.
+
+**Parameters**:
+
+| Parameter         | Required | Example  | Description                                              |
+| ----------------- | -------- | -------- | -------------------------------------------------------- |
+| `hvac_mode`       | Yes      | `heat`   | The HVAC mode (`heat` or `cool`)                         |
+| `fan_mode`        | Yes      | `silent` | The fan mode name                                        |
+| `effective_slope` | Yes      | `0.15`   | Target effective slope in °C/h (positive = towards target) |
+
+**Example** (Developer Tools → Services):
+```yaml
+service: smart_fan_controller.set_effective_slope
+data:
+  hvac_mode: heat
+  fan_mode: silent
+  effective_slope: 0.15
+```
 
 ---
 

@@ -53,6 +53,8 @@ PHASE_ESTABLISHED = "ESTABLISHED"
 MIN_SAMPLES_LEARNING = 240  # Minimum slope samples required for initial readiness
 MIN_LIMIT_TIMEOUT = 5  # Minimum limit_timeout (minutes) derived from learning
 MIN_MODE_PROFILE_SAMPLES = 10  # Minimum samples per fan mode to consider profile reliable
+SETPOINT_DROP_LEARNING_COOLDOWN = 30.0  # Minutes to block learning after a setpoint drop
+MIN_ESTABLISHED_RATIO = 2.0  # Minimum factor × dead_time the fan mode must be active before learning
 
 LEGACY_OBJECT_KEY_MAP = {
     "reason": "status",

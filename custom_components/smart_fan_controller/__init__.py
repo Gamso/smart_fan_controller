@@ -540,6 +540,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.services.async_register(DOMAIN, "reset_learning", reset_learning)
 
+    async def set_effective_slope(call):
+        """Service to manually set the effective slope for a fan/HVAC profile."""
+        hvac_mode = call.data["hvac_mode"]
+        fan_mode = call.data["fan_mode"]
+        effective_slope = float(call.data["effective_slope"])
+
+        controller.learning.set_mode_effective_slope(fan_mode, hvac_mode, effective_slope)
+
+        # Persist immediately
+        learning_data_to_save = controller.learning.to_dict()
+        await store.async_save(learning_data_to_save)
+
+        # Refresh sensors
+        sensors = hass.data[DOMAIN][entry.entry_id].get("sensors", [])
+        for sensor in sensors:
+            sensor.async_write_ha_state()
+
+        _LOGGER.info(
+            "Set effective slope for %s/%s to %.3f", hvac_mode, fan_mode, effective_slope
+        )
+
+    hass.services.async_register(DOMAIN, "set_effective_slope", set_effective_slope)
+
     return True
 
 

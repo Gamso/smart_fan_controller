@@ -155,6 +155,7 @@ class TestHvacIdleLearningExclusion:
     def test_slope_samples_excluded_during_idle(self, controller):
         """Slope samples should NOT be recorded when compressor is off."""
         initial_samples = controller.learning.slope_sample_count()
+        controller._last_change_time = 0.0
         with patch("time.time", return_value=3600.0):
             controller.calculate_decision(
                 current_temp=19.8,
@@ -169,6 +170,7 @@ class TestHvacIdleLearningExclusion:
     def test_slope_samples_collected_when_not_idle(self, controller):
         """Slope samples should be recorded when compressor is running."""
         initial_samples = controller.learning.slope_sample_count()
+        controller._last_change_time = 0.0
         with patch("time.time", return_value=3600.0):
             controller.calculate_decision(
                 current_temp=19.8,

@@ -1,4 +1,5 @@
 """Tests for SmartFanController system constraints and edge cases."""
+# pylint: disable=redefined-outer-name
 import pytest
 
 from unittest.mock import patch

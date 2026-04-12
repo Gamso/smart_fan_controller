@@ -1,14 +1,36 @@
 ---
 name: modify-mpc-shadow
-description: "Modify the MPC shadow controller: cost function tuning, hysteresis thresholds, simulation model, disturbance tracking, or adding new pausing conditions. Use when: changing how the shadow evaluates or recommends fan modes; adjusting cost weights or switch-gain margins; adding new disturbance sources; modifying the step-down hold logic; changing how confidence is computed."
-argument-hint: "Description of the MPC shadow behavior to change (e.g. 'reduce overshoot penalty weight')"
+description: "Modify the MPC controller: cost function tuning, hysteresis thresholds, simulation model, disturbance tracking, monotone constraint, or adding new pausing conditions. Use when: changing how the MPC evaluates or recommends fan modes; adjusting cost weights or switch-gain margins; adding new disturbance sources; modifying the step-down hold logic; changing how confidence is computed; toggling production mode."
+argument-hint: "Description of the MPC behavior to change (e.g. 'reduce overshoot penalty weight')"
 ---
 
-# Modify MPC Shadow Controller
+# Modify MPC Controller
+
+## Background: MPC at a Glance
+
+MPC (Model Predictive Control) optimizes a control action by:
+1. Sampling the current plant state
+2. Rolling out candidate actions over a finite prediction horizon
+3. Picking the action that minimizes a cost function subject to constraints
+4. Applying **only the first step**, then re-solving next cycle (receding horizon)
+
+This project uses a **discrete MPC-lite** adapted for residential heat-pump HVAC:
+- **State**: room temperature (scalar)
+- **Control input**: fan speed mode (discrete: silent → low → med → high → superhigh)
+- **Model**: linear `T(t+Δ) = T(t) + slope × Δt + disturbance_bias × Δt`
+- **Horizon**: 30 min (configurable), step size = control loop cadence (~2 min)
+- **Optimizer**: exhaustive enumeration over discrete fan modes (small action space)
+- **Cost**: comfort error + overshoot penalty + mode-change cost (see table below)
+
+Unlike classic MPC, the model parameters (slopes) are **learned online** by `ThermalLearning`. This makes it a self-calibrating, data-driven MPC with dead-time handling.
 
 ## Architecture
 
-The MPC shadow lives in `mpc_shadow.py` as `MPCShadowController`. It is **read-only**: it never calls HA services or modifies the live controller. It runs every control cycle (~2 min) and produces a recommendation dict that feeds sensors and CSV logs.
+The MPC controller lives in `mpc_controller.py` as `MPCController`. It runs every control cycle (~2 min) and produces a recommendation dict that feeds sensors and CSV logs.
+
+**Operating modes**:
+- **Observation mode** (`production_mode=False`): runs silently alongside the rule-based controller; its recommendation is logged but never applied
+- **Production mode** (`production_mode=True`): the integration reads `mpc_fan_mode` from `evaluate()` and applies it instead of the rule-based decision
 
 ### Key Flow in `evaluate()`
 
@@ -17,12 +39,13 @@ The MPC shadow lives in `mpc_shadow.py` as `MPCShadowController`. It is **read-o
 2. Resolve fan modes and active fan
 3. Compute effective slope, dead time, phase
 4. Update disturbance bias (EMA tracking)
-5. Pause conditions: window-open, defrost → return "Disturbed"
+5. Pause conditions: window-open, defrost, HVAC idle → return "Disturbed"
 6. Setpoint drop → return lowest mode immediately
-7. Simulate ALL fan modes over the horizon (30 min default)
-8. Select best by lowest cost
-9. Apply guards: min-interval hold, hysteresis, step-down hold, step-down limit
-10. Build and return payload
+7. Build monotone slope map (if all profiles learned)
+8. Simulate ALL fan modes over the horizon (30 min default)
+9. Select best by lowest cost
+10. Apply guards: min-interval hold, hysteresis, step-down hold, step-down limit
+11. Build and return payload
 ```
 
 ### Cost Function (`_simulate_mode`)
@@ -39,9 +62,11 @@ Each candidate fan mode is simulated step-by-step over the horizon:
 | `mode_rank_cost` | 0.05 × (rank+1) | Slight preference for lower fan speeds |
 | `min_interval_penalty` | 25.0 | Blocks changes before min_interval |
 
+Cost weights are module-level constants (e.g. `FLOOR_VIOLATION_LINEAR_WEIGHT = 12.0`).
+
 ### Hysteresis (`_required_switch_gain`)
 
-The shadow requires a minimum cost improvement before switching:
+The MPC requires a minimum cost improvement before switching:
 
 | Situation | Base Margin |
 |---|---|
@@ -58,15 +83,33 @@ Plus bonuses for non-established phase (+0.10) and step distance (+0.05/step).
 
 ### Disturbance Bias (`_update_disturbance_bias`)
 
-Tracks slow external perturbations (solar, occupancy). Only updates during ESTABLISHED phase with a known profile. Decays during window-open or defrost. Clamped to ±2.0 °C/h.
+Tracks slow external perturbations (solar gains, occupancy). EMA of residual `observed_slope − expected_slope`. Only updates during ESTABLISHED phase with a known profile. Decays during window-open, defrost, or HVAC idle. Clamped to ±2.0 °C/h.
+
+Access via the `disturbance_bias` property (read-only).
+
+### Monotone Constraint (`build_monotone_slopes`)
+
+When **all** fan-mode profiles are learned, `build_monotone_slopes()` enforces `slope(mode_i) ≤ slope(mode_i+1)` via a left-to-right isotonic pass. Returns `None` when any profile is missing (fresh install). This prevents a contaminated low-speed profile from ranking above a stronger mode in cost comparison.
 
 ### Pause Conditions
 
-The shadow pauses (returns "Disturbed") during:
+The MPC pauses (returns "Disturbed") during:
 - **Window open**: thermal model unreliable
-- **Defrost active**: slope data is corrupted by heat-pump defrost cycle
+- **Defrost active**: slope data corrupted by heat-pump defrost cycle
+- **HVAC idle**: compressor off, no thermal slope to predict
 
-Both conditions decay the disturbance bias without updating it.
+All three conditions decay, not update, the disturbance bias.
+
+## Public API Surface
+
+| Member | Type | Purpose |
+|--------|------|---------|
+| `enabled` | property (r/w) | Enable/disable MPC cycles |
+| `production_mode` | property (r/w) | Switch between shadow and live control |
+| `fan_modes` | property (r/w) | Update available fan modes |
+| `disturbance_bias` | property (read-only) | Current external disturbance estimate |
+| `evaluate(...)` | method | Run one MPC cycle; returns result dict |
+| `build_monotone_slopes(fan_modes, hvac_mode)` | method | Isotonic slope map or None |
 
 ## Procedure
 
@@ -74,34 +117,36 @@ Both conditions decay the disturbance bias without updating it.
 
 | Change | File/Method |
 |---|---|
-| Cost weights | `_simulate_mode()` constants at module top |
-| Hysteresis margins | `_required_switch_gain()` constants at module top |
+| Cost weights | module-level constants in `mpc_controller.py` |
+| Hysteresis margins | module-level constants + `_required_switch_gain()` |
 | Step-down guard | `_step_down_hold_note()` |
 | New pause condition | `evaluate()` after disturbance update, before setpoint-drop check |
 | Disturbance tracking | `_update_disturbance_bias()` |
 | Simulation model | `_simulate_mode()` inner loop |
 | Confidence | `_compute_confidence()` |
+| Monotone constraint | `build_monotone_slopes()` |
 
 ### 2. Make the Change
 
-Constants are at the module level (e.g., `FLOOR_VIOLATION_LINEAR_WEIGHT = 12.0`). If a new constant is user-tunable, add it to `const.py` with `DEFAULT_` prefix and expose in `config_flow.py`.
+Module-level constants (e.g., `FLOOR_VIOLATION_LINEAR_WEIGHT = 12.0`) control all weights. If a new constant is user-tunable, add it to `const.py` with `DEFAULT_` prefix and expose in `config_flow.py`.
 
 Key constraints:
-- **Never call HA services** from the shadow
-- **Never modify controller state** — the shadow is observation-only
-- **Respect the payload format** — all keys must start with `mpc_shadow_`
-- **Log at DEBUG level** — shadow logs are verbose by design
+- **Never call HA services** from the MPC controller
+- **Never modify rule-based controller state** — observation mode is read-only
+- **Respect the payload format** — result keys use `mpc_` prefix (e.g. `mpc_fan_mode`)
+- **Log at DEBUG level** — MPC logs are verbose by design
+- **disturbance_bias and build_monotone_slopes are public** — do not prefix with `_`
 
 ### 3. Write Tests
 
-Tests go in `tests/test_mpc_shadow.py`. Use the existing helpers:
+Tests go in `tests/test_mpc_controller.py`. Use the existing helpers:
 
 ```python
-def test_shadow_<behavior>() -> None:
+def test_mpc_<behavior>() -> None:
     """<What this tests>."""
     controller = _build_controller()
     _prime_learning_profiles(controller)
-    shadow = MPCShadowController(
+    mpc = MPCController(
         learning=controller.learning,
         deadband=0.3,
         min_interval=10,
@@ -109,26 +154,28 @@ def test_shadow_<behavior>() -> None:
         enabled=True,
     )
 
-    result = shadow.evaluate(
+    result = mpc.evaluate(
         current_temp=..., target_temp=...,
         vtherm_slope=..., hvac_mode="heat",
         current_fan="medium", live_decision_fan="medium",
         is_window_open=False, minutes_since_change=20.0,
     )
 
-    assert result["mpc_shadow_fan_mode"] == ...
-    assert result["mpc_shadow_status"] == ...
+    assert result["mpc_fan_mode"] == ...
+    assert result["mpc_status"] == ...
 ```
+
+To test `build_monotone_slopes` or `disturbance_bias` directly, call them on the `mpc` instance — no `_` prefix.
 
 ### 4. Update Documentation
 
-- **`README.md`** — MPC Shadow section if user-visible behavior changes
-- **`docs/mpc_shadow_mode.md`** — technical design document
+- **`README.md`** — MPC section if user-visible behavior changes
+- **`docs/mpc_mode.md`** — technical design document
 - **`.github/copilot-instructions.md`** — if adding new constraints
 
 ### 5. Validate
 
 ```bash
-python -m pytest tests/test_mpc_shadow.py -q   # shadow tests
-python -m pytest tests/ -q                      # all tests
+python -m pytest tests/test_mpc_controller.py -q   # MPC tests
+python -m pytest tests/ -q                          # all tests
 ```

@@ -189,4 +189,4 @@ class TestLearningPersistence:
                         controller = hass.data[DOMAIN][entry.entry_id]["controller"]
                         # After window cleanup, data should still be there (timestamps are recent)
                         assert len(controller.learning.slope_samples) > 0
-                        assert len(controller.learning._response_events) > 0
+                        assert len(controller.learning.response_events) > 0

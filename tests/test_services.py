@@ -1,13 +1,12 @@
 """Tests for Smart Fan Controller HA services (apply_learned_settings, reset_learning)."""
 import asyncio
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from custom_components.smart_fan_controller import _apply_optimal_parameters
 from custom_components.smart_fan_controller.controller import SmartFanController
 from custom_components.smart_fan_controller.thermal_learning import ThermalLearning
 from custom_components.smart_fan_controller.const import (
-    DOMAIN,
     CONF_DEADBAND,
     CONF_SOFT_ERROR,
     CONF_HARD_ERROR,
@@ -55,7 +54,7 @@ class TestApplyLearnedSettings:
 
         applied_data = {}
 
-        async def fake_apply(hass, entry, optimal):
+        async def fake_apply(hass, entry, optimal):  # pylint: disable=unused-argument
             applied_data.update(optimal)
 
         hass = MagicMock()

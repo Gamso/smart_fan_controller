@@ -39,6 +39,7 @@ class TestDefrostProtection:
         controller._last_change_time = 0.0
         controller._defrost_active = True
         controller._defrost_start_time = 0.0
+        controller._last_change_time = 0.0
 
         with patch("time.time", return_value=1200.0):  # 20 min later
             result = controller.calculate_decision(
@@ -60,6 +61,7 @@ class TestDefrostProtection:
         controller._last_change_time = 0.0
         controller._defrost_active = True
         controller._defrost_start_time = 0.0
+        controller._last_change_time = 0.0
 
         with patch("time.time", return_value=1200.0):
             result = controller.calculate_decision(
@@ -149,6 +151,7 @@ class TestDefrostLearningProtection:
         """Learning should resume after defrost cooldown expires."""
         controller._defrost_active = True
         controller._defrost_start_time = 0.0
+        controller._last_change_time = 0.0
         initial_count = controller.learning.slope_sample_count()
 
         # 25 minutes after defrost start → cooldown expired

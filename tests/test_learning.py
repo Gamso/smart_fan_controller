@@ -1,5 +1,6 @@
 """Tests for ThermalLearning auto-calibration."""
 import pytest
+import time as time_mod
 from unittest.mock import patch
 from custom_components.smart_fan_controller.controller import SmartFanController, ThermalLearning
 from custom_components.smart_fan_controller.const import MIN_LIMIT_TIMEOUT
@@ -15,7 +16,7 @@ class TestThermalLearning:
 
         # Add multiple slope samples to satisfy is_ready() requirements
         # Note: slope sample parameters (fan mode, slope value) don't affect limit_timeout
-        for i in range(250):
+        for _ in range(250):
             learning.add_slope_sample("medium", 0.3, 0.1)
 
         # Verify that slope samples alone make the learning ready
@@ -40,7 +41,7 @@ class TestThermalLearning:
         learning = ThermalLearning()
 
         # Add samples (using consistent parameters across tests)
-        for i in range(250):
+        for _ in range(250):
             learning.add_slope_sample("medium", 0.3, 0.1)
 
         # Add very fast response times (median=4, below MIN_LIMIT_TIMEOUT=5)
@@ -58,7 +59,7 @@ class TestThermalLearning:
         learning = ThermalLearning()
 
         # Add samples (using consistent parameters)
-        for i in range(250):
+        for _ in range(250):
             learning.add_slope_sample("medium", 0.3, 0.1)
 
         # Add very slow response times
@@ -75,7 +76,7 @@ class TestThermalLearning:
         learning = ThermalLearning()
 
         # Add samples
-        for i in range(250):
+        for _ in range(250):
             learning.add_slope_sample("medium", 0.3, 0.2)
 
         # Add typical response times user mentioned: 10-15 minutes
@@ -99,7 +100,7 @@ class TestThermalLearning:
         )
 
         # Add enough slope samples to make learning ready
-        for i in range(250):
+        for _ in range(250):
             controller.learning.add_slope_sample("medium", 0.3, 0.1)
 
         base_time = 1000000.0
@@ -144,7 +145,6 @@ class TestThermalLearning:
         events_after = len(controller.learning.response_events)
         assert events_after == events_before, "65-minute response should be filtered out"
 
-
     def test_learned_dead_time_sensor_reports_median_response(self):
         """The diagnostic dead-time sensor should expose the median response delay."""
         controller = SmartFanController(
@@ -180,3 +180,144 @@ class TestThermalLearning:
         sensor = SmartFanEffectiveTimeoutSensor("entry", controller)
 
         assert sensor.native_value == 12.0
+
+    def test_set_mode_effective_slope_replaces_samples(self):
+        """set_mode_effective_slope should replace existing samples and produce the target slope."""
+        learning = ThermalLearning()
+
+        # Add some initial samples for silent/heat
+        for _ in range(15):
+            learning.add_slope_sample("silent", 0.8, 0.2, hvac_mode="heat")
+
+        assert learning.get_mode_effective_slope("silent", "heat") == pytest.approx(0.8, abs=0.01)
+
+        # Override to a lower value
+        learning.set_mode_effective_slope("silent", "heat", 0.15)
+
+        assert learning.get_mode_effective_slope("silent", "heat") == pytest.approx(0.15, abs=0.001)
+        assert learning.get_mode_sample_count("silent", "heat") == 10
+
+    def test_set_mode_effective_slope_cool_inverts(self):
+        """In cool mode, effective slope sign is inverted vs raw slope."""
+        learning = ThermalLearning()
+
+        learning.set_mode_effective_slope("high", "cool", 0.5)
+
+        # effective_slope should be 0.5 (positive = towards target)
+        assert learning.get_mode_effective_slope("high", "cool") == pytest.approx(0.5, abs=0.001)
+
+    def test_set_mode_effective_slope_preserves_other_profiles(self):
+        """Overriding one profile should not affect other profiles."""
+        learning = ThermalLearning()
+
+        for _ in range(15):
+            learning.add_slope_sample("silent", 0.8, 0.2, hvac_mode="heat")
+        for _ in range(15):
+            learning.add_slope_sample("med", 0.5, 0.2, hvac_mode="heat")
+
+        learning.set_mode_effective_slope("silent", "heat", 0.15)
+
+        assert learning.get_mode_effective_slope("silent", "heat") == pytest.approx(0.15, abs=0.001)
+        assert learning.get_mode_effective_slope("med", "heat") == pytest.approx(0.5, abs=0.01)
+
+    def test_median_resists_outliers(self):
+        """Median should resist a single extreme outlier sample."""
+        learning = ThermalLearning()
+
+        # 12 normal samples at ~0.15, plus 3 outlier at 1.29 (inertia contamination)
+        for _ in range(12):
+            learning.add_slope_sample("silent", 0.15, 0.2, hvac_mode="heat")
+        for _ in range(3):
+            learning.add_slope_sample("silent", 1.29, 0.2, hvac_mode="heat")
+
+        slope = learning.get_mode_effective_slope("silent", "heat")
+        # Median of [0.15]*12 + [1.29]*3 = 0.15 (most values are 0.15)
+        assert slope is not None
+        assert slope == pytest.approx(0.15, abs=0.01)
+
+    def test_setpoint_drop_cooldown_blocks_learning(self):
+        """Samples should be blocked for 30 min after a setpoint-drop event."""
+        controller = SmartFanController(
+            fan_modes=["low", "medium", "high"],
+            deadband=0.2,
+            min_interval=10,
+            soft_error=0.3,
+            hard_error=0.6,
+            limit_timeout=15,
+        )
+
+        now = time_mod.time()
+
+        # Trigger a setpoint drop (error < -1°C: target moved away from current)
+        # In heat mode: error = target - current = 18.0 - 20.5 = -2.5
+        with patch("time.time", return_value=now):
+            controller.last_change_time = now - 1800
+            decision = controller.calculate_decision(
+                current_temp=20.5,
+                target_temp=18.0,
+                vtherm_slope=0.5,
+                hvac_mode="heat",
+                current_fan="medium",
+            )
+        assert "Setpoint drop" in decision.get("reason", "")
+
+        # 15 min later (within cooldown), ESTABLISHED slope should NOT be learned
+        with patch("time.time", return_value=now + 900):
+            controller.last_change_time = now - 1800  # ensure ESTABLISHED + min stable
+            controller.calculate_decision(
+                current_temp=19.5,
+                target_temp=20.0,
+                vtherm_slope=0.5,
+                hvac_mode="heat",
+                current_fan="medium",
+            )
+        assert controller.learning.slope_sample_count() == 0
+
+        # 35 min later (after cooldown), learning should resume
+        with patch("time.time", return_value=now + 2100):
+            controller.last_change_time = now  # ~35 min ago, ESTABLISHED + min stable
+            controller.calculate_decision(
+                current_temp=19.5,
+                target_temp=20.0,
+                vtherm_slope=0.5,
+                hvac_mode="heat",
+                current_fan="medium",
+            )
+        assert controller.learning.slope_sample_count() > 0
+
+    def test_min_stable_duration_blocks_early_samples(self):
+        """Samples should be blocked when fan mode hasn't been active long enough."""
+        controller = SmartFanController(
+            fan_modes=["low", "medium", "high"],
+            deadband=0.2,
+            min_interval=10,
+            soft_error=0.3,
+            hard_error=0.6,
+            limit_timeout=15,
+        )
+
+        now = time_mod.time()
+
+        # Set last change to only 16 min ago (ESTABLISHED but < 2 × 10 min dead_time = 20 min)
+        with patch("time.time", return_value=now):
+            controller.last_change_time = now - 960  # 16 min ago
+            controller.calculate_decision(
+                current_temp=22.0,
+                target_temp=21.0,
+                vtherm_slope=0.5,
+                hvac_mode="heat",
+                current_fan="medium",
+            )
+        assert controller.learning.slope_sample_count() == 0
+
+        # Set last change to 25 min ago (> 20 min), should learn
+        with patch("time.time", return_value=now + 600):
+            controller.last_change_time = now - 900  # 25 min ago
+            controller.calculate_decision(
+                current_temp=22.0,
+                target_temp=21.0,
+                vtherm_slope=0.5,
+                hvac_mode="heat",
+                current_fan="medium",
+            )
+        assert controller.learning.slope_sample_count() > 0

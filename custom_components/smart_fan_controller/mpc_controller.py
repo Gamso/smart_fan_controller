@@ -98,6 +98,11 @@ class MPCController:
         """Update the available fan modes."""
         self._fan_modes = modes
 
+    @property
+    def disturbance_bias(self) -> float:
+        """Return the current disturbance bias estimate (°C/h)."""
+        return self._disturbance_bias
+
     def evaluate(
         self,
         *,
@@ -231,6 +236,12 @@ class MPCController:
         known_profiles = 0
         current_index = fan_modes.index(active_fan)
 
+        # Build monotone-enforced slope map so higher fan modes are never
+        # assigned a lower slope than lower modes.  Only applied when ALL
+        # profiles are learned; on a fresh install (partial profiles) the
+        # raw learned / fallback values are used as-is.
+        monotone_slopes = self.build_monotone_slopes(fan_modes, hvac_mode)
+
         for fan_mode in fan_modes:
             mode_slope, known_profile = self._get_mode_slope(
                 fan_mode,
@@ -238,6 +249,7 @@ class MPCController:
                 active_fan,
                 current_effective_slope,
                 fan_modes,
+                monotone_slopes,
             )
             sim = self._simulate_mode(
                 current_temp=current_temp,
@@ -371,9 +383,13 @@ class MPCController:
         current_fan: str,
         current_effective_slope: float,
         fan_modes: list[str],
+        monotone_slopes: dict[str, float] | None = None,
     ) -> tuple[float, bool]:
         """Return the effective slope estimate for a candidate fan mode."""
-        learned = self._learning.get_mode_effective_slope(fan_mode, hvac_mode)
+        if monotone_slopes is not None and fan_mode in monotone_slopes:
+            learned = monotone_slopes[fan_mode]
+        else:
+            learned = self._learning.get_mode_effective_slope(fan_mode, hvac_mode)
         if learned is not None:
             _LOGGER.debug(
                 "Shadow slope model: using learned profile for %s/%s = %.3f",
@@ -406,6 +422,41 @@ class MPCController:
         if minutes_since_change < effective_dead_time * DEAD_TIME_SAFETY_FACTOR:
             return PHASE_TRANSIENT
         return PHASE_ESTABLISHED
+
+    def build_monotone_slopes(self, fan_modes: list[str], hvac_mode: str) -> dict[str, float] | None:
+        """Return monotone-enforced slopes keyed by fan mode, or None if not all profiles are ready.
+
+        Fan modes are assumed ordered from weakest to strongest.  If every mode
+        has a learned profile, we walk left-to-right and clamp each value to be
+        >= the previous one (isotonic regression, pool-adjacent-violators with
+        a simple forward pass).  This prevents a contaminated low-speed profile
+        from being ranked above a mid-speed one in the MPC cost comparison.
+
+        Returns None when any profile is missing — on a fresh installation not
+        all modes have data yet and the constraint could mask real measurements.
+        """
+        raw: list[tuple[str, float]] = []
+        for fm in fan_modes:
+            slope = self._learning.get_mode_effective_slope(fm, hvac_mode)
+            if slope is None:
+                return None
+            raw.append((fm, slope))
+
+        enforced: dict[str, float] = {}
+        prev = float("-inf")
+        for fm, val in raw:
+            clamped = max(val, prev)
+            enforced[fm] = clamped
+            prev = clamped
+
+        if enforced != {fm: val for fm, val in raw}:
+            _LOGGER.debug(
+                "Monotone enforcement applied for %s: raw=%s → enforced=%s",
+                hvac_mode,
+                {fm: round(val, 3) for fm, val in raw},
+                {fm: round(val, 3) for fm, val in enforced.items()},
+            )
+        return enforced
 
     def _update_disturbance_bias(
         self,

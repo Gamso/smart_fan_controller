@@ -7,7 +7,7 @@ The integration lives under `custom_components/smart_fan_controller/`. Key modul
 | File | Role |
 |------|------|
 | `controller.py` | `SmartFanController` — rule-based decision engine (zones A–F) |
-| `mpc_shadow.py` | `MPCShadowController` — observation-only MPC-lite, never writes fan commands |
+| `mpc_controller.py` | `MPCController` — MPC-lite with observation & production modes, monotone constraint on slopes |
 | `thermal_learning.py` | `ThermalLearning` — slope samples, response-time events, profile calibration |
 | `__init__.py` | HA integration entry point: config, control loop, services |
 | `config_flow.py` | Config and options UI flows |
@@ -65,10 +65,13 @@ python -m pytest tests/test_X.py -q # run one file
 - `DEFAULT_DEADBAND`, `DEFAULT_SOFT_ERROR`, `DEFAULT_HARD_ERROR` — all tunable via options flow
 - `CONF_DEFROST_ENTITY` — optional entity for external defrost signal
 - `CONF_OPERATING_ENTITY` — optional entity for heat-pump compressor running state
+- `SETPOINT_DROP_LEARNING_COOLDOWN = 30.0` — minutes to suppress learning after a large setpoint drop
+- `MIN_ESTABLISHED_RATIO = 2.0` — multiplier on dead_time; fan mode must be active this long before learning
 
 ## Important Constraints
 
 - **Avoid over-engineering**: only add code that directly addresses the requirement
 - **No second-order slope terms**: VTherm slope is already EMA-smoothed; parabolic projection amplifies noise
 - **Step-limited fan changes**: braking is limited to -1 step; recovery is usually +1 step, but Zone C may step up by +2 when error exceeds `0.75*hard_error`
-- **Learning data integrity**: exclude window-open, defrost, and HVAC idle periods from slope samples and response-time events
+- **Learning data integrity**: exclude window-open, defrost, HVAC idle, setpoint-drop cooldown (30 min), and insufficiently-stable periods (< 2× dead_time) from slope samples; effective slope uses **median** (not mean) for outlier robustness
+- **Monotone constraint (MPC)**: when all fan-mode profiles are learned, MPC enforces slope(mode_i) ≤ slope(mode_i+1) via isotonic forward pass; partial profiles skip the constraint

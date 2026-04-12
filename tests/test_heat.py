@@ -1,4 +1,5 @@
 """Tests for SmartFanController logic - HEAT mode."""
+# pylint: disable=redefined-outer-name
 import pytest
 
 from custom_components.smart_fan_controller.controller import SmartFanController
