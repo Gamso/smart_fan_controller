@@ -1,4 +1,4 @@
-"""Tests for the MPC shadow diagnostics and guardrails."""
+"""Tests for the MPC diagnostics and guardrails."""
 
 import csv
 from pathlib import Path
@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.smart_fan_controller.controller import SmartFanController
 from custom_components.smart_fan_controller.data_collection import DataCollector
 from custom_components.smart_fan_controller.mpc_controller import MPCController
 from custom_components.smart_fan_controller.sensor import (
@@ -14,31 +13,36 @@ from custom_components.smart_fan_controller.sensor import (
     SmartFanProfileEffectiveSlopeSensor,
     SmartFanSensor,
 )
+from custom_components.smart_fan_controller.thermal_learning import ThermalLearning
 
 FAN_MODES = ["low", "medium", "high"]
 
 
-def _build_controller(*, fan_modes=None, min_interval: int = 10) -> SmartFanController:
-    """Build a SmartFanController with default test parameters."""
-    return SmartFanController(
-        fan_modes=fan_modes or FAN_MODES,
+def _build_learning(*, fan_modes=None) -> ThermalLearning:  # pylint: disable=unused-argument
+    """Build a ThermalLearning instance for test use."""
+    return ThermalLearning()
+
+
+def _build_mpc(learning: ThermalLearning, *, fan_modes=None, min_interval: int = 10) -> MPCController:
+    """Build an MPCController with default test parameters."""
+    return MPCController(
+        learning=learning,
         deadband=0.3,
         min_interval=min_interval,
-        soft_error=0.5,
-        hard_error=0.9,
         limit_timeout=18,
+        fan_modes=fan_modes or FAN_MODES,
     )
 
 
-def _prime_learning_profiles(controller: SmartFanController) -> None:
+def _prime_learning_profiles(learning: ThermalLearning) -> None:
     """Feed enough slope samples for all profiles to become ready."""
     for _ in range(60):
-        controller.learning.add_slope_sample("low", 0.25, 0.8, "heat")
-        controller.learning.add_slope_sample("medium", 0.9, 0.8, "heat")
-        controller.learning.add_slope_sample("high", 1.5, 0.8, "heat")
-    controller.learning.add_response_event(8.0)
-    controller.learning.add_response_event(10.0)
-    controller.learning.add_response_event(12.0)
+        learning.add_slope_sample("low", 0.25, 0.8, "heat")
+        learning.add_slope_sample("medium", 0.9, 0.8, "heat")
+        learning.add_slope_sample("high", 1.5, 0.8, "heat")
+    learning.add_response_event(8.0)
+    learning.add_response_event(10.0)
+    learning.add_response_event(12.0)
 
 
 def _make_executor_hass() -> MagicMock:
@@ -53,43 +57,39 @@ def _make_executor_hass() -> MagicMock:
     return hass
 
 
-def test_shadow_disabled_reports_disabled_status() -> None:
-    """Shadow reports disabled status when not enabled."""
-    controller = _build_controller()
+def test_mpc_idle_for_unsimulated_hvac_modes() -> None:
+    """MPC reports idle status for unsimulated HVAC modes."""
+    learning = ThermalLearning()
     mpc = MPCController(
-        learning=controller.learning,
+        learning=learning,
         deadband=0.3,
         min_interval=10,
         fan_modes=FAN_MODES,
-        enabled=False,
     )
 
     result = mpc.evaluate(
         current_temp=19.2,
         target_temp=20.0,
         vtherm_slope=0.4,
-        hvac_mode="heat",
+        hvac_mode="off",
         current_fan="medium",
-        live_decision_fan="high",
         is_window_open=False,
     )
 
-    assert result["mpc_status"] == "Disabled"
+    assert result["mpc_status"] == "Idle"
     assert result["mpc_fan_mode"] == "medium"
-    assert result["mpc_matches_live"] == "disabled"
     assert result["mpc_would_change_now"] == "no"
 
 
-def test_shadow_prefers_stronger_fan_when_profiles_support_it() -> None:
-    """Shadow picks a stronger fan mode when learned profiles support it."""
-    controller = _build_controller()
-    _prime_learning_profiles(controller)
+def test_mpc_prefers_stronger_fan_when_profiles_support_it() -> None:
+    """MPC picks a stronger fan mode when learned profiles support it."""
+    learning = ThermalLearning()
+    _prime_learning_profiles(learning)
     mpc = MPCController(
-        learning=controller.learning,
+        learning=learning,
         deadband=0.3,
         min_interval=10,
         fan_modes=FAN_MODES,
-        enabled=True,
     )
 
     result = mpc.evaluate(
@@ -98,34 +98,31 @@ def test_shadow_prefers_stronger_fan_when_profiles_support_it() -> None:
         vtherm_slope=0.25,
         hvac_mode="heat",
         current_fan="low",
-        live_decision_fan="medium",
         is_window_open=False,
         minutes_since_change=20.0,
     )
 
     assert result["mpc_fan_mode"] == "high"
-    assert result["mpc_matches_live"] == "no"
     assert result["mpc_would_change_now"] == "yes"
     assert result["mpc_known_profiles"] == 3
 
 
-def test_shadow_holds_superhigh_while_still_below_target() -> None:
-    """Shadow holds superhigh when temperature is still below target."""
+def test_mpc_holds_superhigh_while_still_below_target() -> None:
+    """MPC holds superhigh when temperature is still below target."""
     fan_modes = ["low", "medium", "high", "superhigh"]
-    controller = _build_controller(fan_modes=fan_modes)
+    learning = ThermalLearning()
     for _ in range(60):
-        controller.learning.add_slope_sample("low", 0.2, 0.4, "heat")
-        controller.learning.add_slope_sample("medium", 0.5, 0.4, "heat")
-        controller.learning.add_slope_sample("high", 0.8, 0.4, "heat")
-        controller.learning.add_slope_sample("superhigh", 1.0, 0.4, "heat")
-    controller.learning.add_response_event(30.0)
+        learning.add_slope_sample("low", 0.2, 0.4, "heat")
+        learning.add_slope_sample("medium", 0.5, 0.4, "heat")
+        learning.add_slope_sample("high", 0.8, 0.4, "heat")
+        learning.add_slope_sample("superhigh", 1.0, 0.4, "heat")
+    learning.add_response_event(30.0)
 
     mpc = MPCController(
-        learning=controller.learning,
+        learning=learning,
         deadband=0.2,
         min_interval=10,
         fan_modes=fan_modes,
-        enabled=True,
     )
 
     result = mpc.evaluate(
@@ -134,7 +131,6 @@ def test_shadow_holds_superhigh_while_still_below_target() -> None:
         vtherm_slope=0.2,
         hvac_mode="heat",
         current_fan="superhigh",
-        live_decision_fan="superhigh",
         is_window_open=False,
         minutes_since_change=40.0,
     )
@@ -144,16 +140,15 @@ def test_shadow_holds_superhigh_while_still_below_target() -> None:
     assert "Below target: holding superhigh" in result["mpc_reason"]
 
 
-def test_shadow_pauses_when_window_is_open() -> None:
-    """Shadow pauses evaluation when a window is open."""
-    controller = _build_controller()
-    _prime_learning_profiles(controller)
+def test_mpc_pauses_when_window_is_open() -> None:
+    """MPC pauses evaluation when a window is open."""
+    learning = ThermalLearning()
+    _prime_learning_profiles(learning)
     mpc = MPCController(
-        learning=controller.learning,
+        learning=learning,
         deadband=0.3,
         min_interval=10,
         fan_modes=FAN_MODES,
-        enabled=True,
     )
 
     result = mpc.evaluate(
@@ -162,7 +157,6 @@ def test_shadow_pauses_when_window_is_open() -> None:
         vtherm_slope=0.2,
         hvac_mode="heat",
         current_fan="medium",
-        live_decision_fan="high",
         is_window_open=True,
         minutes_since_change=12.0,
     )
@@ -173,11 +167,11 @@ def test_shadow_pauses_when_window_is_open() -> None:
     assert "paused" in result["mpc_reason"]
 
 
-def test_shadow_sensor_can_clear_to_none() -> None:
-    """Shadow sensor value can be cleared to None."""
+def test_mpc_sensor_can_clear_to_none() -> None:
+    """MPC sensor value can be cleared to None."""
     sensor = SmartFanSensor(
         "entry-1",
-        "MPC Shadow Cost",
+        "MPC Cost",
         "mpc_cost",
         "mpc_cost",
         None,
@@ -185,25 +179,25 @@ def test_shadow_sensor_can_clear_to_none() -> None:
         "mdi:calculator",
     )
 
-    sensor.update_from_controller({"mpc_cost": 3.2})
+    sensor.update_from_mpc({"mpc_cost": 3.2})
     assert sensor.native_value == 3.2
 
-    sensor.update_from_controller({"mpc_cost": None})
+    sensor.update_from_mpc({"mpc_cost": None})
     assert sensor.native_value is None
 
 
 def test_mpc_profiles_sensor_exposes_per_mode_values() -> None:
     """MPC profiles sensor exposes per-mode effective slope values."""
-    controller = _build_controller()
-    controller.fan_modes = FAN_MODES
+    learning = ThermalLearning()
+    mpc = _build_mpc(learning)
     for _ in range(15):
-        controller.learning.add_slope_sample("medium", 0.5, 0.3, "heat")
+        learning.add_slope_sample("medium", 0.5, 0.3, "heat")
     for _ in range(8):
-        controller.learning.add_slope_sample("high", 0.9, 0.3, "heat")
+        learning.add_slope_sample("high", 0.9, 0.3, "heat")
     for _ in range(12):
-        controller.learning.add_slope_sample("low", -0.4, 0.3, "cool")
+        learning.add_slope_sample("low", -0.4, 0.3, "cool")
 
-    sensor = SmartFanMpcProfilesSensor("entry-1", controller, "heat")
+    sensor = SmartFanMpcProfilesSensor("entry-1", mpc, "heat")
     attrs = sensor.extra_state_attributes
 
     assert sensor.native_value == 1
@@ -218,11 +212,12 @@ def test_mpc_profiles_sensor_exposes_per_mode_values() -> None:
 
 def test_profile_effective_slope_sensor_exposes_historizable_state() -> None:
     """Profile effective slope sensor is historizable with correct attributes."""
-    controller = _build_controller()
+    learning = ThermalLearning()
+    mpc = _build_mpc(learning)
     for _ in range(12):
-        controller.learning.add_slope_sample("high", 0.9, 0.3, "heat")
+        learning.add_slope_sample("high", 0.9, 0.3, "heat")
 
-    sensor = SmartFanProfileEffectiveSlopeSensor("entry-1", controller, "heat", "high")
+    sensor = SmartFanProfileEffectiveSlopeSensor("entry-1", mpc, "heat", "high")
 
     assert sensor.entity_id == "sensor.smart_fan_controller_heat_high_effective_slope"
     assert sensor.native_value == 0.9
@@ -230,44 +225,9 @@ def test_profile_effective_slope_sensor_exposes_historizable_state() -> None:
     assert sensor.extra_state_attributes["ready"] is True
 
 
-def test_live_controller_holds_favorable_slope_until_close_to_target() -> None:
-    """Live controller holds current fan while slope is favorable near target."""
-    controller = _build_controller(fan_modes=["low", "high"])
-    controller.previous_slope = 0.0
-    controller.now = 0.0
-    controller.last_change_time = 0.0
-
-    with patch("time.time", return_value=3600.0):
-        result = controller.calculate_decision(19.6, 20.0, 0.5, "heat", "high")
-
-    assert result["fan_mode"] == "high"
-    assert result["reason"] == "Maintenance: Favorable slope, holding"
-
-
-def test_response_time_learning_skips_window_open_disturbances() -> None:
-    """Response-time learning skips events disturbed by open window."""
-    controller = _build_controller()
-    for _ in range(250):
-        controller.learning.add_slope_sample("medium", 0.3, 0.1)
-
-    base_time = 1_000_000.0
-
-    with patch("time.time", return_value=base_time):
-        controller.now = base_time
-        controller.save_states("high", "low", 0.5, 0.5, False, is_window_open=False)
-        controller.confirm_fan_change()
-
-    events_before = len(controller.learning.response_events)
-    with patch("time.time", return_value=base_time + 600):
-        controller.now = base_time + 600
-        controller.save_states("high", "high", 0.2, 0.2, True, is_window_open=True)
-
-    assert len(controller.learning.response_events) == events_before
-
-
 @pytest.mark.asyncio
-async def test_data_collector_records_shadow_columns(tmp_path: Path) -> None:
-    """Data collector CSV includes shadow-specific columns."""
+async def test_data_collector_records_mpc_columns(tmp_path: Path) -> None:
+    """Data collector CSV includes MPC-specific columns."""
     hass = _make_executor_hass()
     collector = DataCollector(hass, str(tmp_path), "entry123456")
 
@@ -293,10 +253,9 @@ async def test_data_collector_records_shadow_columns(tmp_path: Path) -> None:
         force=True,
         learning_ready=True,
         dead_time=10.0,
-        shadow={
+        mpc_decision={
             "mpc_status": "Ready",
             "mpc_fan_mode": "high",
-            "mpc_matches_live": "yes",
             "mpc_would_change_now": "yes",
             "mpc_cost": 4.321,
             "mpc_confidence": 75.0,
@@ -321,16 +280,15 @@ async def test_data_collector_records_shadow_columns(tmp_path: Path) -> None:
     assert row[header.index("mpc_disturbance")] == "-0.25"
 
 
-def test_shadow_setpoint_drop_forces_lowest_mode() -> None:
-    """When target drops significantly, shadow should go to the lowest fan mode."""
-    controller = _build_controller()
-    _prime_learning_profiles(controller)
+def test_mpc_setpoint_drop_forces_lowest_mode() -> None:
+    """When target drops significantly, MPC should go to the lowest fan mode."""
+    learning = ThermalLearning()
+    _prime_learning_profiles(learning)
     mpc = MPCController(
-        learning=controller.learning,
+        learning=learning,
         deadband=0.3,
         min_interval=10,
         fan_modes=FAN_MODES,
-        enabled=True,
     )
 
     result = mpc.evaluate(
@@ -339,7 +297,6 @@ def test_shadow_setpoint_drop_forces_lowest_mode() -> None:
         vtherm_slope=0.0,
         hvac_mode="heat",
         current_fan="high",
-        live_decision_fan="low",
         is_window_open=False,
         minutes_since_change=5.0,
     )
@@ -349,15 +306,14 @@ def test_shadow_setpoint_drop_forces_lowest_mode() -> None:
     assert "Setpoint drop" in result["mpc_reason"]
 
 
-def test_shadow_setpoint_drop_matches_live() -> None:
-    """Setpoint drop should report match with live when both choose lowest."""
-    controller = _build_controller()
+def test_mpc_setpoint_drop_reports_would_change() -> None:
+    """Setpoint drop should report would_change correctly."""
+    learning = ThermalLearning()
     mpc = MPCController(
-        learning=controller.learning,
+        learning=learning,
         deadband=0.3,
         min_interval=10,
         fan_modes=FAN_MODES,
-        enabled=True,
     )
 
     result = mpc.evaluate(
@@ -366,25 +322,23 @@ def test_shadow_setpoint_drop_matches_live() -> None:
         vtherm_slope=-0.2,
         hvac_mode="heat",
         current_fan="medium",
-        live_decision_fan="low",
         is_window_open=False,
         minutes_since_change=15.0,
     )
 
     assert result["mpc_fan_mode"] == "low"
-    assert result["mpc_matches_live"] == "yes"
+    assert result["mpc_would_change_now"] == "yes"
 
 
-def test_shadow_no_setpoint_drop_when_error_above_threshold() -> None:
+def test_mpc_no_setpoint_drop_when_error_above_threshold() -> None:
     """Normal over-target should NOT trigger setpoint drop."""
-    controller = _build_controller()
-    _prime_learning_profiles(controller)
+    learning = ThermalLearning()
+    _prime_learning_profiles(learning)
     mpc = MPCController(
-        learning=controller.learning,
+        learning=learning,
         deadband=0.3,
         min_interval=10,
         fan_modes=FAN_MODES,
-        enabled=True,
     )
 
     result = mpc.evaluate(
@@ -393,7 +347,6 @@ def test_shadow_no_setpoint_drop_when_error_above_threshold() -> None:
         vtherm_slope=0.0,
         hvac_mode="heat",
         current_fan="high",
-        live_decision_fan="medium",
         is_window_open=False,
         minutes_since_change=15.0,
     )
@@ -401,16 +354,15 @@ def test_shadow_no_setpoint_drop_when_error_above_threshold() -> None:
     assert result["mpc_status"] != "Setpoint drop"
 
 
-def test_shadow_pauses_during_defrost() -> None:
-    """Shadow should pause when defrost is active, like window-open."""
-    controller = _build_controller()
-    _prime_learning_profiles(controller)
+def test_mpc_pauses_during_defrost() -> None:
+    """MPC should pause when defrost is active, like window-open."""
+    learning = ThermalLearning()
+    _prime_learning_profiles(learning)
     mpc = MPCController(
-        learning=controller.learning,
+        learning=learning,
         deadband=0.3,
         min_interval=10,
         fan_modes=FAN_MODES,
-        enabled=True,
     )
 
     result = mpc.evaluate(
@@ -419,7 +371,6 @@ def test_shadow_pauses_during_defrost() -> None:
         vtherm_slope=0.2,
         hvac_mode="heat",
         current_fan="high",
-        live_decision_fan="high",
         is_window_open=False,
         is_defrost_active=True,
         minutes_since_change=12.0,
@@ -431,16 +382,15 @@ def test_shadow_pauses_during_defrost() -> None:
     assert "Defrost" in result["mpc_reason"]
 
 
-def test_shadow_disturbance_bias_decays_during_defrost() -> None:
+def test_mpc_disturbance_bias_decays_during_defrost() -> None:
     """Disturbance bias should decay, not update, during defrost."""
-    controller = _build_controller()
-    _prime_learning_profiles(controller)
+    learning = ThermalLearning()
+    _prime_learning_profiles(learning)
     mpc = MPCController(
-        learning=controller.learning,
+        learning=learning,
         deadband=0.3,
         min_interval=10,
         fan_modes=FAN_MODES,
-        enabled=True,
     )
 
     # Prime the disturbance bias with a normal cycle
@@ -450,7 +400,6 @@ def test_shadow_disturbance_bias_decays_during_defrost() -> None:
         vtherm_slope=0.5,
         hvac_mode="heat",
         current_fan="medium",
-        live_decision_fan="medium",
         is_window_open=False,
         minutes_since_change=20.0,
     )
@@ -463,7 +412,6 @@ def test_shadow_disturbance_bias_decays_during_defrost() -> None:
         vtherm_slope=-1.0,
         hvac_mode="heat",
         current_fan="high",
-        live_decision_fan="high",
         is_window_open=False,
         is_defrost_active=True,
         minutes_since_change=25.0,
@@ -474,83 +422,23 @@ def test_shadow_disturbance_bias_decays_during_defrost() -> None:
     assert abs(bias_after) <= abs(bias_before)
 
 
-def test_production_mode_property_defaults_to_false() -> None:
-    """Production mode should default to False (shadow only)."""
-    controller = _build_controller()
-    mpc = MPCController(
-        learning=controller.learning,
-        deadband=0.3,
-        min_interval=10,
-        fan_modes=FAN_MODES,
-        enabled=True,
-    )
-
-    assert mpc.production_mode is False
-
-
-def test_production_mode_can_be_toggled() -> None:
-    """Production mode can be enabled and disabled."""
-    controller = _build_controller()
-    mpc = MPCController(
-        learning=controller.learning,
-        deadband=0.3,
-        min_interval=10,
-        fan_modes=FAN_MODES,
-        enabled=True,
-    )
-
-    mpc.production_mode = True
-    assert mpc.production_mode is True
-
-    mpc.production_mode = False
-    assert mpc.production_mode is False
-
-
-def test_shadow_always_evaluates_regardless_of_production_mode() -> None:
-    """Shadow evaluates and produces results whether production mode is on or off."""
-    controller = _build_controller()
-    _prime_learning_profiles(controller)
-    mpc = MPCController(
-        learning=controller.learning,
-        deadband=0.3,
-        min_interval=10,
-        fan_modes=FAN_MODES,
-        enabled=True,
-    )
-
-    for prod_mode in (False, True):
-        mpc.production_mode = prod_mode
-        result = mpc.evaluate(
-            current_temp=19.0,
-            target_temp=20.0,
-            vtherm_slope=0.25,
-            hvac_mode="heat",
-            current_fan="low",
-            live_decision_fan="low",
-            is_window_open=False,
-            minutes_since_change=20.0,
-        )
-        assert result["mpc_status"] != "Disabled"
-        assert result["mpc_fan_mode"] is not None
-
-
 def test_monotone_constraint_enforces_ordering() -> None:
     """Monotone constraint should clamp a lower mode's slope up to its neighbor when all profiles are ready."""
-    controller = _build_controller(fan_modes=["silent", "low", "med", "high", "superhigh"])
+    learning = ThermalLearning()
+    fan_modes = ["silent", "low", "med", "high", "superhigh"]
 
     # Create inverted profiles: silent > med (the real-world bug)
-    controller.learning.set_mode_effective_slope("silent", "heat", 0.53)
-    controller.learning.set_mode_effective_slope("low", "heat", 0.0)
-    controller.learning.set_mode_effective_slope("med", "heat", 0.45)
-    controller.learning.set_mode_effective_slope("high", "heat", 0.96)
-    controller.learning.set_mode_effective_slope("superhigh", "heat", 1.35)
+    learning.set_mode_effective_slope("silent", "heat", 0.53)
+    learning.set_mode_effective_slope("low", "heat", 0.0)
+    learning.set_mode_effective_slope("med", "heat", 0.45)
+    learning.set_mode_effective_slope("high", "heat", 0.96)
+    learning.set_mode_effective_slope("superhigh", "heat", 1.35)
 
     mpc = MPCController(
-        learning=controller.learning,
+        learning=learning,
         deadband=0.3,
         min_interval=10,
         fan_modes=["silent", "low", "med", "high", "superhigh"],
-        enabled=True,
     )
 
     monotone = mpc.build_monotone_slopes(["silent", "low", "med", "high", "superhigh"], "heat")
@@ -566,13 +454,12 @@ def test_monotone_constraint_enforces_ordering() -> None:
 
 def test_monotone_constraint_returns_none_for_partial_profiles() -> None:
     """On a fresh install with incomplete profiles, monotone should return None."""
-    controller = _build_controller()
+    learning = ThermalLearning()
     mpc = MPCController(
-        learning=controller.learning,
+        learning=learning,
         deadband=0.3,
         min_interval=10,
         fan_modes=FAN_MODES,
-        enabled=True,
     )
     # No profiles learned yet
     result = mpc.build_monotone_slopes(FAN_MODES, "heat")
@@ -581,18 +468,17 @@ def test_monotone_constraint_returns_none_for_partial_profiles() -> None:
 
 def test_monotone_constraint_noop_when_already_ordered() -> None:
     """When profiles are already monotone, the constraint should not change values."""
-    controller = _build_controller()
+    learning = ThermalLearning()
 
-    controller.learning.set_mode_effective_slope("low", "heat", 0.15)
-    controller.learning.set_mode_effective_slope("medium", "heat", 0.5)
-    controller.learning.set_mode_effective_slope("high", "heat", 1.0)
+    learning.set_mode_effective_slope("low", "heat", 0.15)
+    learning.set_mode_effective_slope("medium", "heat", 0.5)
+    learning.set_mode_effective_slope("high", "heat", 1.0)
 
     mpc = MPCController(
-        learning=controller.learning,
+        learning=learning,
         deadband=0.3,
         min_interval=10,
         fan_modes=FAN_MODES,
-        enabled=True,
     )
 
     monotone = mpc.build_monotone_slopes(FAN_MODES, "heat")

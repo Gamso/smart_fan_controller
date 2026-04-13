@@ -63,19 +63,12 @@ def _build_profile_effective_slope_entities(entry_id: str, controller, known_key
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     """Set up the sensor platform from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
-    controller = data["controller"]
+    mpc = data["mpc_controller"]
 
     sensor_definitions = [
-        ("Status", "status", "reason", None, None, "mdi:information-outline", EntityCategory.DIAGNOSTIC),
-        ("Fan Mode", "fan_mode", "fan_mode", None, SensorDeviceClass.ENUM, "mdi:fan", None),
-        ("Fan Mode Last Change", "fan_mode_last_change", "minutes_since_last_change", UnitOfTime.MINUTES, SensorDeviceClass.DURATION, "mdi:clock-outline", EntityCategory.DIAGNOSTIC),
-        ("Temperature Projected 10 Min", "temperature_projected_10_min", "projected_temperature", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:chart-bell-curve", EntityCategory.DIAGNOSTIC),
-        ("Temperature Projected Error 10 Min", "temperature_projected_error_10_min", "projected_temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:chart-bell-curve", EntityCategory.DIAGNOSTIC),
-        ("Temperature Error", "temperature_error", "temperature_error", UnitOfTemperature.CELSIUS, SensorDeviceClass.TEMPERATURE, "mdi:thermometer-lines", EntityCategory.DIAGNOSTIC),
         ("MPC Status", "mpc_status", "mpc_status", None, None, "mdi:robot-outline", EntityCategory.DIAGNOSTIC),
         ("MPC Reason", "mpc_reason", "mpc_reason", None, None, "mdi:text-box-search-outline", EntityCategory.DIAGNOSTIC),
         ("MPC Fan Mode", "mpc_fan_mode", "mpc_fan_mode", None, None, "mdi:fan-chevron-up", EntityCategory.DIAGNOSTIC),
-        ("MPC Match", "mpc_match", "mpc_matches_live", None, None, "mdi:compare", EntityCategory.DIAGNOSTIC),
         ("MPC Would Change Now", "mpc_would_change_now", "mpc_would_change_now", None, None, "mdi:swap-horizontal", EntityCategory.DIAGNOSTIC),
         ("MPC Cost", "mpc_cost", "mpc_cost", None, None, "mdi:calculator", EntityCategory.DIAGNOSTIC),
         ("MPC Confidence", "mpc_confidence", "mpc_confidence", PERCENTAGE, None, "mdi:chart-line", EntityCategory.DIAGNOSTIC),
@@ -93,23 +86,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     entities.extend(
         [
-            SmartFanLearningSensor(entry.entry_id, controller),
-            SmartFanLearningStatusSensor(entry.entry_id, controller),
-            SmartFanLearningSamplesSensor(entry.entry_id, controller),
-            SmartFanLearningResponseSensor(entry.entry_id, controller),
-            SmartFanLearnedDeadTimeSensor(entry.entry_id, controller),
-            SmartFanEffectiveTimeoutSensor(entry.entry_id, controller),
-            SmartFanMpcProfilesSensor(entry.entry_id, controller, "heat"),
-            SmartFanMpcProfilesSensor(entry.entry_id, controller, "cool"),
-            SmartFanLearnedDeadbandSensor(entry.entry_id, controller),
-            SmartFanLearnedSoftErrorSensor(entry.entry_id, controller),
-            SmartFanLearnedHardErrorSensor(entry.entry_id, controller),
-            SmartFanLearnedLimitTimeoutSensor(entry.entry_id, controller),
+            SmartFanLearningSensor(entry.entry_id, mpc),
+            SmartFanLearningStatusSensor(entry.entry_id, mpc),
+            SmartFanLearningSamplesSensor(entry.entry_id, mpc),
+            SmartFanLearningResponseSensor(entry.entry_id, mpc),
+            SmartFanLearnedDeadTimeSensor(entry.entry_id, mpc),
+            SmartFanEffectiveTimeoutSensor(entry.entry_id, mpc),
+            SmartFanMpcProfilesSensor(entry.entry_id, mpc, "heat"),
+            SmartFanMpcProfilesSensor(entry.entry_id, mpc, "cool"),
+            SmartFanLearnedDeadbandSensor(entry.entry_id, mpc),
+            SmartFanLearnedLimitTimeoutSensor(entry.entry_id, mpc),
         ]
     )
 
     profile_sensor_keys: set[tuple[str, str]] = set()
-    profile_entities = _build_profile_effective_slope_entities(entry.entry_id, controller, profile_sensor_keys)
+    profile_entities = _build_profile_effective_slope_entities(entry.entry_id, mpc, profile_sensor_keys)
     entities.extend(profile_entities)
 
     if profile_entities:
@@ -127,7 +118,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     def ensure_profile_sensors() -> None:
         """Add late-discovered profile slope sensors once fan modes are known."""
-        new_entities = _build_profile_effective_slope_entities(entry.entry_id, controller, profile_sensor_keys)
+        new_entities = _build_profile_effective_slope_entities(entry.entry_id, mpc, profile_sensor_keys)
         if not new_entities:
             return
 
@@ -170,7 +161,7 @@ class SmartFanSensor(_SmartFanEntity):
         self._attr_entity_category = entity_category
         self.entity_id = build_entity_id("sensor", object_key)
 
-    def update_from_controller(self, data: dict) -> None:
+    def update_from_mpc(self, data: dict) -> None:
         """Update the sensor value with data from the controller."""
         if self._data_key in data:
             self._attr_native_value = data.get(self._data_key)
@@ -208,8 +199,6 @@ class SmartFanLearningSensor(_SmartFanEntity):
         optimal = self._controller.learning.compute_optimal_parameters()
         if optimal:
             attrs["learned_deadband"] = optimal.get("deadband")
-            attrs["learned_soft_error"] = optimal.get("soft_error")
-            attrs["learned_hard_error"] = optimal.get("hard_error")
             attrs["learned_limit_timeout"] = optimal.get("limit_timeout")
             attrs["learned_samples_count"] = optimal.get("samples_count")
             attrs["learned_response_samples"] = optimal.get("response_samples")
@@ -364,7 +353,7 @@ class SmartFanEffectiveTimeoutSensor(_SmartFanEntity):
 
 
 class SmartFanMpcProfilesSensor(_SmartFanEntity):
-    """Sensor exposing the learned per-mode profiles used by the shadow MPC."""
+    """Sensor exposing the learned per-mode profiles used by the MPC."""
 
     def __init__(self, entry_id: str, controller, hvac_mode: str) -> None:
         self._entry_id = entry_id
@@ -503,40 +492,6 @@ class SmartFanLearnedDeadbandSensor(_BaseLearnedParameterSensor):
             learning_key="deadband",
             icon="mdi:thermometer-lines",
             current_attr="deadband",
-        )
-
-
-class SmartFanLearnedSoftErrorSensor(_BaseLearnedParameterSensor):
-    """Learned soft_error parameter."""
-
-    def __init__(self, entry_id: str, controller) -> None:
-        super().__init__(
-            entry_id,
-            controller,
-            name="Learned Soft Error",
-            object_key="learned_soft_error",
-            unit=UnitOfTemperature.CELSIUS,
-            device_class=SensorDeviceClass.TEMPERATURE,
-            learning_key="soft_error",
-            icon="mdi:speedometer-slow",
-            current_attr="soft_error",
-        )
-
-
-class SmartFanLearnedHardErrorSensor(_BaseLearnedParameterSensor):
-    """Learned hard_error parameter."""
-
-    def __init__(self, entry_id: str, controller) -> None:
-        super().__init__(
-            entry_id,
-            controller,
-            name="Learned Hard Error",
-            object_key="learned_hard_error",
-            unit=UnitOfTemperature.CELSIUS,
-            device_class=SensorDeviceClass.TEMPERATURE,
-            learning_key="hard_error",
-            icon="mdi:speedometer",
-            current_attr="hard_error",
         )
 
 

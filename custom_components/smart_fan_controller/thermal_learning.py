@@ -330,8 +330,6 @@ class ThermalLearning:
         volatility_factor = min(slope_stdev / max(self._slope_mean, 0.1), 3.0)
 
         optimal_deadband = 0.15 + (volatility_factor * 0.2)
-        optimal_soft_error = 0.25 + (volatility_factor * 0.3)
-        optimal_hard_error = 0.5 + (volatility_factor * 0.4)
 
         _LOGGER.info(
             "Auto-calibration complete: avg_slope=%.2f std=%.2f max=%.2f | avg_response=%.1fmin | limit_timeout=%d",
@@ -344,8 +342,6 @@ class ThermalLearning:
 
         result = {
             "deadband": round(optimal_deadband, 2),
-            "soft_error": round(optimal_soft_error, 2),
-            "hard_error": round(optimal_hard_error, 2),
             "limit_timeout": optimal_limit_timeout,
             "samples_count": self._slope_count,
             "response_samples": len(response_times),

@@ -18,11 +18,11 @@ Predictive fan speed control for HVAC systems, designed to work with Versatile T
   - [Requirements](#requirements)
   - [Quick Setup](#quick-setup)
   - [Configuration Parameters](#configuration-parameters)
-  - [Control Logic](#control-logic)
-    - [Decision Priority (Zones A–F)](#decision-priority-zones-af)
-    - [Temperature Projection](#temperature-projection)
+  - [MPC Controller](#mpc-controller)
+    - [Cost Function](#cost-function)
+    - [Hysteresis and Guards](#hysteresis-and-guards)
     - [Phase Detection](#phase-detection)
-    - [Safety Constraints](#safety-constraints)
+    - [Disturbance Handling](#disturbance-handling)
     - [Defrost Detection](#defrost-detection)
     - [HVAC Idle Detection](#hvac-idle-detection)
   - [Learning System](#learning-system)
@@ -33,13 +33,13 @@ Predictive fan speed control for HVAC systems, designed to work with Versatile T
     - [HVAC Idle Learning Exclusion](#hvac-idle-learning-exclusion)
   - [Sensors \& Entities](#sensors--entities)
     - [Main Entities](#main-entities)
-    - [Diagnostic Sensors](#diagnostic-sensors)
     - [MPC Sensors](#mpc-sensors)
+    - [Learning Sensors](#learning-sensors)
     - [Learning Profile Sensors](#learning-profile-sensors)
-    - [Defrost Diagnostic](#defrost-diagnostic)
   - [Services](#services)
     - [`smart_fan_controller.apply_learned_settings`](#smart_fan_controllerapply_learned_settings)
     - [`smart_fan_controller.reset_learning`](#smart_fan_controllerreset_learning)
+    - [`smart_fan_controller.set_effective_slope`](#smart_fan_controllerset_effective_slope)
   - [Troubleshooting](#troubleshooting)
   - [License](#license)
 
@@ -70,21 +70,18 @@ Alternatively, click the button below to open this repository directly in HACS:
 
 ## Overview
 
-Smart Fan Controller is a custom Home Assistant integration that **adjusts HVAC fan speed** based on how the temperature is evolving, not just the current reading. It uses a rule-based decision engine with six priority zones, phase-aware timing, and an automatic learning system.
+Smart Fan Controller is a custom Home Assistant integration that **adjusts HVAC fan speed** using a predictive MPC (Model Predictive Control) engine. It learns the thermal behavior of your room and selects the optimal fan mode to reach and maintain the target temperature.
 
 ### How It Works
 
 1. Every 2 minutes, reads the current temperature, target, and temperature slope from Versatile Thermostat
-2. Projects temperature **10 minutes ahead** using a clamped linear model
-3. Classifies the thermal phase (dead time / transient / established) relative to the last fan change
-4. Evaluates six priority zones (A–F) and selects the first matching action
-5. Applies safety guards (step-down limit, min interval) and changes fan speed if needed
-6. Collects learning data to automatically calibrate parameters over time
-7. Runs an MPC controller in the background; optionally activates MPC production mode for direct fan control
+2. Simulates every available fan mode over a **30-minute prediction horizon** using learned thermal profiles
+3. Selects the fan mode that **minimizes a cost function** balancing comfort, overshoot, and energy use
+4. Applies safety guards (hysteresis, min interval) before changing the fan
+5. Continuously **learns** the thermal response of each fan mode to improve predictions over time
 
-> **MPC Controller** always runs a learned temperature-state model and MPC-lite in observation mode. When **MPC Production Mode** is enabled, the MPC directly controls the fan instead of the rule-based algorithm. It owns its own runtime parameters (`deadband`, `min_interval`, fan modes), pauses itself during disturbed periods such as an open window, and keeps those periods out of dead-time learning. See [docs/mpc_mode.md](docs/mpc_mode.md).
-> It supports both `heat` and `cool`, and includes a hysteresis guard so tiny cost differences do not create fan yo-yo around the setpoint.
-> When all fan-mode profiles are learned, a **monotone constraint** is enforced: higher fan modes are guaranteed to have slopes ≥ lower modes. This prevents contaminated profiles from causing the MPC to rank a weaker mode above a stronger one.
+> The MPC controller supports both `heat` and `cool` modes. It includes a hysteresis guard so tiny cost differences do not create fan oscillations near the setpoint.
+> When all fan-mode profiles are learned, a **monotone constraint** guarantees higher fan modes have steeper slopes than lower ones.
 
 ---
 
@@ -108,64 +105,45 @@ Smart Fan Controller is a custom Home Assistant integration that **adjusts HVAC 
 
 All parameters can be changed at any time via **Settings → Devices & Services → Smart Fan Controller → Configure**.
 
-| Parameter            | Default  | Range            | Description                                                                                                                                                                                                   |
-| -------------------- | -------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Deadband**         | `0.2°C`  | `0.0` – `5.0°C`  | Comfort zone around target — no action taken within this range. Increase to reduce fan changes.                                                                                                               |
-| **Min Interval**     | `10 min` | `1` – `60 min`   | Minimum time between non-emergency fan changes. Prevents rapid oscillations.                                                                                                                                  |
-| **Soft Error**       | `0.3°C`  | `0.0` – `10.0°C` | Error threshold that triggers recovery mode. Should be larger than deadband.                                                                                                                                  |
-| **Hard Error**       | `0.6°C`  | `0.0` – `10.0°C` | Error threshold that triggers emergency mode (max fan, bypasses min interval).                                                                                                                                |
-| **Limit Timeout**    | `15 min` | `10` – `120 min` | Maximum time before forcing a re-evaluation, even without significant slope change.                                                                                                                           |
-| **Learning Enabled** | `true`   | —                | Enables the automatic learning system. Disable for fully manual tuning.                                                                                                                                       |
-| **MPC Production Mode** | `false` | —               | When enabled, the MPC controller directly controls the fan mode instead of the rule-based algorithm. Shadow observation always runs.                                                                          |
-| **Data Collection**  | `true`   | —                | Records one CSV row every 2 minutes in the HA config folder (`smart_fan_controller_data_XXXXXXXX.csv`, max 10 MB, auto-rotated). Useful for offline analysis.                                                |
-| **Defrost Entity**   | *(none)* | —                | Optional entity (`binary_sensor`, `sensor`, or `input_boolean`) that reports when the heat pump is in defrost cycle. When active, defrost protection is applied. See [Defrost Detection](#defrost-detection). |
-| **Operating Entity** | *(none)* | —                | Optional entity (`binary_sensor`, `sensor`, or `input_boolean`) that reports whether the heat pump compressor is actively running. Used to block fan increases and exclude learning data while the compressor is off. See [HVAC Idle Detection](#hvac-idle-detection). |
-
-> **Tip — recommended ratios**: `deadband < soft_error < hard_error`, e.g. `0.2 / 0.3 / 0.6`.
+| Parameter          | Default  | Range           | Description                                                                                                                                                                         |
+| ------------------ | -------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Deadband**       | `0.2°C`  | `0.0` – `5.0°C` | Comfort zone around target — no action taken within this range. Increase to reduce fan changes.                                                                                     |
+| **Min Interval**   | `10 min` | `1` – `60 min`  | Minimum time between non-emergency fan changes. Prevents rapid oscillations.                                                                                                        |
+| **Limit Timeout**  | `15 min` | `10` – `120 min`| Fallback timeout used before learning calibrates the dead time.                                                                                                                     |
+| **Data Collection** | `true`  | —               | Records one CSV row every 2 minutes in the HA config folder (`smart_fan_controller_data_XXXXXXXX.csv`, max 10 MB, auto-rotated). Useful for offline analysis.                       |
+| **Defrost Entity** | *(none)* | —               | Optional entity (`binary_sensor`, `sensor`, or `input_boolean`) that reports when the heat pump is in defrost cycle. See [Defrost Detection](#defrost-detection).                   |
+| **Operating Entity** | *(none)* | —             | Optional entity (`binary_sensor`, `sensor`, or `input_boolean`) that reports whether the heat pump compressor is actively running. See [HVAC Idle Detection](#hvac-idle-detection). |
 
 ---
 
-## Control Logic
+## MPC Controller
 
-Each cycle the controller computes the temperature error (always positive when the system needs more action) and applies the first matching rule from six priority zones:
+The MPC (Model Predictive Control) engine is the sole decision-maker for fan speed. Each cycle, it evaluates every available fan mode by simulating temperature evolution over a 30-minute horizon and selecting the mode with the lowest cost.
 
-### Decision Priority (Zones A–F)
+See [docs/mpc_mode.md](docs/mpc_mode.md) for the full technical design.
 
-| Zone      | Condition                                          | Action                                                                       |
-| --------- | -------------------------------------------------- | ---------------------------------------------------------------------------- |
-| **A**     | `error ≥ hard_error`                               | **Emergency** — max fan, bypasses timer                                      |
-| **A-bis** | Target dropped by more than 1°C                    | **Setpoint drop** — min fan, bypasses timer                                  |
-| **B**     | Projected overshoot `> deadband` AND slope changed | **Braking** — decrease fan proactively                                       |
-| **C**     | `error > soft_error`                               | **Recovery** — increase fan (or patience during dead time / improving slope) |
-| **D**     | `0 < error < soft_error`                           | **Drift / Descent** — adjust towards target (phase-gated)                    |
-| **E**     | `error < -deadband`                                | **Over-target** — decrease fan                                               |
-| **F**     | `-deadband ≤ error ≤ 0`                            | **Comfort zone** — hold (react to slow drift)                                |
+### Cost Function
 
-> **Note**: In heat mode, error = `target - current`. In cool mode, error = `current - target`. A positive value always means the system needs more action.
+Each candidate fan mode is scored with:
 
-**Zone C details**: During the dead-time phase, the controller reports "Patience: Waiting for thermal response" instead of boosting, to avoid over-reacting before the sensor can reflect the last change. After dead time, if the slope hasn't improved, it increases fan speed.
+| Component                   | Purpose                                                                      |
+| --------------------------- | ---------------------------------------------------------------------------- |
+| **Comfort error × urgency** | Penalizes being outside the deadband, amplified when far from target         |
+| **Overshoot²**              | Strongly penalizes going past the target temperature                         |
+| **Floor violation**         | Penalizes predicted temperature dropping below setpoint (linear + quadratic) |
+| **Mode-change cost**        | Penalizes unnecessary fan jumps (proportional to step distance)              |
+| **Mode-rank cost**          | Slight preference for lower fan speeds (energy savings)                      |
+| **Min-interval penalty**    | Blocks changes before the minimum interval has elapsed                       |
 
-**Zone D details**: Four sub-rules gated by control phase:
-- **Descent**: Strong favorable slope in ESTABLISHED phase, already within deadband, and projection at/past target → reduce fan
-- **Hold**: Strong favorable slope but still too far from target → keep current fan
-- **Drift**: Slow drift away from target → increase fan
-- **Proactive**: Stable but away from target in ESTABLISHED phase → increase fan to reach setpoint
+### Hysteresis and Guards
 
-### Temperature Projection
-
-The controller projects temperature 10 minutes ahead using a **clamped linear model**:
-
-```
-projected_temperature = current_temp + (vtherm_slope × 10/60)
-```
-
-The projection is clamped to ±1.0°C from the current temperature to prevent extreme predictions from noisy slope readings. This value was calibrated against real sensor data showing maximum overshoot of ~0.6°C.
-
-> The VTherm slope is already an EMA-smoothed signal over ~15–30 minutes, so a second-order (parabolic) term would amplify noise from the double derivative of an already-filtered signal. The clamped linear model is simpler and more robust.
+- **Hysteresis**: a recommendation that changes the fan must beat the current mode by a minimum cost margin. The margin is larger when near the target (0.30) and smaller when far away (0.10).
+- **Step-down hold**: blocks downward moves when still under target and the temperature slope hasn't established yet.
+- **Min interval**: non-emergency changes respect the effective timeout (learned dead time × 1.5, or the configured limit timeout).
 
 ### Phase Detection
 
-After each fan speed change, the controller classifies the elapsed time into three phases:
+After each fan speed change, the controller classifies elapsed time into three phases:
 
 | Phase           | Condition                             | Meaning                           |
 | --------------- | ------------------------------------- | --------------------------------- |
@@ -173,37 +151,35 @@ After each fan speed change, the controller classifies the elapsed time into thr
 | **TRANSIENT**   | `dead_time ≤ elapsed < dead_time×1.5` | Sensor starting to respond        |
 | **ESTABLISHED** | `elapsed ≥ dead_time × 1.5`           | Slope reflects current fan regime |
 
-The default dead time is 10 minutes. When the learning system is ready, it is replaced by the learned median response time (typically 3–5 minutes for well-placed sensors).
+The default dead time is 10 minutes. When the learning system is ready, it is replaced by the learned median response time.
 
-### Safety Constraints
+### Disturbance Handling
 
-- **Step-down protection**: Fan speed can only decrease by one step at a time (e.g., `turbo → high`), preventing abrupt pressure changes and protecting the motor.
-- **Min interval**: Non-emergency changes respect the effective timeout. Emergency (Zone A) and setpoint drop (Zone A-bis) override it.
+The MPC tracks a **disturbance bias** — an EMA estimate of unmodeled thermal effects (solar gains, occupancy). This correction is added to learned slopes during simulation. The bias only updates during ESTABLISHED phase with a known profile and decays during disturbed periods.
+
+When a disturbance is detected, the MPC pauses and returns "Disturbed" status — the current fan mode is held.
 
 ### Defrost Detection
 
-When a heat pump defrosts its outdoor coil, the heat output drops sharply — the HVAC is working to melt ice, not heat the room. Without defrost awareness, the controller would misinterpret the falling temperature slope as insufficient fan speed and try to increase it, or worse, would reduce the fan thinking the slope is already favorable when in fact the defrost is about to end.
+When a heat pump defrosts its outdoor coil, the heat output drops sharply. Without defrost awareness, the controller would misinterpret the falling slope.
 
-**External entity (optional)**: Configure a `binary_sensor`, `sensor`, or `input_boolean` from your PAC integration that reports defrost state. When this entity is `on`/`true`/`1`, defrost protection is activated and the 20-minute cooldown timer is refreshed every control cycle — protection stays active *as long as the entity reports defrost*, then the cooldown applies after it clears.
+**External entity (optional)**: Configure a `binary_sensor`, `sensor`, or `input_boolean` from your PAC integration that reports defrost state. When this entity is `on`/`true`/`1`, defrost protection is activated with a 20-minute cooldown.
 
 **During defrost protection**:
-- **Zones B and D are blocked**: no step-down decisions (braking or favorable-slope reduction)
-- The decision reason appears as `"Defrost hold: …"`
-- **Learning samples are excluded**: slope data during defrost is not added to per-mode profiles, preventing corrupted calibration
+- The MPC pauses and returns "Disturbed" status
+- Learning samples are excluded (slope data during defrost corrupts profiles)
 
 ### HVAC Idle Detection
 
-When the heat pump compressor is off (setpoint reached, system coasting) the HVAC is not actively heating or cooling and the fan should not be increased in response to a small temperature drift.
+When the heat pump compressor is off (setpoint reached, system coasting), the HVAC is not actively heating or cooling.
 
-**Operating entity (optional)**: Configure a `binary_sensor`, `sensor`, or `input_boolean` from your PAC integration that reports whether the compressor is running. When this entity is `off`/`false`/`0`, the compressor is considered idle.
+**Operating entity (optional)**: Configure a `binary_sensor`, `sensor`, or `input_boolean` that reports compressor state. When `off`/`false`/`0`, the compressor is considered idle.
 
 > When no operating entity is configured, HVAC idle detection is disabled.
 
 **During HVAC idle**:
-- **Zones C and D are held**: no step-up decisions while the compressor is off
-- The decision reason appears as `"HVAC idle: compressor off, holding current speed"`
-- **Zones A, A-bis, B, and E are unaffected**: emergency, setpoint-drop, braking, and step-down decisions still operate normally
-- **Learning samples are excluded**: slope and response-time data while idle is not added to profiles (see [HVAC Idle Learning Exclusion](#hvac-idle-learning-exclusion))
+- The MPC pauses and returns "Disturbed" status
+- Learning samples are excluded
 
 ---
 
@@ -221,8 +197,6 @@ The integration includes an **automatic learning system** that collects data dur
 | Parameter       | Formula                                           |
 | --------------- | ------------------------------------------------- |
 | `deadband`      | `0.15 + (volatility_factor × 0.2)`                |
-| `soft_error`    | `0.25 + (volatility_factor × 0.3)`                |
-| `hard_error`    | `0.5 + (volatility_factor × 0.4)`                 |
 | `limit_timeout` | rounded median of measured thermal response times |
 
 Where `volatility_factor = min(slope_stdev / slope_mean, 3.0)`.
@@ -230,8 +204,6 @@ Where `volatility_factor = min(slope_stdev / slope_mean, 3.0)`.
 > **Important**: the learned `limit_timeout` is the stored base response estimate. At runtime, non-emergency decisions use `effective_timeout = max(min_interval, dead_time × 1.5)` once learning is ready.
 
 Once learning is ready, parameters are **automatically applied** and the integration reloads. To apply manually, use the `apply_learned_settings` service. To start over, use `reset_learning`.
-
-**Control**: Enable or disable learning at any time via `switch.smart_fan_controller_learning_enabled`. Existing data is preserved when disabled.
 
 ### Per-Mode Fan Profiles
 
@@ -254,16 +226,15 @@ Response events are only recorded when the delay is between 2 and 60 minutes (fi
 
 ### Window-Open Filtering
 
-When Versatile Thermostat reports a window as open (via the `window_manager.window_state` attribute), the controller:
-- **Continues making live heuristic fan decisions** normally (the HVAC system is still running)
-- **Stops collecting learning data**, including both per-mode slope samples and response-time events used to learn `dead_time`
-- **Pauses the MPC model**, marking it as disturbed instead of trusting predictions during the perturbation
+When Versatile Thermostat reports a window as open (via the `window_manager.window_state` attribute):
+- **The MPC pauses** and returns "Disturbed" status — the current fan mode is held
+- **Learning data collection stops**, including both per-mode slope samples and response-time events used to learn `dead_time`
 
 This prevents window-open periods from corrupting the learned profiles.
 
 ### Defrost Learning Exclusion
 
-Slope samples and response-time events collected during an active defrost period (auto-detected or via external entity, including the 20-minute cooldown) are **not added to learned profiles**. Defrost distorts the effective slope per fan mode and would bias the learning system toward lower heating capacity estimates.
+Slope samples and response-time events collected during an active defrost period (via external entity, including the 20-minute cooldown) are **not added to learned profiles**. Defrost distorts the effective slope per fan mode and would bias the learning system toward lower heating capacity estimates.
 
 ### HVAC Idle Learning Exclusion
 
@@ -275,72 +246,50 @@ Slope samples and response-time events collected while the compressor is detecte
 
 ### Main Entities
 
-| Entity                                         | Type   | Description                                       |
-| ---------------------------------------------- | ------ | ------------------------------------------------- |
-| `sensor.smart_fan_controller_fan_mode`         | Sensor | Current fan mode selected by the controller       |
-| `sensor.smart_fan_controller_status`           | Sensor | Current control zone and decision reason          |
-| `switch.smart_fan_controller_learning_enabled` | Switch | Enable / disable the learning system              |
-| `switch.smart_fan_controller_mpc_production_mode` | Switch | Enable / disable MPC production mode (MPC controls the fan) |
-
-### Diagnostic Sensors
-
-| Entity                                                                | Unit  | Description                                                                |
-| --------------------------------------------------------------------- | ----- | -------------------------------------------------------------------------- |
-| `sensor.smart_fan_controller_temperature_error`                       | °C    | Current temperature error (positive = needs action)                        |
-| `sensor.smart_fan_controller_temperature_projected_10_min`            | °C    | Predicted temperature 10 minutes ahead                                     |
-| `sensor.smart_fan_controller_temperature_projected_error_10_min`      | °C    | Predicted error 10 minutes ahead                                           |
-| `sensor.smart_fan_controller_fan_mode_last_change`                    | min   | Time elapsed since last fan mode change                                    |
-| `sensor.smart_fan_controller_learning_progress`                       | %     | Learning completion (100% = ≥240 samples)                                  |
-| `sensor.smart_fan_controller_learning_status`                         | —     | `"Learning (45%)"` or `"Ready"`                                            |
-| `sensor.smart_fan_controller_learning_samples`                        | count | Number of slope samples collected                                          |
-| `sensor.smart_fan_controller_learning_response_events`                | count | Number of thermal response time measurements                               |
-| `sensor.smart_fan_controller_learned_dead_time`                       | min   | Median learned thermal response delay (`dead_time`)                        |
-| `sensor.smart_fan_controller_effective_timeout`                       | min   | Actual non-emergency timeout currently used                                |
-| `sensor.smart_fan_controller_learned_deadband`                        | °C    | Learned optimal deadband                                                   |
-| `sensor.smart_fan_controller_learned_soft_error`                      | °C    | Learned optimal soft error threshold                                       |
-| `sensor.smart_fan_controller_learned_hard_error`                      | °C    | Learned optimal hard error threshold                                       |
-| `sensor.smart_fan_controller_learned_limit_timeout`                   | min   | Learned base timeout stored in config                                      |
-
 ### MPC Sensors
 
-| Entity                                                                | Unit  | Description                                                                |
-| --------------------------------------------------------------------- | ----- | -------------------------------------------------------------------------- |
-| `sensor.smart_fan_controller_mpc_status`                       | —     | Shadow controller state (`Disabled`, `Ready`, `Disturbed`, etc.)           |
-| `sensor.smart_fan_controller_mpc_reason`                       | —     | Explanation of the current MPC recommendation                           |
-| `sensor.smart_fan_controller_mpc_fan_mode`                     | —     | Fan mode the MPC would choose                                       |
-| `sensor.smart_fan_controller_mpc_match`                        | —     | Whether the MPC recommendation matches the live heuristic               |
-| `sensor.smart_fan_controller_mpc_would_change_now`             | —     | Whether the MPC would actively change the fan right now      |
-| `sensor.smart_fan_controller_mpc_cost`                         | —     | Lowest simulation cost returned by the MPC optimizer                       |
-| `sensor.smart_fan_controller_mpc_confidence`                   | %     | Confidence derived from learned profile coverage                           |
-| `sensor.smart_fan_controller_mpc_predicted_temperature_10_min` | °C    | Predicted temperature after 10 minutes with the recommended mode           |
-| `sensor.smart_fan_controller_mpc_predicted_temperature_30_min` | °C    | Predicted temperature after 30 minutes with the recommended mode           |
-| `sensor.smart_fan_controller_mpc_dead_time`                    | min   | Dead time currently used by the MPC simulator                           |
-| `sensor.smart_fan_controller_mpc_known_profiles`               | count | Number of reliable learned fan-mode profiles used by the MPC controller |
-| `sensor.smart_fan_controller_mpc_disturbance_bias`             | °C/h  | Learned disturbance correction currently applied by the MPC model       |
+| Entity                                                         | Unit  | Description                                                       |
+| -------------------------------------------------------------- | ----- | ----------------------------------------------------------------- |
+| `sensor.smart_fan_controller_mpc_status`                       | —     | MPC state (`Not ready`, `Ready`, `Disturbed`, `Idle`, etc.)   |
+| `sensor.smart_fan_controller_mpc_reason`                       | —     | Explanation of the current MPC recommendation                     |
+| `sensor.smart_fan_controller_mpc_fan_mode`                     | —     | Fan mode chosen by the MPC                                        |
+| `sensor.smart_fan_controller_mpc_would_change_now`             | —     | Whether the MPC would actively change the fan right now           |
+| `sensor.smart_fan_controller_mpc_cost`                         | —     | Lowest simulation cost returned by the MPC optimizer              |
+| `sensor.smart_fan_controller_mpc_confidence`                   | %     | Confidence derived from learned profile coverage                  |
+| `sensor.smart_fan_controller_mpc_predicted_temperature_10_min` | °C    | Predicted temperature after 10 minutes with the recommended mode  |
+| `sensor.smart_fan_controller_mpc_predicted_temperature_30_min` | °C    | Predicted temperature after 30 minutes with the recommended mode  |
+| `sensor.smart_fan_controller_mpc_dead_time`                    | min   | Dead time currently used by the MPC simulator                     |
+| `sensor.smart_fan_controller_mpc_known_profiles`               | count | Number of reliable learned fan-mode profiles                      |
+| `sensor.smart_fan_controller_mpc_disturbance_bias`             | °C/h  | Learned disturbance correction currently applied by the MPC model |
 
-See [docs/mpc_mode.md](docs/mpc_mode.md) for the full technical design of the learned model and MPC-lite observation mode.
+### Learning Sensors
+
+| Entity                                                    | Unit  | Description                                         |
+| --------------------------------------------------------- | ----- | --------------------------------------------------- |
+| `sensor.smart_fan_controller_learning_progress`           | %     | Learning completion (100% = ≥240 samples)           |
+| `sensor.smart_fan_controller_learning_status`             | —     | `"Learning (45%)"` or `"Ready"`                     |
+| `sensor.smart_fan_controller_learning_samples`            | count | Number of slope samples collected                   |
+| `sensor.smart_fan_controller_learning_response_events`    | count | Number of thermal response time measurements        |
+| `sensor.smart_fan_controller_learned_dead_time`           | min   | Median learned thermal response delay (`dead_time`) |
+| `sensor.smart_fan_controller_effective_timeout`           | min   | Actual non-emergency timeout currently used         |
+| `sensor.smart_fan_controller_learned_deadband`            | °C    | Learned optimal deadband                            |
+| `sensor.smart_fan_controller_learned_limit_timeout`       | min   | Learned base timeout stored in config               |
 
 ### Learning Profile Sensors
 
 Once fan modes are detected, the integration creates per-HVAC-mode profile summary sensors and one effective slope sensor per fan mode:
 
-| Entity (example with `low`/`medium`/`high` fan modes)                     | Unit  | Description                                             |
-| -------------------------------------------------------------------------- | ----- | ------------------------------------------------------- |
-| `sensor.smart_fan_controller_mpc_heat_profiles`                            | —     | JSON summary of learned heat profiles per fan mode      |
-| `sensor.smart_fan_controller_mpc_cool_profiles`                            | —     | JSON summary of learned cool profiles per fan mode      |
-| `sensor.smart_fan_controller_heat_low_effective_slope`                     | °C/h  | Effective slope learned for `low` in heat mode          |
-| `sensor.smart_fan_controller_heat_medium_effective_slope`                  | °C/h  | Effective slope learned for `medium` in heat mode       |
-| `sensor.smart_fan_controller_heat_high_effective_slope`                    | °C/h  | Effective slope learned for `high` in heat mode         |
-| `sensor.smart_fan_controller_cool_low_effective_slope`                     | °C/h  | Effective slope learned for `low` in cool mode          |
-| … (one per fan mode × HVAC mode combination) | … | … |
+| Entity (example with `low`/`medium`/`high` fan modes)     | Unit | Description                                        |
+| --------------------------------------------------------- | ---- | -------------------------------------------------- |
+| `sensor.smart_fan_controller_mpc_heat_profiles`           | —    | JSON summary of learned heat profiles per fan mode |
+| `sensor.smart_fan_controller_mpc_cool_profiles`           | —    | JSON summary of learned cool profiles per fan mode |
+| `sensor.smart_fan_controller_heat_low_effective_slope`    | °C/h | Effective slope learned for `low` in heat mode     |
+| `sensor.smart_fan_controller_heat_medium_effective_slope` | °C/h | Effective slope learned for `medium` in heat mode  |
+| `sensor.smart_fan_controller_heat_high_effective_slope`   | °C/h | Effective slope learned for `high` in heat mode    |
+| `sensor.smart_fan_controller_cool_low_effective_slope`    | °C/h | Effective slope learned for `low` in cool mode     |
+| … (one per fan mode × HVAC mode combination)              | …    | …                                                  |
 
 These sensors appear automatically when the climate entity's fan modes become known and require at least 10 samples per mode to show reliable data.
-
-### Defrost Diagnostic
-
-| Entity                               | Type   | Description                                                 |
-| ------------------------------------ | ------ | ----------------------------------------------------------- |
-| `sensor.smart_fan_controller_status` | Sensor | Shows `"Defrost hold: …"` when defrost protection is active |
 
 ---
 
@@ -362,10 +311,10 @@ Manually set the effective slope for a specific fan mode / HVAC mode profile wit
 
 **Parameters**:
 
-| Parameter         | Required | Example  | Description                                              |
-| ----------------- | -------- | -------- | -------------------------------------------------------- |
-| `hvac_mode`       | Yes      | `heat`   | The HVAC mode (`heat` or `cool`)                         |
-| `fan_mode`        | Yes      | `silent` | The fan mode name                                        |
+| Parameter         | Required | Example  | Description                                                |
+| ----------------- | -------- | -------- | ---------------------------------------------------------- |
+| `hvac_mode`       | Yes      | `heat`   | The HVAC mode (`heat` or `cool`)                           |
+| `fan_mode`        | Yes      | `silent` | The fan mode name                                          |
 | `effective_slope` | Yes      | `0.15`   | Target effective slope in °C/h (positive = towards target) |
 
 **Example** (Developer Tools → Services):
@@ -381,15 +330,15 @@ data:
 
 ## Troubleshooting
 
-| Symptom                              | What to check / do                                                                                                                                                               |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Fan not changing**                 | Check `sensor.smart_fan_controller_status`. Check `sensor.smart_fan_controller_fan_mode_last_change` — min interval or dead-time patience may be active.                         |
-| **Too many fan changes**             | Increase `deadband` or `min_interval`. Enable learning to auto-optimize.                                                                                                         |
-| **Temperature overshoots**           | Decrease `deadband`. Verify Versatile Thermostat is providing an accurate slope.                                                                                                 |
-| **Learning not progressing**         | Verify `switch.smart_fan_controller_learning_enabled` is on. Check HVAC is running and windows are closed.                                                                       |
-| **Auto-apply not working**           | Verify `sensor.smart_fan_controller_learning_status` is `"Ready"` and learning is on. Auto-apply fires once — use `apply_learned_settings` to re-apply.                          |
-| **Defrost triggering too often**     | If auto-detection fires spuriously (noisy slope), configure a physical defrost entity from your PAC integration. This replaces heuristic guesses with the actual defrost signal. |
-| **Step-down blocked during defrost** | Normal behavior — zones B and D are intentionally suspended during the 20 min defrost cooldown to avoid fan reduction while the PAC recovers.                                    |
+| Symptom                          | What to check / do                                                                                                                                    |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Fan not changing**             | Check `sensor.smart_fan_controller_mpc_status` and `mpc_reason`. The MPC may be paused (disturbed) or the min interval hasn't elapsed.               |
+| **MPC status: Not ready**        | Learning hasn't collected enough profiles. Check `sensor.smart_fan_controller_mpc_known_profiles` and `learning_progress`.                            |
+| **MPC status: Disturbed**        | Defrost, HVAC idle, or window open detected. Normal — MPC holds current fan until the disturbance clears.                                             |
+| **Too many fan changes**         | Increase `deadband` or `min_interval`. Enable learning to auto-optimize.                                                                              |
+| **Temperature overshoots**       | Decrease `deadband`. Verify Versatile Thermostat is providing an accurate slope.                                                                      |
+| **Learning not progressing**     | Verify HVAC is running and windows are closed.                                            |
+| **Auto-apply not working**       | Verify `sensor.smart_fan_controller_learning_status` is `"Ready"`. Auto-apply fires once — use `apply_learned_settings` to re-apply. |
 
 ---
 

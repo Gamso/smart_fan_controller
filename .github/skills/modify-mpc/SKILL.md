@@ -1,6 +1,6 @@
 ---
-name: modify-mpc-shadow
-description: "Modify the MPC controller: cost function tuning, hysteresis thresholds, simulation model, disturbance tracking, monotone constraint, or adding new pausing conditions. Use when: changing how the MPC evaluates or recommends fan modes; adjusting cost weights or switch-gain margins; adding new disturbance sources; modifying the step-down hold logic; changing how confidence is computed; toggling production mode."
+name: modify-mpc
+description: "Modify the MPC controller: cost function tuning, hysteresis thresholds, simulation model, disturbance tracking, monotone constraint, or adding new pausing conditions. Use when: changing how the MPC evaluates or recommends fan modes; adjusting cost weights or switch-gain margins; adding new disturbance sources; modifying the step-down hold logic; changing how confidence is computed."
 argument-hint: "Description of the MPC behavior to change (e.g. 'reduce overshoot penalty weight')"
 ---
 
@@ -26,16 +26,14 @@ Unlike classic MPC, the model parameters (slopes) are **learned online** by `The
 
 ## Architecture
 
-The MPC controller lives in `mpc_controller.py` as `MPCController`. It runs every control cycle (~2 min) and produces a recommendation dict that feeds sensors and CSV logs.
+The MPC controller lives in `mpc_controller.py` as `MPCController`. It runs every control cycle (~2 min) and produces a `mpc_decision` dict that feeds sensors, CSV logs, and controls the fan directly.
 
-**Operating modes**:
-- **Observation mode** (`production_mode=False`): runs silently alongside the rule-based controller; its recommendation is logged but never applied
-- **Production mode** (`production_mode=True`): the integration reads `mpc_fan_mode` from `evaluate()` and applies it instead of the rule-based decision
+When MPC status is actionable (`Ready`, `Setpoint drop`, `Low confidence`), the integration applies the fan recommendation. When paused (`Disturbed`, `Idle`, `Not ready`), the current fan is held.
 
 ### Key Flow in `evaluate()`
 
 ```
-1. Early exits: disabled, idle HVAC mode
+1. Early exits: idle HVAC mode, no fan modes
 2. Resolve fan modes and active fan
 3. Compute effective slope, dead time, phase
 4. Update disturbance bias (EMA tracking)
@@ -44,7 +42,7 @@ The MPC controller lives in `mpc_controller.py` as `MPCController`. It runs ever
 7. Build monotone slope map (if all profiles learned)
 8. Simulate ALL fan modes over the horizon (30 min default)
 9. Select best by lowest cost
-10. Apply guards: min-interval hold, hysteresis, step-down hold, step-down limit
+10. Apply guards: min-interval hold, hysteresis, step-down hold
 11. Build and return payload
 ```
 
@@ -76,10 +74,9 @@ The MPC requires a minimum cost improvement before switching:
 
 Plus bonuses for non-established phase (+0.10) and step distance (+0.05/step).
 
-### Step-Down Guards
+### Step-Down Hold (`_step_down_hold_note`)
 
-- `_step_down_hold_note()`: blocks downward moves when still under target and either not established or predicted shortfall at 10 min
-- `_apply_step_down_limit()`: enforces ±1 step per cycle for downward moves (upward is unrestricted)
+Blocks downward fan moves when still under target and either not yet in ESTABLISHED phase or predicted shortfall at 10 min exceeds the reserve threshold.
 
 ### Disturbance Bias (`_update_disturbance_bias`)
 
@@ -100,15 +97,28 @@ The MPC pauses (returns "Disturbed") during:
 
 All three conditions decay, not update, the disturbance bias.
 
+## Integration Control Loop (`__init__.py`)
+
+The control loop in `run_control_loop`:
+1. Reads climate entity state
+2. Calls `mpc_controller.evaluate()` → `mpc_decision`
+3. Determines `effective_fan`: MPC choice when status is actionable, else holds current fan
+4. Collects learning data (slope samples, response events) with gating
+5. Updates sensors via `sensor.update_from_mpc(mpc_decision)`
+6. Applies fan change if needed via `_async_apply_fan_change()`
+
+State tracking uses `ctrl_state` closure dict: `last_change_time`, `previous_slope`, `defrost`, `last_setpoint_drop_time`, `last_hvac_mode`.
+
 ## Public API Surface
 
 | Member | Type | Purpose |
 |--------|------|---------|
-| `enabled` | property (r/w) | Enable/disable MPC cycles |
-| `production_mode` | property (r/w) | Switch between shadow and live control |
 | `fan_modes` | property (r/w) | Update available fan modes |
+| `learning` | property (read-only) | Access `ThermalLearning` instance |
+| `limit_timeout` | property (read-only) | Configured limit timeout |
 | `disturbance_bias` | property (read-only) | Current external disturbance estimate |
 | `evaluate(...)` | method | Run one MPC cycle; returns result dict |
+| `get_effective_timeout()` | method | Runtime timeout (learned or configured) |
 | `build_monotone_slopes(fan_modes, hvac_mode)` | method | Isotonic slope map or None |
 
 ## Procedure
@@ -119,12 +129,13 @@ All three conditions decay, not update, the disturbance bias.
 |---|---|
 | Cost weights | module-level constants in `mpc_controller.py` |
 | Hysteresis margins | module-level constants + `_required_switch_gain()` |
-| Step-down guard | `_step_down_hold_note()` |
+| Step-down hold | `_step_down_hold_note()` |
 | New pause condition | `evaluate()` after disturbance update, before setpoint-drop check |
 | Disturbance tracking | `_update_disturbance_bias()` |
 | Simulation model | `_simulate_mode()` inner loop |
 | Confidence | `_compute_confidence()` |
 | Monotone constraint | `build_monotone_slopes()` |
+| Learning collection | `__init__.py` → `run_control_loop` (slope samples, response events) |
 
 ### 2. Make the Change
 
@@ -132,7 +143,6 @@ Module-level constants (e.g., `FLOOR_VIOLATION_LINEAR_WEIGHT = 12.0`) control al
 
 Key constraints:
 - **Never call HA services** from the MPC controller
-- **Never modify rule-based controller state** — observation mode is read-only
 - **Respect the payload format** — result keys use `mpc_` prefix (e.g. `mpc_fan_mode`)
 - **Log at DEBUG level** — MPC logs are verbose by design
 - **disturbance_bias and build_monotone_slopes are public** — do not prefix with `_`
@@ -144,20 +154,14 @@ Tests go in `tests/test_mpc_controller.py`. Use the existing helpers:
 ```python
 def test_mpc_<behavior>() -> None:
     """<What this tests>."""
-    controller = _build_controller()
-    _prime_learning_profiles(controller)
-    mpc = MPCController(
-        learning=controller.learning,
-        deadband=0.3,
-        min_interval=10,
-        fan_modes=FAN_MODES,
-        enabled=True,
-    )
+    learning = _build_learning()
+    _prime_learning_profiles(learning)
+    mpc = _build_mpc(learning)
 
     result = mpc.evaluate(
         current_temp=..., target_temp=...,
         vtherm_slope=..., hvac_mode="heat",
-        current_fan="medium", live_decision_fan="medium",
+        current_fan="medium",
         is_window_open=False, minutes_since_change=20.0,
     )
 

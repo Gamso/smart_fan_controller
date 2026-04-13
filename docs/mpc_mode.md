@@ -1,26 +1,15 @@
-# MPC Controller — Shadow Observation and Production Mode
+# MPC Controller — Technical Design
 
 ## Purpose
 
-The MPC controller runs alongside the rule-based heuristic every cycle.
-It maintains a learned thermal model, scores every candidate fan mode, and produces a recommendation.
-
-The integration offers two operating modes:
-
-- **MPC observation mode** (default): the MPC recommendation is logged and exposed as diagnostics only.
-  The rule-based heuristic remains solely responsible for sending `set_fan_mode` commands.
-  This is the low-risk path to validate the predictive controller before activating it.
-
-- **Production mode**: when enabled via `switch.smart_fan_controller_mpc_production_mode`, the MPC
-  recommendation overrides the heuristic fan decision for every cycle where the MPC controller
-  produces a confident, actionable result.  The heuristic decision is still computed and logged for
-  comparison, but the real `set_fan_mode` command uses the MPC-selected mode.
+The MPC controller is the sole decision engine for fan speed.
+It maintains a learned thermal model, scores every candidate fan mode over a 30-minute horizon, and selects the mode with the lowest cost.
+When MPC status is actionable (`Ready`, `Setpoint drop`, `Low confidence`), the integration applies the fan recommendation. When paused (`Disturbed`, `Idle`, `Not ready`), the current fan mode is held.
 
 ## Goals
 
 - Learn the thermal behavior of a specific room with minimal manual tuning.
 - Reuse the data already collected by the integration.
-- Compare heuristic decisions and predictive decisions side by side.
 - Keep the controller explainable and easy to debug from Home Assistant diagnostics.
 
 ## Non-Goals
@@ -34,38 +23,37 @@ The integration offers two operating modes:
 Each control cycle follows this flow:
 
 1. Read VTherm temperature, target, slope, HVAC mode, and current fan mode.
-2. Run the existing heuristic controller and record its decision.
-3. Run `MPCController.evaluate(...)` with the same inputs.
-4. Merge the MPC diagnostics into the sensor payload.
-5. Append both heuristic and MPC information to the CSV log.
-6. **MPC observation mode**: apply the heuristic fan change, if any.
-   **Production mode**: apply the MPC fan recommendation when the MPC status is `Ready` or
-   `Setpoint drop`; fall back to the heuristic otherwise (e.g. status `Low confidence`,
-   `Disturbed`, `Disabled`, `Idle`).
+2. Detect disturbances (defrost, HVAC idle, window open).
+3. Compute phase (DEAD_TIME / TRANSIENT / ESTABLISHED).
+4. Run `MPCController.evaluate(...)` → `mpc_decision` dict.
+5. Push `mpc_decision` to all sensors via `sensor.update_from_mpc()`.
+6. Collect learning data (slope samples, response events) with gating.
+7. Append MPC information to the CSV log.
+8. Apply the MPC fan recommendation when the MPC status is actionable (`Ready`, `Setpoint drop`,
+   `Low confidence`); hold the current fan otherwise (e.g. status `Not ready`,
+   `Disturbed`, `Idle`).
 
 ### HA Entities
 
-| Platform | Entity ID | Purpose |
-|----------|-----------|---------|
-| `switch` | `switch.smart_fan_controller_mpc_production_mode` | Enable/disable MPC production override |
-| `sensor` | `sensor.smart_fan_controller_mpc_status` | Current MPC recommendation status |
-| `sensor` | `sensor.smart_fan_controller_mpc_reason` | Human-readable reason for the recommendation |
-| `sensor` | `sensor.smart_fan_controller_mpc_fan_mode` | Recommended fan mode |
-| `sensor` | `sensor.smart_fan_controller_mpc_match` | Whether MPC and heuristic agree |
-| `sensor` | `sensor.smart_fan_controller_mpc_would_change_now` | Whether MPC would change the fan this cycle |
-| `sensor` | `sensor.smart_fan_controller_mpc_cost` | Best cost score for the recommended mode |
-| `sensor` | `sensor.smart_fan_controller_mpc_confidence` | Confidence percentage |
-| `sensor` | `sensor.smart_fan_controller_mpc_predicted_temperature_10_min` | 10-minute temperature forecast |
-| `sensor` | `sensor.smart_fan_controller_mpc_predicted_temperature_30_min` | 30-minute temperature forecast |
-| `sensor` | `sensor.smart_fan_controller_mpc_dead_time` | Dead time used by the simulator (min) |
-| `sensor` | `sensor.smart_fan_controller_mpc_known_profiles` | Number of reliable learned profiles |
-| `sensor` | `sensor.smart_fan_controller_mpc_disturbance_bias` | Slow disturbance correction term |
-| `sensor` | `sensor.smart_fan_controller_mpc_heat_profiles` | Per-mode learned profiles for heat |
-| `sensor` | `sensor.smart_fan_controller_mpc_cool_profiles` | Per-mode learned profiles for cool |
+| Platform | Entity ID                                                      | Purpose                                            |
+| -------- | -------------------------------------------------------------- | -------------------------------------------------- |
+| `sensor` | `sensor.smart_fan_controller_mpc_status`                       | Current MPC recommendation status                  |
+| `sensor` | `sensor.smart_fan_controller_mpc_reason`                       | Human-readable reason for the recommendation       |
+| `sensor` | `sensor.smart_fan_controller_mpc_fan_mode`                     | Recommended fan mode                               |
+| `sensor` | `sensor.smart_fan_controller_mpc_would_change_now`             | Whether MPC would change the fan this cycle        |
+| `sensor` | `sensor.smart_fan_controller_mpc_cost`                         | Best cost score for the recommended mode           |
+| `sensor` | `sensor.smart_fan_controller_mpc_confidence`                   | Confidence percentage                              |
+| `sensor` | `sensor.smart_fan_controller_mpc_predicted_temperature_10_min` | 10-minute temperature forecast                     |
+| `sensor` | `sensor.smart_fan_controller_mpc_predicted_temperature_30_min` | 30-minute temperature forecast                     |
+| `sensor` | `sensor.smart_fan_controller_mpc_dead_time`                    | Dead time used by the simulator (min)              |
+| `sensor` | `sensor.smart_fan_controller_mpc_known_profiles`               | Number of reliable learned profiles                |
+| `sensor` | `sensor.smart_fan_controller_mpc_disturbance_bias`             | Slow disturbance correction term                   |
+| `sensor` | `sensor.smart_fan_controller_mpc_heat_profiles`                | Per-mode learned profiles for heat                 |
+| `sensor` | `sensor.smart_fan_controller_mpc_cool_profiles`                | Per-mode learned profiles for cool                 |
 
 CSV log fields are prefixed with `mpc_*`.
 
-Even while it shares the same learning backend today, the MPC controller owns its own runtime parameters (`deadband`, `min_interval`, `fan_modes`) and no longer depends on protected members of the live heuristic controller.
+The MPC controller owns its runtime parameters (`deadband`, `min_interval`, `fan_modes`) and consumes learned profiles from `ThermalLearning`.
 
 ## Learned Thermal Model
 
@@ -130,34 +118,35 @@ Each candidate mode gets a scalar cost:
 
 ```text
 J(mode) =
-    sum(comfort_error)
-  + 4 * sum(overshoot^2)
-  + 0.4 * fan_step_distance
-  + 0.15 * fan_energy_rank
+    sum(comfort_error × urgency)
+  + 3.0 * sum(overshoot²)
+  + 12.0 * urgency * sum(floor_violation) + 30.0 * sum(floor_violation²)
+  + 0.15 * fan_step_distance
+  + 0.05 * fan_energy_rank
   + min_interval_penalty
 ```
 
 Where:
 
-- `comfort_error = max(abs(error) - deadband, 0)`
-- `overshoot = max(-error, 0)`
+- `comfort_error = max(abs(error) - deadband, 0)`, amplified by urgency (`1 + excess × 2`)
+- `overshoot = max(-error, 0)` — going past target
+- `floor_violation = max(target - predicted, 0)` — dropping below setpoint
 - `fan_step_distance` penalizes unnecessary fan jumps
 - `fan_energy_rank` lightly discourages staying on the highest modes all the time
-- `min_interval_penalty` keeps the MPC recommendation aligned with the same actuator guardrail as the live controller
+- `min_interval_penalty` prevents changes before the effective timeout has elapsed
 
 In addition, the current implementation applies a mode-independent floor penalty when the predicted room temperature drops below the setpoint. This reflects a conservative comfort rule: if the target is `20°C`, predictions below `20°C` are considered increasingly unacceptable in both `heat` and `cool`.
 
 The selected mode is the one with the lowest total cost.
 To avoid fan yo-yo near the setpoint, a recommendation that changes the fan must also beat the current mode by a minimum gain. If the gain is only marginal, the MPC controller keeps the current fan and reports that hysteresis blocked the switch.
 
-## Shadow Diagnostics
+## Diagnostics
 
-The current implementation exposes:
+The MPC exposes:
 
 - recommendation status
 - recommendation reason
 - recommended fan mode
-- whether it matches the live heuristic decision
 - whether it would actually change the fan now
 - 10-minute and 30-minute predicted temperatures
 - confidence percentage
@@ -167,40 +156,17 @@ The current implementation exposes:
 
 The CSV log also stores the MPC recommendation so we can replay and compare decisions offline.
 
-## Validation Strategy
-
-The MPC controller should stay in observation mode until it meets clear quality gates.
-Recommended promotion criteria:
-
-- stable behavior over at least 7 days
-- lower or equal overshoot than the heuristic controller
-- no increase in fan oscillations
-- acceptable prediction quality on live data
-- confidence high enough on the modes frequently used by the room
-
-Suggested metrics to track:
-
-- MAE at 10 minutes
-- MAE at 30 minutes
-- percentage of cycles where MPC and heuristic agree
-- number of hypothetical fan changes per day
-- overshoot duration above target
-
 ## Implementation Map
 
 Current files involved:
 
-- `custom_components/smart_fan_controller/mpc_controller.py`: MPC thermal model and MPC-lite scorer
-- `custom_components/smart_fan_controller/controller.py`: filters disturbed response-time learning at the source
-- `custom_components/smart_fan_controller/__init__.py`: runtime coexistence and sensor payload merge
-- `custom_components/smart_fan_controller/sensor.py`: MPC diagnostics exposed in Home Assistant
-- `custom_components/smart_fan_controller/switch.py`: switch to enable or disable MPC production mode (`switch.smart_fan_controller_mpc_production_mode`)
-- `custom_components/smart_fan_controller/data_collection.py`: MPC fields appended to the CSV log
+- `custom_components/smart_fan_controller/mpc_controller.py`: MPC thermal model and cost-based scorer
+- `custom_components/smart_fan_controller/thermal_learning.py`: slope samples, response events, profile calibration
+- `custom_components/smart_fan_controller/__init__.py`: control loop, learning collection, services
+- `custom_components/smart_fan_controller/sensor.py`: MPC and learning sensors exposed in Home Assistant
+- `custom_components/smart_fan_controller/data_collection.py`: CSV logger for offline analysis
 
 ## Next Steps
 
-After enough MPC validation and before enabling production mode:
-
-1. improve the thermal model with residual correction and better disturbance handling
-2. add offline replay tooling against recorded CSV traces
-3. verify MPC metrics are consistently good before enabling `switch.smart_fan_controller_mpc_production_mode`
+1. Improve the thermal model with residual correction and better disturbance handling.
+2. Add offline replay tooling against recorded CSV traces.

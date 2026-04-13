@@ -186,7 +186,7 @@ class TestLearningPersistence:
                         mock_store_instance.async_load.assert_called_once()
 
                         # Verify controller has restored learning data
-                        controller = hass.data[DOMAIN][entry.entry_id]["controller"]
+                        learning = hass.data[DOMAIN][entry.entry_id]["learning"]
                         # After window cleanup, data should still be there (timestamps are recent)
-                        assert len(controller.learning.slope_samples) > 0
-                        assert len(controller.learning.response_events) > 0
+                        assert len(learning.slope_samples) > 0
+                        assert len(learning.response_events) > 0

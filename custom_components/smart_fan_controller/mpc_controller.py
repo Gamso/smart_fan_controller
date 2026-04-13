@@ -1,4 +1,4 @@
-"""MPC controller: observation mode with optional production fan control."""
+"""MPC controller: learned thermal model with cost-based fan selection."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -53,40 +53,19 @@ class MPCController:
         learning: ThermalLearning,
         deadband: float,
         min_interval: int,
+        limit_timeout: int = 15,
         fan_modes: list[str] | None = None,
-        enabled: bool = False,
         horizon_minutes: int = 30,
         cycle_minutes: int = DELTA_TIME_CONTROL_LOOP,
     ) -> None:
         self._learning = learning
         self._deadband = deadband
         self._min_interval = min_interval
+        self._limit_timeout = limit_timeout
         self._fan_modes = fan_modes
-        self._enabled = enabled
-        self._production_mode = False
         self._horizon_minutes = horizon_minutes
         self._cycle_minutes = cycle_minutes
         self._disturbance_bias = 0.0
-
-    @property
-    def enabled(self) -> bool:
-        """Return whether MPC observation mode is enabled."""
-        return self._enabled
-
-    @enabled.setter
-    def enabled(self, value: bool) -> None:
-        """Enable or disable MPC observation mode."""
-        self._enabled = value
-
-    @property
-    def production_mode(self) -> bool:
-        """Return whether production mode is active (MPC controls the fan)."""
-        return self._production_mode
-
-    @production_mode.setter
-    def production_mode(self, value: bool) -> None:
-        """Enable or disable MPC production mode."""
-        self._production_mode = value
 
     @property
     def fan_modes(self) -> list[str] | None:
@@ -97,6 +76,23 @@ class MPCController:
     def fan_modes(self, modes: list[str] | None) -> None:
         """Update the available fan modes."""
         self._fan_modes = modes
+
+    @property
+    def learning(self) -> ThermalLearning:
+        """Return the ThermalLearning instance used by this controller."""
+        return self._learning
+
+    @property
+    def limit_timeout(self) -> int:
+        """Return the configured static limit timeout (minutes)."""
+        return self._limit_timeout
+
+    def get_effective_timeout(self) -> float:
+        """Return the adaptive timeout based on learned dead time, or static fallback."""
+        if self._learning.is_ready():
+            learned_dead_time = self._learning.get_dead_time()
+            return max(self._min_interval, learned_dead_time * DEAD_TIME_SAFETY_FACTOR)
+        return self._limit_timeout
 
     @property
     def disturbance_bias(self) -> float:
@@ -111,41 +107,28 @@ class MPCController:
         vtherm_slope: float,
         hvac_mode: str,
         current_fan: str | None,
-        live_decision_fan: str | None,
         is_window_open: bool = False,
         is_defrost_active: bool = False,
         is_hvac_idle: bool = False,
         minutes_since_change: float = 0.0,
     ) -> dict:
-        """Evaluate the best shadow fan mode for the current cycle."""
+        """Evaluate the best fan mode for the current cycle."""
         _LOGGER.debug(
-            "Shadow evaluate: enabled=%s hvac=%s current_temp=%.2f target=%.2f slope=%.3f current_fan=%s live_decision=%s minutes_since_change=%.1f window_open=%s",
-            self._enabled,
+            "MPC evaluate: hvac=%s current_temp=%.2f target=%.2f slope=%.3f current_fan=%s minutes_since_change=%.1f window_open=%s",
             hvac_mode,
             current_temp,
             target_temp,
             vtherm_slope,
             current_fan,
-            live_decision_fan,
             minutes_since_change,
             is_window_open,
         )
-
-        if not self._enabled:
-            return self._payload(
-                status="Disabled",
-                fan_mode=current_fan,
-                reason="Shadow mode disabled",
-                matches_live="disabled",
-                would_change_now="no",
-            )
 
         if hvac_mode in ("off", "dry", "fan_only"):
             return self._payload(
                 status="Idle",
                 fan_mode=current_fan,
                 reason=f"HVAC mode '{hvac_mode}' is not simulated",
-                matches_live="n/a",
                 would_change_now="no",
             )
 
@@ -155,7 +138,6 @@ class MPCController:
                 status="Unavailable",
                 fan_mode=current_fan,
                 reason="No fan modes available yet",
-                matches_live="n/a",
                 would_change_now="no",
             )
 
@@ -185,8 +167,7 @@ class MPCController:
             return self._payload(
                 status="Disturbed",
                 fan_mode=active_fan,
-                reason="Window open detected: shadow model paused",
-                matches_live="n/a",
+                reason="Window open detected: MPC paused",
                 would_change_now="no",
                 dead_time=dead_time,
                 disturbance_bias=self._disturbance_bias,
@@ -196,8 +177,7 @@ class MPCController:
             return self._payload(
                 status="Disturbed",
                 fan_mode=active_fan,
-                reason="Defrost active: shadow model paused",
-                matches_live="n/a",
+                reason="Defrost active: MPC paused",
                 would_change_now="no",
                 dead_time=dead_time,
                 disturbance_bias=self._disturbance_bias,
@@ -207,26 +187,23 @@ class MPCController:
             return self._payload(
                 status="Disturbed",
                 fan_mode=active_fan,
-                reason="HVAC idle: compressor off, shadow model paused",
-                matches_live="n/a",
+                reason="HVAC idle: compressor off, MPC paused",
                 would_change_now="no",
                 dead_time=dead_time,
                 disturbance_bias=self._disturbance_bias,
             )
 
-        # Setpoint drop: mirror the live controller's immediate minimum-speed rule.
-        # When the target moves far away (e.g. night setpoint), there is no point
-        # running the full MPC cost optimisation — the answer is always the lowest mode.
+        # Setpoint drop: when the target moves far away (e.g. night setpoint),
+        # there is no point running the full MPC cost optimisation — the answer
+        # is always the lowest mode.
         current_error = self._temperature_error(current_temp, target_temp, hvac_mode)
         if current_error < THRESHOLD_TARGET_DROP:
             lowest_fan = fan_modes[0]
-            matches_live = "n/a" if live_decision_fan is None else ("yes" if live_decision_fan == lowest_fan else "no")
             would_change = "yes" if active_fan != lowest_fan else "no"
             return self._payload(
                 status="Setpoint drop",
                 fan_mode=lowest_fan,
                 reason=f"Setpoint drop: target moved away ({current_error:.1f}°C), minimum speed",
-                matches_live=matches_live,
                 would_change_now=would_change,
                 dead_time=dead_time,
                 disturbance_bias=self._disturbance_bias,
@@ -305,25 +282,11 @@ class MPCController:
                     selection_note = hold_note
                     best = current_simulation
 
-        if change_allowed and best.fan_mode != active_fan:
-            limited_best = self._apply_step_down_limit(
-                best=best,
-                active_fan=active_fan,
-                simulations=simulations,
-                fan_modes=fan_modes,
-            )
-            if limited_best.fan_mode != best.fan_mode:
-                if selection_note:
-                    selection_note += " | "
-                selection_note += f"Step-down limited to {limited_best.fan_mode}"
-                best = limited_best
-
         confidence = self._compute_confidence(known_profiles, len(fan_modes), phase)
-        matches_live = "n/a" if live_decision_fan is None else ("yes" if live_decision_fan == best.fan_mode else "no")
         would_change_now = "yes" if change_allowed and best.fan_mode != active_fan else "no"
         status = "Ready" if confidence >= 0.5 else "Low confidence"
         _LOGGER.debug(
-            "Shadow candidates: %s",
+            "MPC candidates: %s",
             [
                 (
                     sim.fan_mode,
@@ -336,7 +299,7 @@ class MPCController:
             ],
         )
         reason = (
-            f"Shadow recommends {best.fan_mode}: cost={best.total_cost:.2f}, "
+            f"MPC recommends {best.fan_mode}: cost={best.total_cost:.2f}, "
             f"T+10={best.predicted_temp_10m:.2f}C, T+30={best.predicted_temp_30m:.2f}C"
         )
         if selection_note:
@@ -350,7 +313,7 @@ class MPCController:
             )
 
         _LOGGER.debug(
-            "Shadow result: active=%s best=%s status=%s confidence=%.2f known_profiles=%d/%d bias=%.3f note=%s",
+            "MPC result: active=%s best=%s status=%s confidence=%.2f known_profiles=%d/%d bias=%.3f note=%s",
             active_fan,
             best.fan_mode,
             status,
@@ -369,7 +332,6 @@ class MPCController:
             predicted_30m=best.predicted_temp_30m,
             cost=best.total_cost,
             confidence=confidence * 100.0,
-            matches_live=matches_live,
             would_change_now=would_change_now,
             dead_time=dead_time,
             known_profiles=known_profiles,
@@ -392,7 +354,7 @@ class MPCController:
             learned = self._learning.get_mode_effective_slope(fan_mode, hvac_mode)
         if learned is not None:
             _LOGGER.debug(
-                "Shadow slope model: using learned profile for %s/%s = %.3f",
+                "MPC slope model: using learned profile for %s/%s = %.3f",
                 hvac_mode,
                 fan_mode,
                 learned,
@@ -404,7 +366,7 @@ class MPCController:
         candidate_rank = fan_modes.index(fan_mode) + 1
         scaled = baseline_slope * (candidate_rank / max(current_rank, 1))
         _LOGGER.debug(
-            "Shadow slope model: using fallback for %s/%s = %.3f (baseline=%.3f current_fan=%s)",
+            "MPC slope model: using fallback for %s/%s = %.3f (baseline=%.3f current_fan=%s)",
             hvac_mode,
             fan_mode,
             scaled,
@@ -479,7 +441,7 @@ class MPCController:
             else:
                 decay_reason = "HVAC compressor is idle"
             _LOGGER.debug(
-                "Shadow disturbance bias decayed to %.3f because %s",
+                "MPC disturbance bias decayed to %.3f because %s",
                 self._disturbance_bias,
                 decay_reason,
             )
@@ -488,7 +450,7 @@ class MPCController:
         if not known_profile or phase != PHASE_ESTABLISHED:
             self._disturbance_bias *= DISTURBANCE_DECAY
             _LOGGER.debug(
-                "Shadow disturbance bias decayed to %.3f because known_profile=%s phase=%s",
+                "MPC disturbance bias decayed to %.3f because known_profile=%s phase=%s",
                 self._disturbance_bias,
                 known_profile,
                 phase,
@@ -499,7 +461,7 @@ class MPCController:
         updated = ((1 - DISTURBANCE_EMA_ALPHA) * self._disturbance_bias) + (DISTURBANCE_EMA_ALPHA * residual)
         self._disturbance_bias = max(-MAX_DISTURBANCE_BIAS, min(MAX_DISTURBANCE_BIAS, updated))
         _LOGGER.debug(
-            "Shadow disturbance bias updated to %.3f (observed=%.3f expected=%.3f residual=%.3f)",
+            "MPC disturbance bias updated to %.3f (observed=%.3f expected=%.3f residual=%.3f)",
             self._disturbance_bias,
             observed_effective_slope,
             expected_effective_slope,
@@ -526,7 +488,7 @@ class MPCController:
         steps = max(1, int(self._horizon_minutes / self._cycle_minutes))
         step_hours = self._cycle_minutes / 60.0
         blend = 0.45
-        shadow_temp = current_temp
+        sim_temp = current_temp
         predicted_10m = None
         predicted_30m = None
         cost = 0.0
@@ -546,17 +508,17 @@ class MPCController:
 
             thermal_power += blend * (target_effective_slope - thermal_power)
             raw_slope = -thermal_power if hvac_mode == "cool" else thermal_power
-            shadow_temp += step_hours * raw_slope
+            sim_temp += step_hours * raw_slope
 
             if elapsed >= 10 and predicted_10m is None:
-                predicted_10m = shadow_temp
+                predicted_10m = sim_temp
             if elapsed >= 30 and predicted_30m is None:
-                predicted_30m = shadow_temp
+                predicted_30m = sim_temp
 
-            error = self._temperature_error(shadow_temp, target_temp, hvac_mode)
+            error = self._temperature_error(sim_temp, target_temp, hvac_mode)
             comfort_error = max(abs(error) - self._deadband, 0.0)
             overshoot = max(-error, 0.0)
-            floor_violation = max(target_temp - shadow_temp, 0.0) if hvac_mode == "heat" else max(shadow_temp - target_temp, 0.0)
+            floor_violation = max(target_temp - sim_temp, 0.0) if hvac_mode == "heat" else max(sim_temp - target_temp, 0.0)
             cost += comfort_error * urgency_weight
             cost += 3.0 * overshoot * overshoot
             cost += FLOOR_VIOLATION_LINEAR_WEIGHT * floor_violation * urgency_weight
@@ -633,32 +595,6 @@ class MPCController:
 
         return None
 
-    @staticmethod
-    def _apply_step_down_limit(
-        *,
-        best: ModeSimulation,
-        active_fan: str,
-        simulations: list[ModeSimulation],
-        fan_modes: list[str],
-    ) -> ModeSimulation:
-        """Allow at most one downward fan step per cycle, like the live controller.
-
-        Upward moves are unrestricted so the MPC can ramp up aggressively.
-        """
-        current_index = fan_modes.index(active_fan)
-        best_index = fan_modes.index(best.fan_mode)
-
-        # Upward moves: no limit
-        if best_index >= current_index:
-            return best
-
-        # Downward moves: limit to one step
-        if best_index >= current_index - 1:
-            return best
-
-        limited_fan = fan_modes[current_index - 1]
-        return next(sim for sim in simulations if sim.fan_mode == limited_fan)
-
     def _compute_confidence(self, known_profiles: int, total_profiles: int, phase: str) -> float:
         """Return a coarse confidence score for the current recommendation."""
         coverage = known_profiles / max(total_profiles, 1)
@@ -677,13 +613,12 @@ class MPCController:
         predicted_30m: float | None = None,
         cost: float | None = None,
         confidence: float | None = None,
-        matches_live: str = "n/a",
         would_change_now: str = "no",
         dead_time: float | None = None,
         known_profiles: int = 0,
         disturbance_bias: float | None = None,
     ) -> dict:
-        """Build the shadow payload injected into sensors and CSV logs."""
+        """Build the MPC payload injected into sensors and CSV logs."""
         return {
             "mpc_status": status,
             "mpc_fan_mode": fan_mode,
@@ -692,7 +627,6 @@ class MPCController:
             "mpc_predicted_temperature_30m": round(predicted_30m, 2) if predicted_30m is not None else None,
             "mpc_cost": round(cost, 3) if cost is not None else None,
             "mpc_confidence": round(confidence, 1) if confidence is not None else None,
-            "mpc_matches_live": matches_live,
             "mpc_would_change_now": would_change_now,
             "mpc_dead_time": round(dead_time, 2) if dead_time is not None else None,
             "mpc_known_profiles": known_profiles,

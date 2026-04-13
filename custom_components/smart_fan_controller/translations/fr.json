@@ -8,12 +8,8 @@
                     "climate_entity": " ",
                     "deadband": "Bande morte (°C)",
                     "min_interval": "Intervalle minimum (minutes)",
-                    "soft_error": "Seuil d'erreur faible (°C)",
-                    "hard_error": "Seuil d'erreur élevée (°C)",
                     "limit_timeout": "Intervalle avant de forcer un changement (minutes)",
-                    "learning_enabled": "Activer l'apprentissage automatique",
                     "data_collection": "Activer la collecte de données (bêta)",
-                    "mpc_production_enabled": "Activer le mode production MPC",
                     "defrost_entity": "Entité dégivrage (optionnel)",
                     "operating_entity": "Entité fonctionnement PAC (optionnel)"
                 },
@@ -21,19 +17,14 @@
                     "climate_entity": "Doit provenir de Versatile Thermostat.",
                     "deadband": "Plage : 0.0-5.0 °C. Défaut : 0.2 °C.",
                     "min_interval": "Plage : 1-60 min. Défaut : 10 min.",
-                    "soft_error": "Plage : 0.0-10.0 °C. Défaut : 0.3 °C.",
-                    "hard_error": "Plage : 0.0-10.0 °C. Défaut : 0.6 °C.",
                     "limit_timeout": "Plage : 10-120 min. Défaut : 15 min.",
-                    "learning_enabled": "Activer l'apprentissage automatique des paramètres optimaux. Quand prêt, les paramètres seront appliqués automatiquement.",
                     "data_collection": "Enregistre une ligne CSV toutes les 2 minutes dans le dossier de configuration Home Assistant, à côté de configuration.yaml : smart_fan_controller_data_XXXXXXXX.csv (max 10 Mo, rotation automatique). Utile pour reproduire le comportement de l'algorithme et identifier des améliorations pendant la phase bêta.",
-                    "mpc_production_enabled": "Lorsqu'activé, le contrôleur MPC pilote directement le mode ventilateur au lieu de l'algorithme à règles. L'observation MPC shadow fonctionne toujours, quel que soit ce réglage.",
                     "defrost_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand la PAC est en dégivrage.",
                     "operating_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand le compresseur de la PAC est en marche. Utilisé pour éviter des changements de ventilation inutiles quand le compresseur est à l'arrêt."
                 },
                 "error": {
                     "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",
-                    "no_versatile_thermostat": "Aucune entité Versatile Thermostat trouvée.",
-                    "invalid_thresholds": "La bande morte doit être inférieure au seuil faible, lui-même inférieur au seuil élevé."
+                    "no_versatile_thermostat": "Aucune entité Versatile Thermostat trouvée."
                 }
             }
         }
@@ -46,12 +37,8 @@
                     "climate_entity": " ",
                     "deadband": "Bande morte (°C)",
                     "min_interval": "Intervalle minimum (minutes)",
-                    "soft_error": "Seuil d'erreur faible (°C)",
-                    "hard_error": "Seuil d'erreur élevée (°C)",
                     "limit_timeout": "Intervalle avant de forcer un changement (minutes)",
-                    "learning_enabled": "Activer l'apprentissage automatique",
                     "data_collection": "Activer la collecte de données (bêta)",
-                    "mpc_production_enabled": "Activer le mode production MPC",
                     "defrost_entity": "Entité dégivrage (optionnel)",
                     "operating_entity": "Entité fonctionnement PAC (optionnel)"
                 },
@@ -59,19 +46,14 @@
                     "climate_entity": "Doit provenir de Versatile Thermostat.",
                     "deadband": "Plage : 0.0-5.0 °C. Défaut : 0.2 °C.",
                     "min_interval": "Plage : 1-60 min. Défaut : 10 min.",
-                    "soft_error": "Plage : 0.0-10.0 °C. Défaut : 0.3 °C.",
-                    "hard_error": "Plage : 0.0-10.0 °C. Défaut : 0.6 °C.",
                     "limit_timeout": "Plage : 10-120 min. Défaut : 15 min.",
-                    "learning_enabled": "Activer l'apprentissage automatique des paramètres optimaux. Quand prêt, les paramètres seront appliqués automatiquement.",
                     "data_collection": "Enregistre une ligne CSV toutes les 2 minutes dans le dossier de configuration Home Assistant, à côté de configuration.yaml : smart_fan_controller_data_XXXXXXXX.csv (max 10 Mo, rotation automatique). Utile pour reproduire le comportement de l'algorithme et identifier des améliorations pendant la phase bêta.",
-                    "mpc_production_enabled": "Lorsqu'activé, le contrôleur MPC pilote directement le mode ventilateur au lieu de l'algorithme à règles. L'observation MPC shadow fonctionne toujours, quel que soit ce réglage.",
                     "defrost_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand la PAC est en dégivrage.",
                     "operating_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand le compresseur de la PAC est en marche. Utilisé pour éviter des changements de ventilation inutiles quand le compresseur est à l'arrêt."
                 },
                 "error": {
                     "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",
-                    "no_versatile_thermostat": "Aucune entité Versatile Thermostat trouvée.",
-                    "invalid_thresholds": "La bande morte doit être inférieure au seuil faible, lui-même inférieur au seuil élevé."
+                    "no_versatile_thermostat": "Aucune entité Versatile Thermostat trouvée."
                 }
             }
         }
