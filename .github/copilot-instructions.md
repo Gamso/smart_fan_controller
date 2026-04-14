@@ -69,6 +69,12 @@ python -m pytest tests/test_X.py -q # run one file
 ./container hassfest                 # validate manifest / translations
 ```
 
+## Dev Container Workflow
+
+- When working inside this repository's provided devcontainer / Docker environment, do **not** spend time creating or configuring a separate Python environment by default.
+- Treat the container runtime and the already available project tooling as the authoritative execution environment.
+- Prefer the existing shell environment and direct test commands such as `pytest tests/ -q` unless the user explicitly asks for Python environment debugging.
+
 ## Key Constants (const.py)
 
 - `THRESHOLD_TARGET_DROP = -1.0` — setpoint-drop trigger (°C)

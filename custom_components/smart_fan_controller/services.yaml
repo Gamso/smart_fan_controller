@@ -1,15 +1,41 @@
 apply_learned_settings:
   name: Apply learned settings
-  description: Apply optimal parameters computed from the learning algorithm. The integration automatically learns the best settings for deadband, soft_error, hard_error, and limit_timeout based on observed system behavior. This service applies those learned parameters and reloads the integration.
+  description: Apply optimal parameters computed from the learning algorithm. When several Smart Fan Controller entries are configured, specify the climate entity to target the correct controller.
+  fields:
+    climate_entity:
+      name: Climate entity
+      description: Optional when only one Smart Fan Controller entry is configured. Required when several climates are managed.
+      required: false
+      example: "climate.living_room"
+      selector:
+        entity:
+          domain: climate
 
 reset_learning:
   name: Reset learning
-  description: Clear all learning data and restart the learning process from scratch. This removes all collected samples and statistics, allowing the integration to begin learning optimal parameters again.
+  description: Clear all learning data and restart the learning process from scratch. When several Smart Fan Controller entries are configured, specify the climate entity to target the correct controller.
+  fields:
+    climate_entity:
+      name: Climate entity
+      description: Optional when only one Smart Fan Controller entry is configured. Required when several climates are managed.
+      required: false
+      example: "climate.living_room"
+      selector:
+        entity:
+          domain: climate
 
 set_effective_slope:
   name: Set effective slope
   description: Manually set the effective slope for a specific fan mode / HVAC mode profile. Replaces existing samples for that profile with synthetic ones so the learned value matches the provided slope.
   fields:
+    climate_entity:
+      name: Climate entity
+      description: Optional when only one Smart Fan Controller entry is configured. Required when several climates are managed.
+      required: false
+      example: "climate.living_room"
+      selector:
+        entity:
+          domain: climate
     hvac_mode:
       name: HVAC mode
       description: The HVAC mode (heat or cool).

@@ -41,6 +41,24 @@ def _validate_climate_state(state) -> str | None:
     return None
 
 
+def _is_climate_entity_already_configured(
+    hass,
+    climate_entity: str,
+    *,
+    exclude_entry_id: str | None = None,
+) -> bool:
+    """Return True when another Smart Fan Controller entry already targets the climate."""
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if exclude_entry_id is not None and entry.entry_id == exclude_entry_id:
+            continue
+
+        existing_conf = {**entry.data, **entry.options}
+        if existing_conf.get(CONF_CLIMATE_ENTITY) == climate_entity:
+            return True
+
+    return False
+
+
 class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Config flow for for Smart Fan Controller."""
 
@@ -67,6 +85,8 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             climate_error = _validate_climate_state(state)
             if climate_error:
                 errors[CONF_CLIMATE_ENTITY] = climate_error
+            elif _is_climate_entity_already_configured(self.hass, climate_id):
+                errors[CONF_CLIMATE_ENTITY] = "already_configured"
             else:
                 return self.async_create_entry(title=user_input[CONF_CLIMATE_ENTITY], data=user_input)
 
@@ -108,10 +128,11 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
         """Manage the options."""
         available_climates = _get_climates_with_fan_modes_and_slope(self.hass)
         errors: dict[str, str] = {}
+        current_data = {**self.config_entry.data, **self.config_entry.options}
 
         if user_input is not None:
             climate_id = user_input[CONF_CLIMATE_ENTITY]
-            current_climate_id = self.config_entry.data.get(CONF_CLIMATE_ENTITY)
+            current_climate_id = current_data.get(CONF_CLIMATE_ENTITY)
 
             # Only validate the climate entity if the user is changing it
             if climate_id != current_climate_id:
@@ -119,12 +140,15 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
                 climate_error = _validate_climate_state(state)
                 if climate_error:
                     errors[CONF_CLIMATE_ENTITY] = climate_error
+                elif _is_climate_entity_already_configured(
+                    self.hass,
+                    climate_id,
+                    exclude_entry_id=self.config_entry.entry_id,
+                ):
+                    errors[CONF_CLIMATE_ENTITY] = "already_configured"
 
             if not errors:
                 return self.async_create_entry(title="", data=user_input)
-
-        # Merge data and options (options take priority)
-        current_data = {**self.config_entry.data, **self.config_entry.options}
 
         # Build selector config for options flow
         # Always include the current climate entity even if it's not in the filtered list

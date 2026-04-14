@@ -17,7 +17,7 @@ from .const import (
     EFFECTIVE_SLOPE_UNIT,
     MIN_MODE_PROFILE_SAMPLES,
     PROFILE_HVAC_MODES,
-    build_entity_id,
+    build_scoped_entity_id,
     build_unique_id,
 )
 
@@ -28,7 +28,12 @@ class _SmartFanEntity(SensorEntity):
     """Base sensor wired to the Smart Fan Controller device."""
 
     _entry_id: str
+    _climate_entity: str
     _attr_has_entity_name = True
+
+    def _set_entity_id(self, object_key: str) -> None:
+        """Assign the climate-scoped entity_id."""
+        self.entity_id = build_scoped_entity_id("sensor", self._climate_entity, object_key)
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -44,7 +49,12 @@ def _profile_effective_slope_object_key(hvac_mode: str, fan_mode: str) -> str:
     return f"{hvac_mode}_{slugify(fan_mode)}_effective_slope"
 
 
-def _build_profile_effective_slope_entities(entry_id: str, controller, known_keys: set[tuple[str, str]]) -> list["SmartFanProfileEffectiveSlopeSensor"]:
+def _build_profile_effective_slope_entities(
+    entry_id: str,
+    climate_entity: str,
+    controller,
+    known_keys: set[tuple[str, str]],
+) -> list["SmartFanProfileEffectiveSlopeSensor"]:
     """Create profile slope sensors for fan modes that do not yet have an entity."""
     entities: list[SmartFanProfileEffectiveSlopeSensor] = []
 
@@ -55,7 +65,15 @@ def _build_profile_effective_slope_entities(entry_id: str, controller, known_key
                 continue
 
             known_keys.add(key)
-            entities.append(SmartFanProfileEffectiveSlopeSensor(entry_id, controller, hvac_mode, fan_mode))
+            entities.append(
+                SmartFanProfileEffectiveSlopeSensor(
+                    entry_id,
+                    climate_entity,
+                    controller,
+                    hvac_mode,
+                    fan_mode,
+                )
+            )
 
     return entities
 
@@ -64,6 +82,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     """Set up the sensor platform from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
     mpc = data["mpc_controller"]
+    climate_entity = data["climate_entity"]
 
     sensor_definitions = [
         ("MPC Status", "mpc_status", "mpc_status", None, None, "mdi:robot-outline", EntityCategory.DIAGNOSTIC),
@@ -80,27 +99,42 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     ]
 
     entities: list[SensorEntity] = [
-        SmartFanSensor(entry.entry_id, name, object_key, controller_key, unit, device_class, icon, entity_category)
+        SmartFanSensor(
+            entry.entry_id,
+            climate_entity,
+            name,
+            object_key,
+            controller_key,
+            unit,
+            device_class,
+            icon,
+            entity_category,
+        )
         for name, object_key, controller_key, unit, device_class, icon, entity_category in sensor_definitions
     ]
 
     entities.extend(
         [
-            SmartFanLearningSensor(entry.entry_id, mpc),
-            SmartFanLearningStatusSensor(entry.entry_id, mpc),
-            SmartFanLearningSamplesSensor(entry.entry_id, mpc),
-            SmartFanLearningResponseSensor(entry.entry_id, mpc),
-            SmartFanLearnedDeadTimeSensor(entry.entry_id, mpc),
-            SmartFanEffectiveTimeoutSensor(entry.entry_id, mpc),
-            SmartFanMpcProfilesSensor(entry.entry_id, mpc, "heat"),
-            SmartFanMpcProfilesSensor(entry.entry_id, mpc, "cool"),
-            SmartFanLearnedDeadbandSensor(entry.entry_id, mpc),
-            SmartFanLearnedLimitTimeoutSensor(entry.entry_id, mpc),
+            SmartFanLearningSensor(entry.entry_id, climate_entity, mpc),
+            SmartFanLearningStatusSensor(entry.entry_id, climate_entity, mpc),
+            SmartFanLearningSamplesSensor(entry.entry_id, climate_entity, mpc),
+            SmartFanLearningResponseSensor(entry.entry_id, climate_entity, mpc),
+            SmartFanLearnedDeadTimeSensor(entry.entry_id, climate_entity, mpc),
+            SmartFanEffectiveTimeoutSensor(entry.entry_id, climate_entity, mpc),
+            SmartFanMpcProfilesSensor(entry.entry_id, climate_entity, mpc, "heat"),
+            SmartFanMpcProfilesSensor(entry.entry_id, climate_entity, mpc, "cool"),
+            SmartFanLearnedDeadbandSensor(entry.entry_id, climate_entity, mpc),
+            SmartFanLearnedLimitTimeoutSensor(entry.entry_id, climate_entity, mpc),
         ]
     )
 
     profile_sensor_keys: set[tuple[str, str]] = set()
-    profile_entities = _build_profile_effective_slope_entities(entry.entry_id, mpc, profile_sensor_keys)
+    profile_entities = _build_profile_effective_slope_entities(
+        entry.entry_id,
+        climate_entity,
+        mpc,
+        profile_sensor_keys,
+    )
     entities.extend(profile_entities)
 
     if profile_entities:
@@ -118,7 +152,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     def ensure_profile_sensors() -> None:
         """Add late-discovered profile slope sensors once fan modes are known."""
-        new_entities = _build_profile_effective_slope_entities(entry.entry_id, mpc, profile_sensor_keys)
+        new_entities = _build_profile_effective_slope_entities(
+            entry.entry_id,
+            climate_entity,
+            mpc,
+            profile_sensor_keys,
+        )
         if not new_entities:
             return
 
@@ -142,6 +181,7 @@ class SmartFanSensor(_SmartFanEntity):
     def __init__(
         self,
         entry_id: str,
+        climate_entity: str,
         name_suffix: str,
         object_key: str,
         data_key: str,
@@ -151,6 +191,7 @@ class SmartFanSensor(_SmartFanEntity):
         entity_category: EntityCategory | None = EntityCategory.DIAGNOSTIC,
     ) -> None:
         self._entry_id = entry_id
+        self._climate_entity = climate_entity
         self._data_key = data_key
         self._attr_name = name_suffix
         self._attr_unique_id = build_unique_id(object_key, entry_id)
@@ -159,7 +200,7 @@ class SmartFanSensor(_SmartFanEntity):
         self._attr_native_value = None
         self._attr_icon = icon
         self._attr_entity_category = entity_category
-        self.entity_id = build_entity_id("sensor", object_key)
+        self._set_entity_id(object_key)
 
     def update_from_mpc(self, data: dict) -> None:
         """Update the sensor value with data from the controller."""
@@ -170,15 +211,16 @@ class SmartFanSensor(_SmartFanEntity):
 class SmartFanLearningSensor(_SmartFanEntity):
     """Sensor showing learning progress and optimal parameters."""
 
-    def __init__(self, entry_id: str, controller) -> None:
+    def __init__(self, entry_id: str, climate_entity: str, controller) -> None:
         self._entry_id = entry_id
+        self._climate_entity = climate_entity
         self._controller = controller
         self._attr_name = "Learning Progress"
         self._attr_unique_id = build_unique_id("learning_progress", entry_id)
         self._attr_native_unit_of_measurement = PERCENTAGE
         self._attr_icon = "mdi:school"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
-        self.entity_id = build_entity_id("sensor", "learning_progress")
+        self._set_entity_id("learning_progress")
 
     @property
     def native_value(self) -> float:
@@ -209,14 +251,15 @@ class SmartFanLearningSensor(_SmartFanEntity):
 class SmartFanLearningStatusSensor(_SmartFanEntity):
     """Sensor showing learning readiness status."""
 
-    def __init__(self, entry_id: str, controller) -> None:
+    def __init__(self, entry_id: str, climate_entity: str, controller) -> None:
         self._entry_id = entry_id
+        self._climate_entity = climate_entity
         self._controller = controller
         self._attr_name = "Learning Status"
         self._attr_unique_id = build_unique_id("learning_status", entry_id)
         self._attr_icon = "mdi:school-outline"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
-        self.entity_id = build_entity_id("sensor", "learning_status")
+        self._set_entity_id("learning_status")
 
     @property
     def native_value(self) -> str:
@@ -230,15 +273,16 @@ class SmartFanLearningStatusSensor(_SmartFanEntity):
 class SmartFanLearningSamplesSensor(_SmartFanEntity):
     """Sensor showing number of slope samples collected."""
 
-    def __init__(self, entry_id: str, controller) -> None:
+    def __init__(self, entry_id: str, climate_entity: str, controller) -> None:
         self._entry_id = entry_id
+        self._climate_entity = climate_entity
         self._controller = controller
         self._attr_name = "Learning Samples"
         self._attr_unique_id = build_unique_id("learning_samples", entry_id)
         self._attr_native_unit_of_measurement = "samples"
         self._attr_icon = "mdi:chart-box-outline"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
-        self.entity_id = build_entity_id("sensor", "learning_samples")
+        self._set_entity_id("learning_samples")
 
     @property
     def native_value(self) -> int:
@@ -263,15 +307,16 @@ class SmartFanLearningSamplesSensor(_SmartFanEntity):
 class SmartFanLearningResponseSensor(_SmartFanEntity):
     """Sensor showing number of response events recorded."""
 
-    def __init__(self, entry_id: str, controller) -> None:
+    def __init__(self, entry_id: str, climate_entity: str, controller) -> None:
         self._entry_id = entry_id
+        self._climate_entity = climate_entity
         self._controller = controller
         self._attr_name = "Learning Response Events"
         self._attr_unique_id = build_unique_id("learning_response_events", entry_id)
         self._attr_native_unit_of_measurement = "events"
         self._attr_icon = "mdi:timer-outline"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
-        self.entity_id = build_entity_id("sensor", "learning_response_events")
+        self._set_entity_id("learning_response_events")
 
     @property
     def native_value(self) -> int:
@@ -298,8 +343,9 @@ class SmartFanLearningResponseSensor(_SmartFanEntity):
 class SmartFanLearnedDeadTimeSensor(_SmartFanEntity):
     """Sensor showing the learned thermal dead time."""
 
-    def __init__(self, entry_id: str, controller) -> None:
+    def __init__(self, entry_id: str, climate_entity: str, controller) -> None:
         self._entry_id = entry_id
+        self._climate_entity = climate_entity
         self._controller = controller
         self._attr_name = "Learned Dead Time"
         self._attr_unique_id = build_unique_id("learned_dead_time", entry_id)
@@ -307,7 +353,7 @@ class SmartFanLearnedDeadTimeSensor(_SmartFanEntity):
         self._attr_device_class = SensorDeviceClass.DURATION
         self._attr_icon = "mdi:timer-sand"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
-        self.entity_id = build_entity_id("sensor", "learned_dead_time")
+        self._set_entity_id("learned_dead_time")
 
     @property
     def native_value(self) -> float:
@@ -326,8 +372,9 @@ class SmartFanLearnedDeadTimeSensor(_SmartFanEntity):
 class SmartFanEffectiveTimeoutSensor(_SmartFanEntity):
     """Sensor showing the actual non-emergency timeout in use."""
 
-    def __init__(self, entry_id: str, controller) -> None:
+    def __init__(self, entry_id: str, climate_entity: str, controller) -> None:
         self._entry_id = entry_id
+        self._climate_entity = climate_entity
         self._controller = controller
         self._attr_name = "Effective Timeout"
         self._attr_unique_id = build_unique_id("effective_timeout", entry_id)
@@ -335,7 +382,7 @@ class SmartFanEffectiveTimeoutSensor(_SmartFanEntity):
         self._attr_device_class = SensorDeviceClass.DURATION
         self._attr_icon = "mdi:clock-check-outline"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
-        self.entity_id = build_entity_id("sensor", "effective_timeout")
+        self._set_entity_id("effective_timeout")
 
     @property
     def native_value(self) -> float:
@@ -355,15 +402,16 @@ class SmartFanEffectiveTimeoutSensor(_SmartFanEntity):
 class SmartFanMpcProfilesSensor(_SmartFanEntity):
     """Sensor exposing the learned per-mode profiles used by the MPC."""
 
-    def __init__(self, entry_id: str, controller, hvac_mode: str) -> None:
+    def __init__(self, entry_id: str, climate_entity: str, controller, hvac_mode: str) -> None:
         self._entry_id = entry_id
+        self._climate_entity = climate_entity
         self._controller = controller
         self._hvac_mode = hvac_mode
         self._attr_name = f"MPC {hvac_mode.title()} Profiles"
         self._attr_unique_id = build_unique_id(f"mpc_{hvac_mode}_profiles", entry_id)
         self._attr_icon = "mdi:chart-timeline-variant-shimmer"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
-        self.entity_id = build_entity_id("sensor", f"mpc_{hvac_mode}_profiles")
+        self._set_entity_id(f"mpc_{hvac_mode}_profiles")
 
     @property
     def native_value(self) -> int:
@@ -381,7 +429,11 @@ class SmartFanMpcProfilesSensor(_SmartFanEntity):
             "known_profiles": sum(1 for profile in profiles.values() if profile["ready"]),
             "min_samples_required_per_profile": MIN_MODE_PROFILE_SAMPLES,
             "profile_effective_slope_sensors": {
-                fan_mode: build_entity_id("sensor", _profile_effective_slope_object_key(self._hvac_mode, fan_mode))
+                fan_mode: build_scoped_entity_id(
+                    "sensor",
+                    self._climate_entity,
+                    _profile_effective_slope_object_key(self._hvac_mode, fan_mode),
+                )
                 for fan_mode in profiles
             },
             "profiles": profiles,
@@ -391,8 +443,16 @@ class SmartFanMpcProfilesSensor(_SmartFanEntity):
 class SmartFanProfileEffectiveSlopeSensor(_SmartFanEntity):
     """Historized per-profile effective slope sensor for one HVAC/fan combination."""
 
-    def __init__(self, entry_id: str, controller, hvac_mode: str, fan_mode: str) -> None:
+    def __init__(
+        self,
+        entry_id: str,
+        climate_entity: str,
+        controller,
+        hvac_mode: str,
+        fan_mode: str,
+    ) -> None:
         self._entry_id = entry_id
+        self._climate_entity = climate_entity
         self._controller = controller
         self._hvac_mode = hvac_mode
         self._fan_mode = fan_mode
@@ -403,7 +463,7 @@ class SmartFanProfileEffectiveSlopeSensor(_SmartFanEntity):
         self._attr_native_unit_of_measurement = EFFECTIVE_SLOPE_UNIT
         self._attr_icon = "mdi:chart-line-variant"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
-        self.entity_id = build_entity_id("sensor", object_key)
+        self._set_entity_id(object_key)
 
     @property
     def native_value(self) -> float | None:
@@ -430,6 +490,7 @@ class _BaseLearnedParameterSensor(_SmartFanEntity):
     def __init__(
         self,
         entry_id: str,
+        climate_entity: str,
         controller,
         *,
         name: str,
@@ -441,6 +502,7 @@ class _BaseLearnedParameterSensor(_SmartFanEntity):
         current_attr: str | None = None,
     ) -> None:
         self._entry_id = entry_id
+        self._climate_entity = climate_entity
         self._controller = controller
         self._learning_key = learning_key
         self._current_attr = current_attr
@@ -451,7 +513,7 @@ class _BaseLearnedParameterSensor(_SmartFanEntity):
         self._attr_icon = icon
         self._attr_native_value = None
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
-        self.entity_id = build_entity_id("sensor", object_key)
+        self._set_entity_id(object_key)
 
     @property
     def native_value(self):
@@ -481,9 +543,10 @@ class _BaseLearnedParameterSensor(_SmartFanEntity):
 class SmartFanLearnedDeadbandSensor(_BaseLearnedParameterSensor):
     """Learned deadband parameter."""
 
-    def __init__(self, entry_id: str, controller) -> None:
+    def __init__(self, entry_id: str, climate_entity: str, controller) -> None:
         super().__init__(
             entry_id,
+            climate_entity,
             controller,
             name="Learned Deadband",
             object_key="learned_deadband",
@@ -498,9 +561,10 @@ class SmartFanLearnedDeadbandSensor(_BaseLearnedParameterSensor):
 class SmartFanLearnedLimitTimeoutSensor(_BaseLearnedParameterSensor):
     """Learned limit_timeout parameter."""
 
-    def __init__(self, entry_id: str, controller) -> None:
+    def __init__(self, entry_id: str, climate_entity: str, controller) -> None:
         super().__init__(
             entry_id,
+            climate_entity,
             controller,
             name="Learned Limit Timeout",
             object_key="learned_limit_timeout",

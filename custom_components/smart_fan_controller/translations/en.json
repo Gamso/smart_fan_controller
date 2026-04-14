@@ -23,6 +23,7 @@
                     "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off."
                 },
                 "error": {
+                    "already_configured": "This climate entity is already configured.",
                     "invalid_climate_entity": "This entity must come from Versatile Thermostat.",
                     "no_versatile_thermostat": "No Versatile Thermostat entity found."
                 }
@@ -52,6 +53,7 @@
                     "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off."
                 },
                 "error": {
+                    "already_configured": "This climate entity is already configured.",
                     "invalid_climate_entity": "This entity must come from Versatile Thermostat.",
                     "no_versatile_thermostat": "No Versatile Thermostat entity found."
                 }

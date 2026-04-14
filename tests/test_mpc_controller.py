@@ -171,6 +171,7 @@ def test_mpc_sensor_can_clear_to_none() -> None:
     """MPC sensor value can be cleared to None."""
     sensor = SmartFanSensor(
         "entry-1",
+        "climate.living_room",
         "MPC Cost",
         "mpc_cost",
         "mpc_cost",
@@ -197,7 +198,7 @@ def test_mpc_profiles_sensor_exposes_per_mode_values() -> None:
     for _ in range(12):
         learning.add_slope_sample("low", -0.4, 0.3, "cool")
 
-    sensor = SmartFanMpcProfilesSensor("entry-1", mpc, "heat")
+    sensor = SmartFanMpcProfilesSensor("entry-1", "climate.living_room", mpc, "heat")
     attrs = sensor.extra_state_attributes
 
     assert sensor.native_value == 1
@@ -205,7 +206,7 @@ def test_mpc_profiles_sensor_exposes_per_mode_values() -> None:
     assert attrs["profiles"]["medium"]["effective_slope"] == 0.5
     assert attrs["profiles"]["medium"]["samples"] == 15
     assert attrs["profiles"]["medium"]["ready"] is True
-    assert attrs["profile_effective_slope_sensors"]["medium"] == "sensor.smart_fan_controller_heat_medium_effective_slope"
+    assert attrs["profile_effective_slope_sensors"]["medium"] == "sensor.smart_fan_controller_living_room_heat_medium_effective_slope"
     assert attrs["profiles"]["high"]["effective_slope"] is None
     assert attrs["profiles"]["high"]["samples"] == 8
 
@@ -217,9 +218,15 @@ def test_profile_effective_slope_sensor_exposes_historizable_state() -> None:
     for _ in range(12):
         learning.add_slope_sample("high", 0.9, 0.3, "heat")
 
-    sensor = SmartFanProfileEffectiveSlopeSensor("entry-1", mpc, "heat", "high")
+    sensor = SmartFanProfileEffectiveSlopeSensor(
+        "entry-1",
+        "climate.living_room",
+        mpc,
+        "heat",
+        "high",
+    )
 
-    assert sensor.entity_id == "sensor.smart_fan_controller_heat_high_effective_slope"
+    assert sensor.entity_id == "sensor.smart_fan_controller_living_room_heat_high_effective_slope"
     assert sensor.native_value == 0.9
     assert sensor.extra_state_attributes["samples"] == 12
     assert sensor.extra_state_attributes["ready"] is True

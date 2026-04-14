@@ -107,7 +107,7 @@ class TestThermalLearning:
             learning.add_response_event(response_time)
         mpc = _build_mpc(learning)
 
-        sensor = SmartFanLearnedDeadTimeSensor("entry", mpc)
+        sensor = SmartFanLearnedDeadTimeSensor("entry", "climate.test", mpc)
 
         assert sensor.native_value == 8.0
 
@@ -120,7 +120,7 @@ class TestThermalLearning:
             learning.add_response_event(response_time)
         mpc = _build_mpc(learning)
 
-        sensor = SmartFanEffectiveTimeoutSensor("entry", mpc)
+        sensor = SmartFanEffectiveTimeoutSensor("entry", "climate.test", mpc)
 
         assert sensor.native_value == 12.0
 

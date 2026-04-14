@@ -1,14 +1,24 @@
 """Tests for Smart Fan Controller HA services (apply_learned_settings, reset_learning)."""
 import asyncio
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from custom_components.smart_fan_controller import _apply_optimal_parameters
+import pytest
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
+
+from custom_components.smart_fan_controller import (
+    _apply_optimal_parameters,
+    _async_migrate_entity_ids,
+    _resolve_controller_entry,
+)
 from custom_components.smart_fan_controller.thermal_learning import ThermalLearning
 from custom_components.smart_fan_controller.const import (
+    CONF_CLIMATE_ENTITY,
     CONF_DEADBAND,
     CONF_LIMIT_TIMEOUT,
+    DOMAIN,
     MIN_SAMPLES_LEARNING,
+    build_unique_id,
 )
 
 
@@ -33,6 +43,7 @@ class TestApplyLearnedSettings:
 
         entry = MagicMock()
         entry.data = {CONF_DEADBAND: 0.2, CONF_LIMIT_TIMEOUT: 15}
+        entry.options = {}
 
         applied_data = {}
 
@@ -74,6 +85,7 @@ class TestApplyLearnedSettings:
 
         entry = MagicMock()
         entry.data = {CONF_DEADBAND: 0.2, CONF_LIMIT_TIMEOUT: 15}
+        entry.options = {CONF_DEADBAND: 0.2, CONF_LIMIT_TIMEOUT: 15, CONF_CLIMATE_ENTITY: "climate.test"}
 
         optimal = {"deadband": 0.25, "limit_timeout": 12}
 
@@ -82,9 +94,87 @@ class TestApplyLearnedSettings:
         # Verify async_update_entry was called with learning_auto_applied=True
         call_args = hass.config_entries.async_update_entry.call_args
         updated_data = call_args[1]["data"]
+        updated_options = call_args[1]["options"]
         assert updated_data.get("learning_auto_applied") is True
         assert updated_data[CONF_DEADBAND] == 0.25
         assert updated_data[CONF_LIMIT_TIMEOUT] == 12
+        assert updated_options[CONF_DEADBAND] == 0.25
+        assert updated_options[CONF_LIMIT_TIMEOUT] == 12
+
+    def test_resolve_controller_entry_requires_target_when_multiple_entries(self):
+        """Service routing must require a climate target when several entries are loaded."""
+        hass = MagicMock()
+        hass.data = {
+            DOMAIN: {
+                "entry-1": {"climate_entity": "climate.living_room"},
+                "entry-2": {"climate_entity": "climate.bedroom"},
+                "_services_registered": True,
+            }
+        }
+
+        with pytest.raises(HomeAssistantError, match="Multiple Smart Fan Controller entries"):
+            _resolve_controller_entry(hass)
+
+    def test_resolve_controller_entry_matches_requested_climate(self):
+        """Service routing must resolve the correct loaded entry from climate_entity."""
+        hass = MagicMock()
+        hass.data = {
+            DOMAIN: {
+                "entry-1": {"climate_entity": "climate.living_room"},
+                "entry-2": {"climate_entity": "climate.bedroom"},
+                "_services_registered": True,
+            }
+        }
+
+        entry_id, entry_data = _resolve_controller_entry(hass, "climate.bedroom")
+
+        assert entry_id == "entry-2"
+        assert entry_data["climate_entity"] == "climate.bedroom"
+
+
+@pytest.mark.asyncio
+async def test_entity_id_migration_renames_legacy_registry_entries(hass) -> None:
+    """Existing legacy entity_ids should migrate to climate-scoped names."""
+    entity_registry = er.async_get(hass)
+    entry = MagicMock()
+    entry.entry_id = "entry-1"
+    hass.config_entries.async_get_entry = MagicMock(return_value=entry)
+
+    entity_registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        build_unique_id("mpc_status", entry.entry_id),
+        config_entry=entry,
+        suggested_object_id="smart_fan_controller_mpc_status",
+    )
+
+    await _async_migrate_entity_ids(hass, entry, "climate.living_room")
+
+    migrated = entity_registry.async_get("sensor.smart_fan_controller_living_room_mpc_status")
+    assert migrated is not None
+    assert migrated.unique_id == build_unique_id("mpc_status", entry.entry_id)
+
+
+@pytest.mark.asyncio
+async def test_entity_id_migration_preserves_custom_registry_ids(hass) -> None:
+    """Migration should not override a user-customized entity_id."""
+    entity_registry = er.async_get(hass)
+    entry = MagicMock()
+    entry.entry_id = "entry-1"
+    hass.config_entries.async_get_entry = MagicMock(return_value=entry)
+
+    entity_registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        build_unique_id("mpc_status", entry.entry_id),
+        config_entry=entry,
+        suggested_object_id="custom_living_room_mpc_status",
+    )
+
+    await _async_migrate_entity_ids(hass, entry, "climate.living_room")
+
+    assert entity_registry.async_get("sensor.custom_living_room_mpc_status") is not None
+    assert entity_registry.async_get("sensor.smart_fan_controller_living_room_mpc_status") is None
 
 
 class TestResetLearning:

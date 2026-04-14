@@ -1,6 +1,8 @@
 """Constants for Smart Fan Controller."""
 from datetime import timedelta
 
+from homeassistant.util import slugify
+
 DOMAIN = "smart_fan_controller"
 DEVICE_NAME = "Smart Fan Controller"
 ENTITY_UNIQUE_ID_PREFIX = DOMAIN
@@ -56,3 +58,19 @@ def build_unique_id(object_key: str, entry_id: str) -> str:
 def build_entity_id(platform_domain: str, object_key: str) -> str:
     """Build the canonical entity_id suggestion for an entity."""
     return f"{platform_domain}.{DOMAIN}_{object_key}"
+
+
+def build_scoped_entity_id(platform_domain: str, climate_entity: str, object_key: str) -> str:
+    """Build the climate-scoped entity_id suggestion for an entity."""
+    climate_object_id = climate_entity.split(".", maxsplit=1)[-1]
+    return f"{platform_domain}.{DOMAIN}_{slugify(climate_object_id)}_{object_key}"
+
+
+def extract_object_key_from_unique_id(unique_id: str, entry_id: str) -> str | None:
+    """Extract the object key from the canonical unique_id format."""
+    prefix = f"{ENTITY_UNIQUE_ID_PREFIX}_"
+    suffix = f"_{entry_id}"
+    if not unique_id.startswith(prefix) or not unique_id.endswith(suffix):
+        return None
+
+    return unique_id[len(prefix) : -len(suffix)]

@@ -23,6 +23,7 @@
                     "operating_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand le compresseur de la PAC est en marche. Utilisé pour éviter des changements de ventilation inutiles quand le compresseur est à l'arrêt."
                 },
                 "error": {
+                    "already_configured": "Cette entité climate est déjà configurée.",
                     "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",
                     "no_versatile_thermostat": "Aucune entité Versatile Thermostat trouvée."
                 }
@@ -52,6 +53,7 @@
                     "operating_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand le compresseur de la PAC est en marche. Utilisé pour éviter des changements de ventilation inutiles quand le compresseur est à l'arrêt."
                 },
                 "error": {
+                    "already_configured": "Cette entité climate est déjà configurée.",
                     "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",
                     "no_versatile_thermostat": "Aucune entité Versatile Thermostat trouvée."
                 }
