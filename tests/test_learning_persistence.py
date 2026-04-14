@@ -1,7 +1,8 @@
 """Tests for learning data persistence functionality."""
 import time
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 
@@ -36,7 +37,7 @@ class TestLearningPersistence:
         assert "response_events" in data
         assert "slope_count" in data
         assert "slope_mean" in data
-        assert "slope_M2" in data
+        assert "slope_m2" in data
         assert "slope_max" in data
 
         # Verify data is preserved (at least partially for windowing)
@@ -121,8 +122,8 @@ class TestLearningPersistence:
         learning = ThermalLearning()
 
         # Manually add old samples (simulate data from a week ago)
-        DAYS_IN_SECONDS = 24 * 3600
-        old_timestamp = time.time() - (8 * DAYS_IN_SECONDS)  # 8 days ago
+        days_in_seconds = 24 * 3600
+        old_timestamp = time.time() - (8 * days_in_seconds)  # 8 days ago
         learning.slope_samples = [
             (old_timestamp, "medium", 0.5),
             (time.time(), "high", 0.8),

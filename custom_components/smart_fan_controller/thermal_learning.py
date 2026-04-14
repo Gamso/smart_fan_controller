@@ -361,7 +361,7 @@ class ThermalLearning:
             "response_events": self._response_events[-100:],
             "slope_count": self._slope_count,
             "slope_mean": self._slope_mean,
-            "slope_M2": self._slope_m2,
+            "slope_m2": self._slope_m2,
             "slope_max": self._slope_max,
         }
 
@@ -413,7 +413,7 @@ class ThermalLearning:
         # Restore incremental statistics
         instance._slope_count = data.get("slope_count", 0)
         instance._slope_mean = data.get("slope_mean", 0.0)
-        instance._slope_m2 = data.get("slope_M2", 0.0)
+        instance._slope_m2 = data.get("slope_m2", data.get("slope_M2", 0.0))
         instance._slope_max = data.get("slope_max", 0.0)
 
         # Apply sliding window cleanup on restore

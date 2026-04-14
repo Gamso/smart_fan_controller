@@ -17,10 +17,22 @@ from .thermal_learning import ThermalLearning
 
 _LOGGER = logging.getLogger(__name__)
 
+# Cost function weights (simulation loop in _simulate_mode)
+COMFORT_ERROR_WEIGHT = 1.0
+OVERSHOOT_QUADRATIC_WEIGHT = 3.0
+FLOOR_VIOLATION_LINEAR_WEIGHT = 12.0
+FLOOR_VIOLATION_QUADRATIC_WEIGHT = 30.0
+MODE_CHANGE_DISTANCE_COST = 0.15
+MODE_RANK_COST = 0.05
 MIN_INTERVAL_CHANGE_PENALTY = 25.0
+URGENCY_SENSITIVITY = 2.0
+
+# Disturbance bias tracker
 DISTURBANCE_EMA_ALPHA = 0.2
 DISTURBANCE_DECAY = 0.85
 MAX_DISTURBANCE_BIAS = 2.0
+
+# Hysteresis margins
 BASE_SWITCH_GAIN_MARGIN = 0.1
 NEAR_TARGET_SWITCH_GAIN_MARGIN = 0.3
 APPROACHING_TARGET_SWITCH_GAIN_MARGIN = 0.15
@@ -29,8 +41,6 @@ STEP_SWITCH_MARGIN = 0.05
 UNDER_TARGET_STEPDOWN_GAIN_MARGIN = 0.2
 UNDER_TARGET_STEPDOWN_GAIN_PER_DEG = 0.5
 UNDER_TARGET_SHORTFALL_RESERVE = 0.1
-FLOOR_VIOLATION_LINEAR_WEIGHT = 12.0
-FLOOR_VIOLATION_QUADRATIC_WEIGHT = 30.0
 
 
 @dataclass(slots=True)
@@ -74,8 +84,32 @@ class MPCController:
 
     @fan_modes.setter
     def fan_modes(self, modes: list[str] | None) -> None:
-        """Update the available fan modes."""
+        """Update the available fan modes.
+
+        Fan modes are assumed ordered weakest-to-strongest.  A warning is
+        logged when learned profiles are available and their slopes violate
+        this ordering, which usually indicates a configuration issue.
+        """
         self._fan_modes = modes
+        if modes and len(modes) >= 2:
+            self._warn_if_unordered(modes)
+
+    def _warn_if_unordered(self, modes: list[str]) -> None:
+        """Log a warning when learned slopes don't match the assumed mode ordering."""
+        prev_slope = None
+        for mode in modes:
+            slope = self._learning.get_mode_effective_slope(mode, "heat")
+            if slope is None:
+                return  # Not all profiles learned yet; skip check
+            if prev_slope is not None and slope < prev_slope:
+                _LOGGER.warning(
+                    "Fan modes may not be ordered weakest-to-strongest: "
+                    "learned slopes violate monotonicity at '%s'. "
+                    "Check the fan_modes list in your climate entity",
+                    mode,
+                )
+                return
+            prev_slope = slope
 
     @property
     def learning(self) -> ThermalLearning:
@@ -497,7 +531,7 @@ class MPCController:
         candidate_effective_slope = candidate_mode_slope + self._disturbance_bias
 
         current_error = self._temperature_error(current_temp, target_temp, hvac_mode)
-        urgency_weight = 1.0 + max(current_error - self._deadband, 0.0) * 2.0
+        urgency_weight = 1.0 + max(current_error - self._deadband, 0.0) * URGENCY_SENSITIVITY
 
         for step in range(1, steps + 1):
             elapsed = step * self._cycle_minutes
@@ -519,13 +553,13 @@ class MPCController:
             comfort_error = max(abs(error) - self._deadband, 0.0)
             overshoot = max(-error, 0.0)
             floor_violation = max(target_temp - sim_temp, 0.0) if hvac_mode == "heat" else max(sim_temp - target_temp, 0.0)
-            cost += comfort_error * urgency_weight
-            cost += 3.0 * overshoot * overshoot
+            cost += COMFORT_ERROR_WEIGHT * comfort_error * urgency_weight
+            cost += OVERSHOOT_QUADRATIC_WEIGHT * overshoot * overshoot
             cost += FLOOR_VIOLATION_LINEAR_WEIGHT * floor_violation * urgency_weight
             cost += FLOOR_VIOLATION_QUADRATIC_WEIGHT * floor_violation * floor_violation
 
-        cost += 0.15 * abs(candidate_index - current_index)
-        cost += 0.05 * (candidate_index + 1)
+        cost += MODE_CHANGE_DISTANCE_COST * abs(candidate_index - current_index)
+        cost += MODE_RANK_COST * (candidate_index + 1)
         if candidate_fan != current_fan and not change_allowed:
             cost += MIN_INTERVAL_CHANGE_PENALTY
 

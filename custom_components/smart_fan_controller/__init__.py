@@ -48,7 +48,7 @@ from .mpc_controller import MPCController
 from .thermal_learning import ThermalLearning
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = [Platform.SENSOR, Platform.SWITCH]
+PLATFORMS = [Platform.SENSOR]
 SERVICE_APPLY_LEARNED_SETTINGS = "apply_learned_settings"
 SERVICE_RESET_LEARNING = "reset_learning"
 SERVICE_SET_EFFECTIVE_SLOPE = "set_effective_slope"
@@ -182,6 +182,40 @@ async def _async_migrate_entity_ids(hass: HomeAssistant, entry: ConfigEntry, cli
             entity_entry.entity_id,
             available_entity_id,
         )
+
+
+def _should_collect_slope_sample(
+    *,
+    current_fan: str | None,
+    is_defrost_active: bool,
+    is_hvac_idle: bool,
+    phase: str,
+    minutes_since_change: float,
+    learned_dead_time: float,
+    ctrl_state: dict,
+    now: float,
+) -> bool:
+    """Return True when slope learning conditions are met."""
+    if current_fan is None or is_defrost_active or is_hvac_idle:
+        return False
+    if phase != PHASE_ESTABLISHED:
+        return False
+    min_stable_minutes = learned_dead_time * MIN_ESTABLISHED_RATIO
+    if minutes_since_change < min_stable_minutes:
+        return False
+    if ctrl_state["last_setpoint_drop_time"] != 0:
+        minutes_since_setpoint_drop = (now - ctrl_state["last_setpoint_drop_time"]) / 60.0
+        if minutes_since_setpoint_drop < SETPOINT_DROP_LEARNING_COOLDOWN:
+            return False
+    return True
+
+
+def _update_sensors(hass: HomeAssistant, entry_id: str, data: dict) -> None:
+    """Push new data to all sensor entities and trigger a state write."""
+    for sensor in hass.data[DOMAIN][entry_id].get("sensors") or []:
+        if hasattr(sensor, "update_from_mpc"):
+            sensor.update_from_mpc(data)
+        sensor.async_write_ha_state()
 
 
 async def _apply_optimal_parameters(
@@ -392,6 +426,7 @@ async def _async_apply_fan_change(
             current_fan,
             effective_fan,
         )
+        on_confirmed()  # update last_change_time to prevent retry storm
     else:
         on_confirmed()
 
@@ -455,9 +490,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "store": store,
     }
 
-    if not domain_data.get("_services_registered"):
+    if not hass.services.has_service(DOMAIN, SERVICE_APPLY_LEARNED_SETTINGS):
         _register_services(hass)
-        domain_data["_services_registered"] = True
 
     await _async_migrate_entity_ids(hass, entry, climate_id)
 
@@ -569,15 +603,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             phase = PHASE_ESTABLISHED
 
         # Slope sample collection
-        if current_fan is not None and not is_defrost_active and not is_hvac_idle:
-            min_stable_minutes = learned_dead_time * MIN_ESTABLISHED_RATIO
-            minutes_since_setpoint_drop = (now - ctrl_state["last_setpoint_drop_time"]) / 60.0
-            if (
-                phase == PHASE_ESTABLISHED
-                and minutes_since_change >= min_stable_minutes
-                and (ctrl_state["last_setpoint_drop_time"] == 0 or minutes_since_setpoint_drop >= SETPOINT_DROP_LEARNING_COOLDOWN)
-            ):
-                learning.add_slope_sample(current_fan, vtherm_slope, current_error, hvac_mode, is_window_open)
+        if _should_collect_slope_sample(
+            current_fan=current_fan,
+            is_defrost_active=is_defrost_active,
+            is_hvac_idle=is_hvac_idle,
+            phase=phase,
+            minutes_since_change=minutes_since_change,
+            learned_dead_time=learned_dead_time,
+            ctrl_state=ctrl_state,
+            now=now,
+        ):  # current_fan is guaranteed non-None by _should_collect_slope_sample
+            learning.add_slope_sample(current_fan, vtherm_slope, current_error, hvac_mode, is_window_open)  # type: ignore[arg-type]
 
         # Response event collection
         if slope_change and ctrl_state["last_change_time"] > 0:
@@ -618,10 +654,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 is_hvac_idle=is_hvac_idle,
             )
 
-        for sensor in hass.data[DOMAIN][entry.entry_id].get("sensors") or []:
-            if hasattr(sensor, "update_from_mpc"):
-                sensor.update_from_mpc(mpc_decision)
-            sensor.async_write_ha_state()
+        _update_sensors(hass, entry.entry_id, {
+            **mpc_decision,
+            "fan_mode": effective_fan,
+            "minutes_since_last_change": round(minutes_since_change, 2),
+        })
 
         if learning.is_ready() and not entry.data.get("learning_auto_applied", False):
             learned_params = learning.compute_optimal_parameters()
@@ -629,7 +666,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.info("Learning is ready for %s, scheduling auto-apply of learned parameters", climate_id)
                 hass.async_create_task(_apply_optimal_parameters(hass, entry, learned_params))
 
-        if effective_fan != current_fan:
+        if effective_fan is not None and effective_fan != current_fan:
 
             def _confirm():
                 ctrl_state["last_change_time"] = time.time()
@@ -656,11 +693,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ctrl_state["last_change_time"] = time.time()
         manual_data = {"fan_mode": new_fan, "minutes_since_last_change": 0.0, "reason": "Manual Override"}
 
-        sensors = hass.data[DOMAIN][entry.entry_id].get("sensors", [])
-        for sensor in sensors:
-            if hasattr(sensor, "update_from_mpc"):
-                sensor.update_from_mpc(manual_data)
-            sensor.async_write_ha_state()
+        _update_sensors(hass, entry.entry_id, manual_data)
 
     entry.async_on_unload(async_track_time_interval(hass, run_control_loop, timedelta(minutes=DELTA_TIME_CONTROL_LOOP)))
     entry.async_on_unload(async_track_state_change_event(hass, [climate_id], _handle_manual_change))
@@ -710,7 +743,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass.services.async_remove(DOMAIN, SERVICE_APPLY_LEARNED_SETTINGS)
             hass.services.async_remove(DOMAIN, SERVICE_RESET_LEARNING)
             hass.services.async_remove(DOMAIN, SERVICE_SET_EFFECTIVE_SLOPE)
-            domain_data.pop("_services_registered", None)
             if not domain_data:
                 hass.data.pop(DOMAIN, None)
         _LOGGER.info("Unloaded Smart Fan Controller entry %s", entry.entry_id)

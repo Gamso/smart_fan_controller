@@ -85,6 +85,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     climate_entity = data["climate_entity"]
 
     sensor_definitions = [
+        ("Fan Mode", "fan_mode", "fan_mode", None, SensorDeviceClass.ENUM, "mdi:fan", None),
+        (
+            "Fan Mode Last Change",
+            "fan_mode_last_change",
+            "minutes_since_last_change",
+            UnitOfTime.MINUTES,
+            SensorDeviceClass.DURATION,
+            "mdi:clock-outline",
+            EntityCategory.DIAGNOSTIC,
+        ),
         ("MPC Status", "mpc_status", "mpc_status", None, None, "mdi:robot-outline", EntityCategory.DIAGNOSTIC),
         ("MPC Reason", "mpc_reason", "mpc_reason", None, None, "mdi:text-box-search-outline", EntityCategory.DIAGNOSTIC),
         ("MPC Fan Mode", "mpc_fan_mode", "mpc_fan_mode", None, None, "mdi:fan-chevron-up", EntityCategory.DIAGNOSTIC),

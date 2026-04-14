@@ -68,7 +68,8 @@ class DataCollector:
     def __init__(self, hass: HomeAssistant, config_dir: str, entry_id: str) -> None:
         self._hass = hass
         self._path = os.path.join(config_dir, f"smart_fan_controller_data_{entry_id[:8]}.csv")
-        self._rotated_path = self._path.replace(".csv", "_old.csv")
+        base, ext = os.path.splitext(self._path)
+        self._rotated_path = f"{base}_old{ext}"
         self._io_lock = asyncio.Lock()
 
     async def async_initialize(self) -> None:

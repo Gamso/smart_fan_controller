@@ -1,3 +1,4 @@
+"""Config and options flow for Smart Fan Controller."""
 from typing import Any
 
 import voluptuous as vol
