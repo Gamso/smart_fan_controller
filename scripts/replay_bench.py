@@ -23,7 +23,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+from datetime import datetime
+from importlib import import_module
 import logging
+import re
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
@@ -35,9 +38,13 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO / "custom_components"))
 
-from smart_fan_controller import mpc_controller as _mpc_mod  # noqa: E402
-from smart_fan_controller.mpc_controller import MPCController  # noqa: E402
-from smart_fan_controller.thermal_learning import ThermalLearning  # noqa: E402
+_mpc_mod = import_module("smart_fan_controller.mpc_controller")
+_const_mod = import_module("smart_fan_controller.const")
+_thermal_mod = import_module("smart_fan_controller.thermal_learning")
+
+MPCController = _mpc_mod.MPCController
+ThermalLearning = _thermal_mod.ThermalLearning
+MIN_MODE_PROFILE_SAMPLES = _const_mod.MIN_MODE_PROFILE_SAMPLES
 
 # Quiet the debug chatter during bulk replay
 logging.getLogger("custom_components.smart_fan_controller").setLevel(logging.WARNING)
@@ -56,6 +63,8 @@ TUNABLE = [
     "URGENCY_SENSITIVITY",
 ]
 _DEFAULTS = {k: getattr(_mpc_mod, k) for k in TUNABLE}
+_PROFILE_ENTITY_RE = re.compile(r"_(heat|cool)_([^_]+)_effective_slope$")
+_SNAPSHOT_START_GRACE_SECONDS = 120
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +104,47 @@ class Metrics:
     costs: list[float] = field(default_factory=list)
     agree_with_live: int = 0
     prediction_errors_10m: list[float] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SnapshotEvent:
+    """One effective-slope snapshot change."""
+
+    timestamp: datetime
+    fan_mode: str
+    hvac_mode: str
+    slope: float | None
+
+
+def parse_timestamp(value: str) -> datetime:
+    """Parse an ISO timestamp with optional trailing Z."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def filter_rows_by_time(
+    rows: list[Row],
+    *,
+    start: str | None,
+    end: str | None,
+) -> list[Row]:
+    """Return rows filtered to an inclusive time window."""
+    if start is None and end is None:
+        return rows
+
+    start_ts = parse_timestamp(start) if start is not None else None
+    end_ts = parse_timestamp(end) if end is not None else None
+    if start_ts is not None and end_ts is not None and start_ts > end_ts:
+        raise ValueError("--start must be <= --end")
+
+    filtered: list[Row] = []
+    for row in rows:
+        row_ts = parse_timestamp(row.timestamp)
+        if start_ts is not None and row_ts < start_ts:
+            continue
+        if end_ts is not None and row_ts > end_ts:
+            continue
+        filtered.append(row)
+    return filtered
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +209,170 @@ def build_learning(rows: list[Row]) -> ThermalLearning:
     return learning
 
 
+def clone_learning(learning: ThermalLearning) -> ThermalLearning:
+    """Clone learning state for one replay variant."""
+    return ThermalLearning.from_dict(learning.to_dict())
+
+
+def load_snapshot_events(
+    snapshot_dir: str | None,
+    *,
+    default_hvac_mode: str,
+    fan_modes: list[str],
+) -> list[SnapshotEvent]:
+    """Load all profile snapshot events from *_effective_slope.csv files."""
+    if snapshot_dir is None:
+        return []
+
+    snapshot_path = Path(snapshot_dir)
+    if not snapshot_path.exists():
+        return []
+
+    events: list[SnapshotEvent] = []
+    for path in sorted(snapshot_path.glob("*_effective_slope.csv")):
+        fallback_mode = path.stem.removesuffix("_effective_slope")
+        with open(path, newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                entity_id = row.get("entity_id", "")
+                match = _PROFILE_ENTITY_RE.search(entity_id)
+                if match:
+                    hvac_mode = match.group(1)
+                    fan_mode = match.group(2)
+                else:
+                    hvac_mode = default_hvac_mode
+                    fan_mode = fallback_mode
+
+                if fan_mode not in fan_modes:
+                    continue
+
+                try:
+                    changed_at = parse_timestamp(row["last_changed"])
+                except (KeyError, ValueError):
+                    continue
+
+                state = row.get("state", "").strip()
+                if state in ("", "unknown", "unavailable"):
+                    slope = None
+                else:
+                    try:
+                        slope = float(state)
+                    except ValueError:
+                        continue
+
+                events.append(
+                    SnapshotEvent(
+                        timestamp=changed_at,
+                        fan_mode=fan_mode,
+                        hvac_mode=hvac_mode,
+                        slope=slope,
+                    )
+                )
+
+    events.sort(key=lambda event: (event.timestamp, event.hvac_mode, event.fan_mode))
+    return events
+
+
+def load_snapshot_profiles(
+    snapshot_events: list[SnapshotEvent],
+    *,
+    trace_start: datetime,
+) -> tuple[dict[tuple[str, str], float], int]:
+    """Load the latest known profile values near trace start from snapshot CSV files.
+
+    A short grace window is allowed after the first trace row to handle Home
+    Assistant restarts where the profile sensors briefly report unavailable and
+    then republish their restored value a few milliseconds later.
+    """
+    snapshot_deadline = trace_start.timestamp() + _SNAPSHOT_START_GRACE_SECONDS
+    profiles: dict[tuple[str, str], float] = {}
+    next_index = 0
+    for next_index, event in enumerate(snapshot_events):
+        if event.timestamp.timestamp() > snapshot_deadline:
+            break
+        profiles[(event.fan_mode, event.hvac_mode)] = event.slope
+    else:
+        next_index = len(snapshot_events)
+
+    return {key: slope for key, slope in profiles.items() if slope is not None}, next_index
+
+
+def seed_learning_from_snapshots(
+    learning: ThermalLearning,
+    snapshot_profiles: dict[tuple[str, str], float],
+) -> list[tuple[str, str, float]]:
+    """Seed missing learned profiles from snapshot CSV values.
+
+    Ready profiles learned from the trace are preserved.  Snapshot values only
+    backfill modes that would otherwise remain unavailable in the replay.
+    """
+    seeded: list[tuple[str, str, float]] = []
+    for (fan_mode, hvac_mode), slope in snapshot_profiles.items():
+        if learning.get_mode_effective_slope(fan_mode, hvac_mode) is not None:
+            continue
+        learning.set_mode_effective_slope(fan_mode, hvac_mode, slope)
+        seeded.append((fan_mode, hvac_mode, slope))
+    return seeded
+
+
+def _set_learning_profile_value(
+    learning: ThermalLearning,
+    *,
+    fan_mode: str,
+    hvac_mode: str,
+    effective_slope: float,
+    timestamp: datetime,
+) -> None:
+    """Replace one profile with a synthetic snapshot value at a replay timestamp."""
+    raw_slope = -effective_slope if hvac_mode == "cool" else effective_slope
+    retained = [sample for sample in learning.slope_samples if not (sample[1] == fan_mode and sample[3] == hvac_mode)]
+    base_ts = timestamp.timestamp()
+    retained.extend((base_ts + offset, fan_mode, raw_slope, hvac_mode) for offset in range(MIN_MODE_PROFILE_SAMPLES))
+    learning.slope_samples = retained
+    learning.recompute_slope_stats()
+
+
+def _clear_learning_profile_value(
+    learning: ThermalLearning,
+    *,
+    fan_mode: str,
+    hvac_mode: str,
+) -> None:
+    """Remove one profile when its snapshot becomes unknown/unavailable."""
+    retained = [sample for sample in learning.slope_samples if not (sample[1] == fan_mode and sample[3] == hvac_mode)]
+    if len(retained) == len(learning.slope_samples):
+        return
+    learning.slope_samples = retained
+    learning.recompute_slope_stats()
+
+
+def apply_snapshot_events_until(
+    learning: ThermalLearning,
+    snapshot_events: list[SnapshotEvent],
+    start_index: int,
+    current_timestamp: datetime,
+) -> int:
+    """Apply all snapshot events up to the current replay row timestamp."""
+    index = start_index
+    while index < len(snapshot_events) and snapshot_events[index].timestamp <= current_timestamp:
+        event = snapshot_events[index]
+        if event.slope is None:
+            _clear_learning_profile_value(
+                learning,
+                fan_mode=event.fan_mode,
+                hvac_mode=event.hvac_mode,
+            )
+        else:
+            _set_learning_profile_value(
+                learning,
+                fan_mode=event.fan_mode,
+                hvac_mode=event.hvac_mode,
+                effective_slope=event.slope,
+                timestamp=event.timestamp,
+            )
+        index += 1
+    return index
+
+
 def detect_fan_modes(rows: list[Row]) -> list[str]:
     """Return fan modes in first-seen order."""
     seen: dict[str, None] = {}
@@ -190,6 +404,8 @@ def replay(
     overrides: dict[str, float],
     deadband: float,
     min_interval: int,
+    snapshot_events: list[SnapshotEvent] | None = None,
+    snapshot_start_index: int = 0,
     cycle_minutes: int = 2,
 ) -> list[tuple[dict, str]]:
     """Replay CSV through MPC, tracking simulated fan state.
@@ -207,8 +423,16 @@ def replay(
         results: list[tuple[dict, str]] = []
         sim_fan = rows[0].current_fan if rows else fan_modes[0]
         sim_minutes = rows[0].minutes_since_change if rows else 0.0
+        snapshot_index = snapshot_start_index
 
         for row in rows:
+            if snapshot_events:
+                snapshot_index = apply_snapshot_events_until(
+                    learning,
+                    snapshot_events,
+                    snapshot_index,
+                    parse_timestamp(row.timestamp),
+                )
             payload = mpc.evaluate(
                 current_temp=row.current_temp,
                 target_temp=row.target_temp,
@@ -243,7 +467,6 @@ def compute_metrics(
     overrides: dict[str, float],
     rows: list[Row],
     results: list[tuple[dict, str]],
-    deadband: float,
     cycle_minutes: int = 2,
 ) -> Metrics:
     """Compute aggregate metrics from a replay run."""
@@ -294,7 +517,6 @@ def print_report(
     fan_modes: list[str],
     learning: ThermalLearning,
     metrics_list: list[Metrics],
-    deadband: float,
     cycle_minutes: int = 2,
 ) -> None:
     """Print a formatted comparison report."""
@@ -371,7 +593,7 @@ def print_report(
         )
 
     # Overrides summary
-    print(f"\n--- Cost Overrides ---")
+    print("\n--- Cost Overrides ---")
     for m in metrics_list:
         if m.overrides:
             parts = ", ".join(f"{k}={v}" for k, v in m.overrides.items())
@@ -470,6 +692,18 @@ def main() -> None:
         "--output",
         help="Write per-row replay decisions to this CSV path",
     )
+    parser.add_argument(
+        "--seed-snapshots-dir",
+        help=("Directory containing *_effective_slope.csv snapshots used to seed missing " "profiles (defaults to the CSV file directory when such files are present)"),
+    )
+    parser.add_argument(
+        "--start",
+        help="Inclusive start timestamp (ISO-8601, e.g. 2026-04-17T17:40:00Z)",
+    )
+    parser.add_argument(
+        "--end",
+        help="Inclusive end timestamp (ISO-8601, e.g. 2026-04-17T18:15:00Z)",
+    )
     args = parser.parse_args()
 
     # Parse variants
@@ -490,6 +724,16 @@ def main() -> None:
         sys.exit(1)
     print(f"  {len(rows)} rows loaded ({rows[0].timestamp} -> {rows[-1].timestamp})")
 
+    try:
+        rows = filter_rows_by_time(rows, start=args.start, end=args.end)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if not rows:
+        print("Error: no rows remain after applying the time filter.", file=sys.stderr)
+        sys.exit(1)
+    if args.start or args.end:
+        print(f"  Windowed to {len(rows)} rows ({rows[0].timestamp} -> {rows[-1].timestamp})")
+
     # Fan modes
     if args.fan_order:
         fan_modes = [m.strip() for m in args.fan_order.split(",")]
@@ -502,22 +746,50 @@ def main() -> None:
     learning = build_learning(rows)
     print(f"  {learning.slope_sample_count()} slope samples ingested")
 
+    snapshot_dir = args.seed_snapshots_dir or str(Path(args.csv_file).resolve().parent)
+    snapshot_events = load_snapshot_events(
+        snapshot_dir,
+        default_hvac_mode=rows[0].hvac_mode,
+        fan_modes=fan_modes,
+    )
+    snapshot_profiles = load_snapshot_profiles(
+        snapshot_events,
+        trace_start=parse_timestamp(rows[0].timestamp),
+    )
+    initial_snapshot_profiles, snapshot_start_index = snapshot_profiles
+    seeded_profiles = seed_learning_from_snapshots(learning, initial_snapshot_profiles)
+    if seeded_profiles:
+        seeded_summary = ", ".join(f"{hvac_mode}/{fan_mode}={slope:.3f}" for fan_mode, hvac_mode, slope in seeded_profiles)
+        print(f"  Seeded {len(seeded_profiles)} missing profiles from snapshots: {seeded_summary}")
+
     # Run variants
     all_metrics: list[Metrics] = []
     all_results: dict[str, list[tuple[dict, str]]] = {}
+    report_learning = learning
 
     for name, overrides in variants:
         label = name
         if overrides:
             label += " (" + ", ".join(f"{k}={v}" for k, v in overrides.items()) + ")"
         print(f"Replaying variant '{label}'...")
-        results = replay(rows, learning, fan_modes, overrides, args.deadband, args.min_interval)
-        m = compute_metrics(name, overrides, rows, results, args.deadband)
+        variant_learning = clone_learning(learning)
+        results = replay(
+            rows,
+            variant_learning,
+            fan_modes,
+            overrides,
+            args.deadband,
+            args.min_interval,
+            snapshot_events=snapshot_events,
+            snapshot_start_index=snapshot_start_index,
+        )
+        m = compute_metrics(name, overrides, rows, results)
         all_metrics.append(m)
         all_results[name] = results
+        report_learning = variant_learning
 
     # Report
-    print_report(rows, fan_modes, learning, all_metrics, args.deadband)
+    print_report(rows, fan_modes, report_learning, all_metrics)
 
     # Optional CSV output
     if args.output:

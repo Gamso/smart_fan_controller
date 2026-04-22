@@ -390,7 +390,7 @@ def _detect_disturbances(hass, conf: dict, defrost_state: dict) -> tuple[bool, b
     operating_entity_id = conf.get(CONF_OPERATING_ENTITY)
     if operating_entity_id:
         operating_state = hass.states.get(operating_entity_id)
-        if operating_state and operating_state.state in ("off", "false", "False", "0"):
+        if operating_state and operating_state.state in ("off", "false", "False", "0", "idle"):
             is_hvac_idle = True
 
     return is_defrost, is_hvac_idle

@@ -419,38 +419,37 @@ class MPCController:
             return PHASE_TRANSIENT
         return PHASE_ESTABLISHED
 
-    def build_monotone_slopes(self, fan_modes: list[str], hvac_mode: str) -> dict[str, float] | None:
-        """Return monotone-enforced slopes keyed by fan mode, or None if not all profiles are ready.
+    def build_monotone_slopes(self, fan_modes: list[str], hvac_mode: str) -> dict[str, float]:
+        """Return monotone-enforced slopes for all known profiles.
 
-        Fan modes are assumed ordered from weakest to strongest.  If every mode
-        has a learned profile, we walk left-to-right and clamp each value to be
-        >= the previous one (isotonic regression, pool-adjacent-violators with
-        a simple forward pass).  This prevents a contaminated low-speed profile
-        from being ranked above a mid-speed one in the MPC cost comparison.
+        Fan modes are assumed ordered from weakest to strongest.  For each mode
+        with a learned profile, the slope is clamped to be >= the slope of the
+        last known lower mode (isotonic forward pass).  Modes without a learned
+        profile are omitted from the result — the caller falls back to rank-scaled
+        estimation for those.
 
-        Returns None when any profile is missing — on a fresh installation not
-        all modes have data yet and the constraint could mask real measurements.
+        Previously returned None when any profile was missing.  Now always
+        returns a (possibly empty) dict so known adjacent profiles are always
+        monotone-enforced even during partial learning.
         """
-        raw: list[tuple[str, float]] = []
+        enforced: dict[str, float] = {}
+        prev = float("-inf")
+        changed = False
         for fm in fan_modes:
             slope = self._learning.get_mode_effective_slope(fm, hvac_mode)
             if slope is None:
-                return None
-            raw.append((fm, slope))
-
-        enforced: dict[str, float] = {}
-        prev = float("-inf")
-        for fm, val in raw:
-            clamped = max(val, prev)
+                continue  # unknown profile — skip, caller uses rank-scaling fallback
+            clamped = max(slope, prev)
+            if clamped != slope:
+                changed = True
             enforced[fm] = clamped
             prev = clamped
 
-        if enforced != {fm: val for fm, val in raw}:
+        if changed:
             _LOGGER.debug(
-                "Monotone enforcement applied for %s: raw=%s → enforced=%s",
+                "Monotone enforcement applied for %s: %s",
                 hvac_mode,
-                {fm: round(val, 3) for fm, val in raw},
-                {fm: round(val, 3) for fm, val in enforced.items()},
+                {fm: round(v, 3) for fm, v in enforced.items()},
             )
         return enforced
 

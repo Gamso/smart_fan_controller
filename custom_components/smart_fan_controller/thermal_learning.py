@@ -94,10 +94,12 @@ class ThermalLearning:
                 f"{effective_slope:.3f}" if effective_slope is not None else "n/a",
             )
 
-        # Cleanup: keep only data within sliding window (7 days)
+        # Cleanup: keep only data within sliding window (7 days),
+        # but retain at least MIN_MODE_PROFILE_SAMPLES per profile so a rarely-used
+        # mode does not silently lose its learned profile after a quiet week.
         cutoff_time = time.time() - (self._learning_window_hours * 3600)
         before = len(self._slope_samples)
-        self._slope_samples = [s for s in self._slope_samples if s[0] > cutoff_time]
+        self._slope_samples = self.trim_with_min_retention(self._slope_samples, cutoff_time, MIN_MODE_PROFILE_SAMPLES)
 
         if len(self._slope_samples) < before:
             self.recompute_slope_stats()
@@ -105,6 +107,46 @@ class ThermalLearning:
                 "Learning: dropped %d expired slope samples from the sliding window",
                 before - len(self._slope_samples),
             )
+
+    @staticmethod
+    def trim_with_min_retention(
+        samples: list,
+        cutoff_time: float,
+        min_per_profile: int,
+    ) -> list:
+        """Apply sliding-window cutoff while retaining at least min_per_profile
+        newest samples per (fan_mode, hvac_mode) profile.
+
+        Prevents a rarely-used mode from losing its learned profile solely
+        because it hasn't been active in the past 7 days.
+        Samples are 4-tuples: (timestamp, fan_mode, slope, hvac_mode).
+        """
+        within = [s for s in samples if s[0] > cutoff_time]
+        expired = [s for s in samples if s[0] <= cutoff_time]
+        if not expired:
+            return within
+
+        # Count within-window samples per (fan_mode, hvac_mode) profile
+        profile_counts: dict[tuple, int] = {}
+        for _, fm, _, hm in within:
+            key = (fm, hm)
+            profile_counts[key] = profile_counts.get(key, 0) + 1
+
+        # Group expired samples by profile
+        expired_by_profile: dict[tuple, list] = {}
+        for s in expired:
+            key = (s[1], s[3])
+            expired_by_profile.setdefault(key, []).append(s)
+
+        extras: list = []
+        for key, exp_list in expired_by_profile.items():
+            shortfall = min_per_profile - profile_counts.get(key, 0)
+            if shortfall > 0:
+                # Keep the newest expired ones for this profile
+                exp_list.sort(key=lambda s: s[0], reverse=True)
+                extras.extend(exp_list[:shortfall])
+
+        return within + extras
 
     def _update_slope_stats(self, abs_slope: float) -> None:
         """Update slope statistics incrementally using Welford's algorithm."""
@@ -416,9 +458,10 @@ class ThermalLearning:
         instance._slope_m2 = data.get("slope_m2", data.get("slope_M2", 0.0))
         instance._slope_max = data.get("slope_max", 0.0)
 
-        # Apply sliding window cleanup on restore
+        # Apply sliding window cleanup on restore, keeping at least MIN_MODE_PROFILE_SAMPLES
+        # per profile so learned modes survive a quiet week without new samples.
         cutoff_time = time.time() - (instance._learning_window_hours * 3600)
-        instance._slope_samples = [s for s in instance._slope_samples if s[0] > cutoff_time]
+        instance._slope_samples = ThermalLearning.trim_with_min_retention(instance._slope_samples, cutoff_time, MIN_MODE_PROFILE_SAMPLES)
         instance._response_events = [(ts, t) for ts, t in instance._response_events if ts > cutoff_time]
 
         # Rebuild stats from cleaned window

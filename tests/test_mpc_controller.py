@@ -2,7 +2,7 @@
 
 import csv
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -432,7 +432,6 @@ def test_mpc_disturbance_bias_decays_during_defrost() -> None:
 def test_monotone_constraint_enforces_ordering() -> None:
     """Monotone constraint should clamp a lower mode's slope up to its neighbor when all profiles are ready."""
     learning = ThermalLearning()
-    fan_modes = ["silent", "low", "med", "high", "superhigh"]
 
     # Create inverted profiles: silent > med (the real-world bug)
     learning.set_mode_effective_slope("silent", "heat", 0.53)
@@ -449,7 +448,7 @@ def test_monotone_constraint_enforces_ordering() -> None:
     )
 
     monotone = mpc.build_monotone_slopes(["silent", "low", "med", "high", "superhigh"], "heat")
-    assert monotone is not None
+    assert isinstance(monotone, dict)
 
     # silent (0.53) should stay, low (0.0 → clamped to 0.53), med (0.45 → clamped to 0.53)
     assert monotone["silent"] == pytest.approx(0.53, abs=0.001)
@@ -459,8 +458,8 @@ def test_monotone_constraint_enforces_ordering() -> None:
     assert monotone["superhigh"] >= monotone["high"]
 
 
-def test_monotone_constraint_returns_none_for_partial_profiles() -> None:
-    """On a fresh install with incomplete profiles, monotone should return None."""
+def test_monotone_constraint_returns_partial_dict_for_partial_profiles() -> None:
+    """On a fresh install with incomplete profiles, monotone should return an empty dict."""
     learning = ThermalLearning()
     mpc = MPCController(
         learning=learning,
@@ -470,7 +469,37 @@ def test_monotone_constraint_returns_none_for_partial_profiles() -> None:
     )
     # No profiles learned yet
     result = mpc.build_monotone_slopes(FAN_MODES, "heat")
-    assert result is None
+    assert isinstance(result, dict)
+    assert len(result) == 0
+
+
+def test_monotone_constraint_partial_profiles_enforces_known_pairs() -> None:
+    """With some profiles missing, monotone should still enforce ordering among known ones."""
+    learning = ThermalLearning()
+    fan_modes = ["silent", "low", "med", "high", "superhigh"]
+
+    # Real-world snapshot inversion seen in the collected data:
+    # high=1.59 while superhigh=1.075.
+    learning.set_mode_effective_slope("high", "heat", 1.59)
+    learning.set_mode_effective_slope("superhigh", "heat", 1.075)
+
+    mpc = MPCController(
+        learning=learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=fan_modes,
+    )
+
+    result = mpc.build_monotone_slopes(fan_modes, "heat")
+    assert isinstance(result, dict)
+    # Only known profiles are in the dict
+    assert "silent" not in result
+    assert "low" not in result
+    assert "med" not in result
+    assert "high" in result
+    assert "superhigh" in result
+    assert result["high"] == pytest.approx(1.59, abs=0.001)
+    assert result["superhigh"] == pytest.approx(1.59, abs=0.001)
 
 
 def test_monotone_constraint_noop_when_already_ordered() -> None:
@@ -489,7 +518,7 @@ def test_monotone_constraint_noop_when_already_ordered() -> None:
     )
 
     monotone = mpc.build_monotone_slopes(FAN_MODES, "heat")
-    assert monotone is not None
+    assert isinstance(monotone, dict)
     assert monotone["low"] == pytest.approx(0.15, abs=0.001)
     assert monotone["medium"] == pytest.approx(0.5, abs=0.001)
     assert monotone["high"] == pytest.approx(1.0, abs=0.001)

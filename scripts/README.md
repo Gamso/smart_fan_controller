@@ -38,15 +38,27 @@ python scripts/replay_bench.py data.csv \
   --output /tmp/replay_results.csv
 ```
 
+### Analysing a specific time window
+
+```bash
+python scripts/replay_bench.py data.csv \
+  --start 2026-04-17T17:40:00Z \
+  --end 2026-04-17T18:15:00Z \
+  --fan-order silent,low,med,high,superhigh
+```
+
 ### Options
 
-| Option                         | Default       | Description                                |
-| ------------------------------ | ------------- | ------------------------------------------ |
-| `--variant NAME[:KEY=VAL,...]` | `baseline`    | Variant to replay (repeatable)             |
-| `--deadband FLOAT`             | `0.2`         | Deadband in degrees                        |
-| `--min-interval INT`           | `10`          | Minimum interval between fan changes (min) |
-| `--fan-order a,b,c`            | auto-detected | Fan modes ordered weakest to strongest     |
-| `--output FILE`                | —             | Write per-row decisions to a CSV file      |
+| Option                         | Default       | Description                                                  |
+| ------------------------------ | ------------- | ------------------------------------------------------------ |
+| `--variant NAME[:KEY=VAL,...]` | `baseline`    | Variant to replay (repeatable)                               |
+| `--deadband FLOAT`             | `0.2`         | Deadband in degrees                                          |
+| `--min-interval INT`           | `10`          | Minimum interval between fan changes (min)                   |
+| `--fan-order a,b,c`            | auto-detected | Fan modes ordered weakest to strongest                       |
+| `--seed-snapshots-dir DIR`     | CSV directory | Seed missing profiles from `*_effective_slope.csv` snapshots |
+| `--start ISO_TIMESTAMP`        | —             | Inclusive start of the replay window                         |
+| `--end ISO_TIMESTAMP`          | —             | Inclusive end of the replay window                           |
+| `--output FILE`                | —             | Write per-row decisions to a CSV file                        |
 
 ### Tunable constants
 
@@ -69,6 +81,15 @@ python scripts/replay_bench.py data.csv \
 - **Avg MPC cost**: mean weighted cost (relative comparison between variants)
 - **Prediction MAE T+10**: absolute prediction error for temperature at T+10 min
 - **Fan distribution**: percentage of time spent in each fan mode
+
+If snapshot CSV files are present, the replay bench uses them in two ways:
+
+- it seeds profiles that are still missing near the start of the replay window
+- it replays later snapshot changes during the trace, including transitions to
+  `unknown` / `unavailable`
+
+This makes long replays closer to the live controller state when profile
+sensors are restored after a restart or disappear later in the trace.
 
 ---
 
