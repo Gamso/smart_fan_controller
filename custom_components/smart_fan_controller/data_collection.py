@@ -50,6 +50,12 @@ _HEADER = [
 _MAX_FILE_SIZE = 10 * 1024 * 1024
 
 
+def _coalesce(value, default):
+    """Return *value* if it is not None, otherwise *default*."""
+    return value if value is not None else default
+
+
+
 class DataCollector:
     """Appends one CSV row per control cycle to a rotating log file."""
 
@@ -91,8 +97,8 @@ class DataCollector:
             round(decision.get("temperature_error", 0.0), 3),
             round(vtherm_slope, 4),
             round(effective_slope, 4),
-            round(decision.get("projected_temperature", current_temp), 3),
-            round(decision.get("projected_temperature_error", 0.0), 3),
+            round(_coalesce(decision.get("projected_temperature"), current_temp), 3),
+            round(_coalesce(decision.get("projected_temperature_error"), 0.0), 3),
             phase,
             round(decision.get("minutes_since_last_change", 0.0), 2),
             round(effective_timeout, 2),
