@@ -594,7 +594,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             effective_reason = f"MPC paused: {mpc_decision.get('mpc_status', 'unknown')}"
 
         # Phase classification (for learning gating and data collection)
-        learned_dead_time = learning.get_dead_time() if learning.is_ready() else DEFAULT_DEAD_TIME
+        learned_dead_time = learning.get_dead_time(hvac_mode) if learning.is_ready() else DEFAULT_DEAD_TIME
         if minutes_since_change < learned_dead_time:
             phase = "DEAD_TIME"
         elif minutes_since_change < learned_dead_time * DEAD_TIME_SAFETY_FACTOR:
@@ -619,8 +619,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if slope_change and ctrl_state["last_change_time"] > 0:
             response_time = minutes_since_change
             if 2.0 <= response_time <= 60.0 and not is_window_open and not is_defrost_active and not is_hvac_idle:
-                learning.add_response_event(response_time)
-                _LOGGER.debug("Recorded thermal response event: %.1f min after last fan change", response_time)
+                learning.add_response_event(response_time, hvac_mode)
+                _LOGGER.debug("Recorded thermal response event: %.1f min after last fan change (hvac=%s)", response_time, hvac_mode)
 
         if slope_change:
             ctrl_state["previous_slope"] = vtherm_slope
@@ -645,10 +645,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 decision=collector_decision,
                 phase=phase,
                 effective_slope=-float(vtherm_slope) if hvac_mode == "cool" else float(vtherm_slope),
-                effective_timeout=mpc_controller.get_effective_timeout(),
+                effective_timeout=mpc_controller.get_effective_timeout(hvac_mode),
                 force=False,
                 learning_ready=learning.is_ready(),
-                dead_time=learning.get_dead_time(),
+                dead_time=learning.get_dead_time(hvac_mode),
                 mpc_decision=mpc_decision,
                 defrost_active=is_defrost_active,
                 is_hvac_idle=is_hvac_idle,

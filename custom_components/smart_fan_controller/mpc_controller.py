@@ -121,10 +121,10 @@ class MPCController:
         """Return the configured static limit timeout (minutes)."""
         return self._limit_timeout
 
-    def get_effective_timeout(self) -> float:
+    def get_effective_timeout(self, hvac_mode: str = "unknown") -> float:
         """Return the adaptive timeout based on learned dead time, or static fallback."""
         if self._learning.is_ready():
-            learned_dead_time = self._learning.get_dead_time()
+            learned_dead_time = self._learning.get_dead_time(hvac_mode)
             return max(self._min_interval, learned_dead_time * DEAD_TIME_SAFETY_FACTOR)
         return self._limit_timeout
 
@@ -245,6 +245,7 @@ class MPCController:
 
         simulations: list[ModeSimulation] = []
         known_profiles = 0
+        worst_spread = 0.0
         current_index = fan_modes.index(active_fan)
 
         # Build monotone-enforced slope map so higher fan modes are never
@@ -252,6 +253,11 @@ class MPCController:
         # profiles are learned; on a fresh install (partial profiles) the
         # raw learned / fallback values are used as-is.
         monotone_slopes = self.build_monotone_slopes(fan_modes, hvac_mode)
+
+        # Ensure the horizon is at least dead_time + base_horizon so that
+        # any mode changes are simulated for at least a full default horizon (e.g. 30 minutes)
+        # of their actual candidate slope, preventing the "dead-time blindness".
+        sim_horizon = max(self._horizon_minutes, int(dead_time) + self._horizon_minutes)
 
         for fan_mode in fan_modes:
             mode_slope, known_profile = self._get_mode_slope(
@@ -275,9 +281,14 @@ class MPCController:
                 current_index=current_index,
                 change_allowed=change_allowed,
                 known_profile=known_profile,
+                horizon_minutes=sim_horizon,
             )
             simulations.append(sim)
             known_profiles += int(known_profile)
+            if known_profile:
+                spread = self._learning.get_profile_spread(fan_mode, hvac_mode)
+                if spread is not None:
+                    worst_spread = max(worst_spread, spread)
 
         current_simulation = next(sim for sim in simulations if sim.fan_mode == active_fan)
         best = min(simulations, key=lambda item: item.total_cost)
@@ -316,7 +327,7 @@ class MPCController:
                     selection_note = hold_note
                     best = current_simulation
 
-        confidence = self._compute_confidence(known_profiles, len(fan_modes), phase)
+        confidence = self._compute_confidence(known_profiles, len(fan_modes), phase, worst_spread)
         would_change_now = "yes" if change_allowed and best.fan_mode != active_fan else "no"
         status = "Ready" if confidence >= 0.5 else "Low confidence"
         _LOGGER.debug(
@@ -516,9 +527,11 @@ class MPCController:
         current_index: int,
         change_allowed: bool,
         known_profile: bool,
+        horizon_minutes: int | None = None,
     ) -> ModeSimulation:
         """Simulate one constant fan mode over the prediction horizon."""
-        steps = max(1, int(self._horizon_minutes / self._cycle_minutes))
+        horizon = horizon_minutes if horizon_minutes is not None else self._horizon_minutes
+        steps = max(1, int(horizon / self._cycle_minutes))
         step_hours = self._cycle_minutes / 60.0
         blend = 0.45
         sim_temp = current_temp
@@ -528,9 +541,6 @@ class MPCController:
         thermal_power = current_effective_slope
         change_delay = 0.0 if candidate_fan == current_fan else dead_time
         candidate_effective_slope = candidate_mode_slope + self._disturbance_bias
-
-        current_error = self._temperature_error(current_temp, target_temp, hvac_mode)
-        urgency_weight = 1.0 + max(current_error - self._deadband, 0.0) * URGENCY_SENSITIVITY
 
         for step in range(1, steps + 1):
             elapsed = step * self._cycle_minutes
@@ -552,13 +562,23 @@ class MPCController:
             comfort_error = max(abs(error) - self._deadband, 0.0)
             overshoot = max(-error, 0.0)
             floor_violation = max(target_temp - sim_temp, 0.0) if hvac_mode == "heat" else max(sim_temp - target_temp, 0.0)
-            cost += COMFORT_ERROR_WEIGHT * comfort_error * urgency_weight
+
+            # Step-by-step urgency weight calculated dynamically based on current simulated step comfort error
+            step_urgency_weight = 1.0 + comfort_error * URGENCY_SENSITIVITY
+            cost += COMFORT_ERROR_WEIGHT * comfort_error * step_urgency_weight
             cost += OVERSHOOT_QUADRATIC_WEIGHT * overshoot * overshoot
-            cost += FLOOR_VIOLATION_LINEAR_WEIGHT * floor_violation * urgency_weight
+            cost += FLOOR_VIOLATION_LINEAR_WEIGHT * floor_violation * step_urgency_weight
             cost += FLOOR_VIOLATION_QUADRATIC_WEIGHT * floor_violation * floor_violation
 
         cost += MODE_CHANGE_DISTANCE_COST * abs(candidate_index - current_index)
-        cost += MODE_RANK_COST * (candidate_index + 1)
+        # Apply non-linear economic mode ranking cost to represent actual physical power scaling
+        # (Low: 1.0x, Medium: 1.5x, High: 3.0x, Superhigh: 6.0x equivalent)
+        # This replaces the abstract linear mode rank cost with a real physical relative power draw representation.
+        power_draw = [1.0, 1.5, 3.0, 6.0]
+        # Map indices to relative weights
+        p_index = min(candidate_index, len(power_draw) - 1)
+        relative_power = power_draw[p_index]
+        cost += MODE_RANK_COST * relative_power
         if candidate_fan != current_fan and not change_allowed:
             cost += MIN_INTERVAL_CHANGE_PENALTY
 
@@ -628,13 +648,19 @@ class MPCController:
 
         return None
 
-    def _compute_confidence(self, known_profiles: int, total_profiles: int, phase: str) -> float:
-        """Return a coarse confidence score for the current recommendation."""
+    def _compute_confidence(self, known_profiles: int, total_profiles: int, phase: str, worst_spread: float = 0.0) -> float:
+        """Return a coarse confidence score for the current recommendation.
+
+        worst_spread is the maximum MAD/median ratio across all known profiles.
+        Profiles with high spread (> 0.15) reduce confidence proportionally,
+        capped at a 0.20 penalty.
+        """
         coverage = known_profiles / max(total_profiles, 1)
         base = 1.0 if self._learning.is_ready() else 0.45
         phase_factor = 1.0 if phase == PHASE_ESTABLISHED else 0.85
         disturbance_penalty = min(abs(self._disturbance_bias) / MAX_DISTURBANCE_BIAS, 0.35)
-        return max(0.1, min(1.0, (base * (0.5 + 0.5 * coverage) * phase_factor) - disturbance_penalty))
+        spread_penalty = min(max(worst_spread - 0.15, 0.0) * 0.4, 0.20)
+        return max(0.1, min(1.0, (base * (0.5 + 0.5 * coverage) * phase_factor) - disturbance_penalty - spread_penalty))
 
     def _payload(
         self,

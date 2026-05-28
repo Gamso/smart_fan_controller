@@ -230,6 +230,67 @@ def test_profile_effective_slope_sensor_exposes_historizable_state() -> None:
     assert sensor.native_value == 0.9
     assert sensor.extra_state_attributes["samples"] == 12
     assert sensor.extra_state_attributes["ready"] is True
+    assert sensor.extra_state_attributes["spread"] == 0.0
+    assert sensor.extra_state_attributes["quality"] == "good"
+
+
+
+def test_get_profile_spread_returns_none_when_insufficient_samples() -> None:
+    """get_profile_spread returns None when the profile has fewer than MIN_MODE_PROFILE_SAMPLES."""
+    learning = ThermalLearning()
+    learning.add_slope_sample("high", 0.9, 0.3, "heat")
+    assert learning.get_profile_spread("high", "heat") is None
+
+
+def test_get_profile_spread_returns_zero_for_identical_samples() -> None:
+    """get_profile_spread returns 0.0 for perfectly consistent slope samples."""
+    learning = ThermalLearning()
+    for _ in range(12):
+        learning.add_slope_sample("high", 0.9, 0.3, "heat")
+    assert learning.get_profile_spread("high", "heat") == 0.0
+
+
+def test_get_profile_spread_reflects_variability() -> None:
+    """get_profile_spread increases with sample variability."""
+    learning_tight = ThermalLearning()
+    learning_noisy = ThermalLearning()
+    slopes_tight = [0.88, 0.89, 0.90, 0.91, 0.92, 0.89, 0.90, 0.91, 0.88, 0.90]
+    slopes_noisy = [0.30, 0.60, 0.90, 1.20, 0.45, 0.80, 1.10, 0.50, 0.70, 1.00]
+    for s in slopes_tight:
+        learning_tight.add_slope_sample("high", s, 0.3, "heat")
+    for s in slopes_noisy:
+        learning_noisy.add_slope_sample("high", s, 0.3, "heat")
+    spread_tight = learning_tight.get_profile_spread("high", "heat")
+    spread_noisy = learning_noisy.get_profile_spread("high", "heat")
+    assert spread_tight is not None
+    assert spread_noisy is not None
+    assert spread_noisy > spread_tight
+
+
+def test_confidence_penalised_by_high_spread() -> None:
+    """MPC confidence is lower when a known profile has high spread."""
+    learning_tight = ThermalLearning()
+    learning_noisy = ThermalLearning()
+    slopes_tight = [0.88, 0.89, 0.90, 0.91, 0.92, 0.89, 0.90, 0.91, 0.88, 0.90]
+    slopes_noisy = [0.30, 0.60, 0.90, 1.20, 0.45, 0.80, 1.10, 0.50, 0.70, 1.00]
+    for i in range(100):
+        learning_tight.add_slope_sample("high", slopes_tight[i % len(slopes_tight)], 0.3, "heat")
+        learning_noisy.add_slope_sample("high", slopes_noisy[i % len(slopes_noisy)], 0.3, "heat")
+
+    mpc_tight = _build_mpc(learning_tight)
+    mpc_noisy = _build_mpc(learning_noisy)
+
+    common_kwargs = dict(
+        current_temp=19.5,
+        target_temp=20.0,
+        vtherm_slope=0.9,
+        hvac_mode="heat",
+        current_fan="high",
+        minutes_since_change=30.0,
+    )
+    result_tight = mpc_tight.evaluate(**common_kwargs)
+    result_noisy = mpc_noisy.evaluate(**common_kwargs)
+    assert result_tight["mpc_confidence"] > result_noisy["mpc_confidence"]
 
 
 @pytest.mark.asyncio
@@ -522,3 +583,36 @@ def test_monotone_constraint_noop_when_already_ordered() -> None:
     assert monotone["low"] == pytest.approx(0.15, abs=0.001)
     assert monotone["medium"] == pytest.approx(0.5, abs=0.001)
     assert monotone["high"] == pytest.approx(1.0, abs=0.001)
+
+
+def test_mpc_handles_long_dead_time_without_blindness() -> None:
+    """MPC detects faster modes even with a long dead time due to adaptive horizon."""
+    learning = ThermalLearning()
+    # Mock high and superhigh learned slopes
+    learning.set_mode_effective_slope("high", "cool", 1.2)
+    learning.set_mode_effective_slope("superhigh", "cool", 1.5)
+    # Mock a long dead time of 27 minutes
+    learning.add_response_event(27.0)
+
+    mpc = MPCController(
+        learning=learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=["silent", "low", "med", "high", "superhigh"],
+    )
+
+    # Evaluate cooling with a large error (3.2), current_fan is 'med' (which is unlearned)
+    result = mpc.evaluate(
+        current_temp=25.2,
+        target_temp=22.0,
+        vtherm_slope=0.0,
+        hvac_mode="cool",
+        current_fan="med",
+        is_window_open=False,
+        minutes_since_change=50.0,
+    )
+
+    # Thanks to adaptive horizon, MPC sees past the 27-minute dead-time delay
+    # and correctly recommends superhigh (or high) over med, instead of remaining blind
+    assert result["mpc_fan_mode"] in ("high", "superhigh")
+    assert result["mpc_would_change_now"] == "yes"

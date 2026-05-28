@@ -118,7 +118,11 @@ All parameters can be changed at any time via **Settings → Devices & Services 
 
 ## MPC Controller
 
-The MPC (Model Predictive Control) engine is the sole decision-maker for fan speed. Each cycle, it evaluates every available fan mode by simulating temperature evolution over a 30-minute horizon and selecting the mode with the lowest cost.
+The MPC (Model Predictive Control) engine is the sole decision-maker for fan speed. Each cycle, it evaluates every available fan mode by simulating temperature evolution over an adaptive horizon and selecting the mode with the lowest cost.
+
+To eliminate "dead-time blindness" during startup or large setpoint changes when the physical system has lag, the simulation horizon resolves adaptively to:
+$$\text{Horizon} = \max(30, \text{dead\_time} + 30) \text{ minutes}$$
+This ensures that every candidate fan speed is simulated for a full 30-minute window of active response after its transition delay.
 
 See [docs/mpc_mode.md](docs/mpc_mode.md) for the full technical design.
 
@@ -128,18 +132,18 @@ Each candidate fan mode is scored with:
 
 | Component                   | Purpose                                                                      |
 | --------------------------- | ---------------------------------------------------------------------------- |
-| **Comfort error × urgency** | Penalizes being outside the deadband, amplified when far from target         |
+| **Comfort error × urgency** | Penalizes being outside the deadband, with dynamic step-by-step urgency      |
 | **Overshoot²**              | Strongly penalizes going past the target temperature                         |
 | **Floor violation**         | Penalizes predicted temperature dropping below setpoint (linear + quadratic) |
 | **Mode-change cost**        | Penalizes unnecessary fan jumps (proportional to step distance)              |
-| **Mode-rank cost**          | Slight preference for lower fan speeds (energy savings)                      |
+| **Mode-rank cost**          | Slight preference for lower fan speeds using physical non-linear power curve |
 | **Min-interval penalty**    | Blocks changes before the minimum interval has elapsed                       |
 
 ### Hysteresis and Guards
 
 - **Hysteresis**: a recommendation that changes the fan must beat the current mode by a minimum cost margin. The margin is larger when near the target (0.30) and smaller when far away (0.10).
 - **Step-down hold**: blocks downward moves when still under target and the temperature slope hasn't established yet.
-- **Min interval**: non-emergency changes respect the effective timeout (learned dead time × 1.5, or the configured limit timeout).
+- **Min interval**: non-emergency changes respect the effective timeout (learned dead time × 1.5 for the specified HVAC mode, or the configured limit timeout).
 
 ### Phase Detection
 

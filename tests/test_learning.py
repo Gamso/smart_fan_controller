@@ -177,3 +177,20 @@ class TestThermalLearning:
         # Median of [0.15]*12 + [1.29]*3 = 0.15 (most values are 0.15)
         assert slope is not None
         assert slope == pytest.approx(0.15, abs=0.01)
+
+    def test_get_dead_time_decoupled_by_hvac_mode(self):
+        """Test that get_dead_time handles separate heating and cooling events correctly."""
+        learning = ThermalLearning()
+        learning.add_response_event(12.0, "heat")
+        learning.add_response_event(14.0, "heat")
+        learning.add_response_event(16.0, "heat")
+
+        learning.add_response_event(6.0, "cool")
+        learning.add_response_event(8.0, "cool")
+        learning.add_response_event(10.0, "cool")
+
+        # Specific dead times
+        assert learning.get_dead_time("heat") == 14.0
+        assert learning.get_dead_time("cool") == 8.0
+        # Unknown fallback behavior (uses joint / all response times)
+        assert learning.get_dead_time("unknown") == 11.0

@@ -485,12 +485,23 @@ class SmartFanProfileEffectiveSlopeSensor(_SmartFanEntity):
     def extra_state_attributes(self) -> dict:
         """Expose sampling details for the current profile."""
         samples = self._controller.learning.get_mode_sample_count(self._fan_mode, self._hvac_mode)
+        spread = self._controller.learning.get_profile_spread(self._fan_mode, self._hvac_mode)
+        if spread is None:
+            quality = "unknown"
+        elif spread < 0.15:
+            quality = "good"
+        elif spread < 0.30:
+            quality = "fair"
+        else:
+            quality = "poor"
         return {
             "hvac_mode": self._hvac_mode,
             "fan_mode": self._fan_mode,
             "samples": samples,
             "min_samples_required": MIN_MODE_PROFILE_SAMPLES,
             "ready": samples >= MIN_MODE_PROFILE_SAMPLES,
+            "spread": spread,
+            "quality": quality,
         }
 
 
