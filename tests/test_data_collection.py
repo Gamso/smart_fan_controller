@@ -99,6 +99,44 @@ async def test_async_record_appends_row(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_async_record_handles_none_projected_values(tmp_path: Path) -> None:
+    """None projected values should fallback without raising."""
+    hass = _make_executor_hass()
+    collector = DataCollector(hass, str(tmp_path), "123456789")
+
+    await collector.async_initialize()
+    await collector.async_record(
+        hvac_mode="heat",
+        current_temp=20.1234,
+        target_temp=21.0,
+        vtherm_slope=-0.2468,
+        is_window_open=False,
+        decision={
+            "temperature_error": 0.8765,
+            "projected_temperature": None,
+            "projected_temperature_error": None,
+            "minutes_since_last_change": 12.345,
+            "current_fan": "low",
+            "fan_mode": "medium",
+            "reason": "Strong recovery",
+        },
+        phase="TRANSIENT",
+        effective_slope=-0.2468,
+        effective_timeout=15.4321,
+        force=True,
+        learning_ready=False,
+        dead_time=10.987,
+    )
+
+    with open(collector.path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+
+    assert len(rows) == 2
+    assert rows[1][7:9] == ["20.123", "0.0"]
+    assert hass.async_add_executor_job.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_async_initialize_rotates_file_on_header_change(tmp_path: Path) -> None:
     """The collector should rotate the active CSV when the schema changes."""
     legacy_path = tmp_path / "smart_fan_controller_data_12345678.csv"
