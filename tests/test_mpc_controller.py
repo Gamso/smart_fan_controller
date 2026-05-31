@@ -9,6 +9,7 @@ import pytest
 from custom_components.smart_fan_controller.data_collection import DataCollector
 from custom_components.smart_fan_controller.mpc_controller import MPCController
 from custom_components.smart_fan_controller.sensor import (
+    SmartFanLearningResponseSensor,
     SmartFanMpcProfilesSensor,
     SmartFanProfileEffectiveSlopeSensor,
     SmartFanSensor,
@@ -616,3 +617,25 @@ def test_mpc_handles_long_dead_time_without_blindness() -> None:
     # and correctly recommends superhigh (or high) over med, instead of remaining blind
     assert result["mpc_fan_mode"] in ("high", "superhigh")
     assert result["mpc_would_change_now"] == "yes"
+
+
+def test_learning_response_sensor_with_mixed_tuple_lengths() -> None:
+    """SmartFanLearningResponseSensor extra_state_attributes handles mixed lengths in response_events."""
+    import time
+    learning = ThermalLearning()
+    mpc = _build_mpc(learning)
+
+    # Inject mixed length response events
+    learning.response_events = [
+        (time.time() - 100, 12.0),                # 2-tuple (old format)
+        (time.time() - 200, 15.0, "heat"),        # 3-tuple (new format with hvac_mode)
+        (time.time() - 300, 0.0, "cool"),         # 3-tuple to be ignored (t <= 0)
+    ]
+
+    sensor = SmartFanLearningResponseSensor("entry-1", "climate.living_room", mpc)
+
+    assert sensor.native_value == 3
+    attrs = sensor.extra_state_attributes
+    assert attrs["response_samples"] == 0         # because is_ready() is False, returns fallback 0
+    assert attrs["avg_response_time_min"] == pytest.approx(13.5)
+

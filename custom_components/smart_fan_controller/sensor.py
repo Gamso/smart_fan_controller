@@ -338,7 +338,7 @@ class SmartFanLearningResponseSensor(_SmartFanEntity):
         """Return response time statistics."""
         learning = self._controller.learning
         optimal = learning.compute_optimal_parameters()
-        response_times = [t for _, t in learning.response_events if t > 0]
+        response_times = [item[1] for item in learning.response_events if item[1] > 0]
         avg_response = sum(response_times) / len(response_times) if response_times else 0
 
         return {

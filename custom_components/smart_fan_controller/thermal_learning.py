@@ -269,7 +269,6 @@ class ThermalLearning:
         """
         response_times = []
         for item in self._response_events:
-            ts = item[0]
             t = item[1]
             hm = item[2] if len(item) == 3 else "unknown"
             if t > 0:
