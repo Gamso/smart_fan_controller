@@ -94,10 +94,12 @@ class ThermalLearning:
                 f"{effective_slope:.3f}" if effective_slope is not None else "n/a",
             )
 
-        # Cleanup: keep only data within sliding window (7 days)
+        # Cleanup: keep only data within sliding window (7 days),
+        # but retain at least MIN_MODE_PROFILE_SAMPLES per profile so a rarely-used
+        # mode does not silently lose its learned profile after a quiet week.
         cutoff_time = time.time() - (self._learning_window_hours * 3600)
         before = len(self._slope_samples)
-        self._slope_samples = [s for s in self._slope_samples if s[0] > cutoff_time]
+        self._slope_samples = self.trim_with_min_retention(self._slope_samples, cutoff_time, MIN_MODE_PROFILE_SAMPLES)
 
         if len(self._slope_samples) < before:
             self.recompute_slope_stats()
@@ -105,6 +107,46 @@ class ThermalLearning:
                 "Learning: dropped %d expired slope samples from the sliding window",
                 before - len(self._slope_samples),
             )
+
+    @staticmethod
+    def trim_with_min_retention(
+        samples: list,
+        cutoff_time: float,
+        min_per_profile: int,
+    ) -> list:
+        """Apply sliding-window cutoff while retaining at least min_per_profile
+        newest samples per (fan_mode, hvac_mode) profile.
+
+        Prevents a rarely-used mode from losing its learned profile solely
+        because it hasn't been active in the past 7 days.
+        Samples are 4-tuples: (timestamp, fan_mode, slope, hvac_mode).
+        """
+        within = [s for s in samples if s[0] > cutoff_time]
+        expired = [s for s in samples if s[0] <= cutoff_time]
+        if not expired:
+            return within
+
+        # Count within-window samples per (fan_mode, hvac_mode) profile
+        profile_counts: dict[tuple, int] = {}
+        for _, fm, _, hm in within:
+            key = (fm, hm)
+            profile_counts[key] = profile_counts.get(key, 0) + 1
+
+        # Group expired samples by profile
+        expired_by_profile: dict[tuple, list] = {}
+        for s in expired:
+            key = (s[1], s[3])
+            expired_by_profile.setdefault(key, []).append(s)
+
+        extras: list = []
+        for key, exp_list in expired_by_profile.items():
+            shortfall = min_per_profile - profile_counts.get(key, 0)
+            if shortfall > 0:
+                # Keep the newest expired ones for this profile
+                exp_list.sort(key=lambda s: s[0], reverse=True)
+                extras.extend(exp_list[:shortfall])
+
+        return within + extras
 
     def _update_slope_stats(self, abs_slope: float) -> None:
         """Update slope statistics incrementally using Welford's algorithm."""
@@ -116,10 +158,15 @@ class ThermalLearning:
         self._slope_max = max(self._slope_max, abs_slope)
         _LOGGER.debug("Learning: Updated stats (count=%d, mean=%.3f, max=%.3f)", self._slope_count, self._slope_mean, self._slope_max)
 
-    def add_response_event(self, minutes_to_response: float):
+    def add_response_event(self, minutes_to_response: float, hvac_mode: str = "unknown"):
         """Record time until slope changed significantly after fan change."""
-        self._response_events.append((time.time(), minutes_to_response))
-        _LOGGER.debug("Learning: Recorded response time #%d: %.1f min", len(self._response_events), minutes_to_response)
+        self._response_events.append((time.time(), minutes_to_response, hvac_mode))
+        _LOGGER.debug(
+            "Learning: Recorded response time #%d: %.1f min (hvac=%s)",
+            len(self._response_events),
+            minutes_to_response,
+            hvac_mode,
+        )
 
         # Invalidate cached optimal parameters
         self._optimal_cache = None
@@ -127,7 +174,11 @@ class ThermalLearning:
         # Cleanup: keep only data within sliding window (7 days)
         cutoff_time = time.time() - (self._learning_window_hours * 3600)
         before = len(self._response_events)
-        self._response_events = [(ts, t) for ts, t in self._response_events if ts > cutoff_time]
+        self._response_events = [
+            (ts, t, hm) if len(item) == 3 else (ts, t, "unknown")
+            for item in self._response_events
+            if (ts := item[0]) > cutoff_time and (t := item[1]) is not None and (hm := (item[2] if len(item) == 3 else "unknown"))
+        ]
         if len(self._response_events) < before:
             _LOGGER.debug(
                 "Learning: dropped %d expired response events from the sliding window",
@@ -211,18 +262,32 @@ class ThermalLearning:
             _LOGGER.info("Learning: Initial readiness reached with %d samples", self._min_samples)
         return self._ready_once
 
-    def get_dead_time(self) -> float:
-        """Return the learned dead time (median response time) in minutes.
+    def get_dead_time(self, hvac_mode: str = "unknown") -> float:
+        """Return the learned dead time (median response time) in minutes for specified HVAC mode.
 
         Falls back to DEFAULT_DEAD_TIME when no response events have been recorded yet.
         """
-        response_times = [t for _, t in self._response_events if t > 0]
+        response_times = []
+        for item in self._response_events:
+            t = item[1]
+            hm = item[2] if len(item) == 3 else "unknown"
+            if t > 0:
+                if hvac_mode == "unknown" or hm == hvac_mode or hm == "unknown":
+                    response_times.append(t)
+
+        if not response_times:
+            # Try any if specific not found
+            response_times = [item[1] for item in self._response_events if item[1] > 0]
+
         if not response_times:
             return DEFAULT_DEAD_TIME
         return statistics.median(response_times)
 
     def get_mode_effective_slope(self, fan_mode: str, hvac_mode: str) -> float | None:
-        """Return the average effective slope for a fan mode in a given HVAC mode.
+        """Return the median effective slope for a fan mode in a given HVAC mode.
+
+        Uses median instead of mean for robustness against outlier samples
+        (e.g. residual inertia from a previous high-speed mode).
 
         Effective slope is positive when moving towards target:
         - In heating: positive raw slope is good
@@ -233,8 +298,53 @@ class ThermalLearning:
         matching_slopes = [sl for (_, fm, sl, hm) in self._slope_samples if fm == fan_mode and hm == hvac_mode]
         if len(matching_slopes) < MIN_MODE_PROFILE_SAMPLES:
             return None
-        avg = statistics.mean(matching_slopes)
-        return -avg if hvac_mode == "cool" else avg
+        med = statistics.median(matching_slopes)
+        return -med if hvac_mode == "cool" else med
+
+    def get_profile_spread(self, fan_mode: str, hvac_mode: str) -> float | None:
+        """Return the MAD/median ratio for a profile's absolute slopes.
+
+        Measures internal consistency of collected slope samples:
+        - 0.00–0.15 : good (tight cluster)
+        - 0.15–0.30 : fair
+        - > 0.30    : poor (high variability, low-confidence profile)
+
+        Returns None if the profile has fewer than MIN_MODE_PROFILE_SAMPLES samples.
+        """
+        abs_slopes = [abs(sl) for (_, fm, sl, hm) in self._slope_samples if fm == fan_mode and hm == hvac_mode]
+        if len(abs_slopes) < MIN_MODE_PROFILE_SAMPLES:
+            return None
+        med = statistics.median(abs_slopes)
+        if med < 0.01:
+            return None
+        mad = statistics.median([abs(s - med) for s in abs_slopes])
+        return round(mad / med, 3)
+
+    def set_mode_effective_slope(self, fan_mode: str, hvac_mode: str, target_slope: float) -> None:
+        """Replace all samples for a fan/HVAC profile with synthetic ones producing target_slope.
+
+        The raw slope stored in samples is the signed VTherm value:
+        - In heating: raw slope == effective slope
+        - In cooling: raw slope == -effective slope (inverted on read)
+        """
+        raw_slope = -target_slope if hvac_mode == "cool" else target_slope
+
+        # Remove existing samples for this profile
+        before = len(self._slope_samples)
+        self._slope_samples = [s for s in self._slope_samples if not (s[1] == fan_mode and s[3] == hvac_mode)]
+        removed = before - len(self._slope_samples)
+
+        # Insert MIN_MODE_PROFILE_SAMPLES synthetic samples at current time
+        now = time.time()
+        for i in range(MIN_MODE_PROFILE_SAMPLES):
+            self._slope_samples.append((now + i, fan_mode, raw_slope, hvac_mode))
+
+        self.recompute_slope_stats()
+
+        _LOGGER.info(
+            "Learning: set_mode_effective_slope %s/%s = %.3f (removed %d, inserted %d synthetic samples)",
+            hvac_mode, fan_mode, target_slope, removed, MIN_MODE_PROFILE_SAMPLES,
+        )
 
     def get_mode_sample_count(self, fan_mode: str, hvac_mode: str) -> int:
         """Return the number of collected samples for one fan/HVAC profile."""
@@ -287,7 +397,7 @@ class ThermalLearning:
         slope_stdev = slope_variance**0.5  # Standard deviation
 
         # Analyze response times
-        response_times = [t for _, t in self._response_events if t > 0]
+        response_times = [item[1] for item in self._response_events if item[1] > 0]
         # Use median instead of mean to be robust against outliers
         avg_response = statistics.median(response_times) if response_times else 10.0
 
@@ -301,8 +411,6 @@ class ThermalLearning:
         volatility_factor = min(slope_stdev / max(self._slope_mean, 0.1), 3.0)
 
         optimal_deadband = 0.15 + (volatility_factor * 0.2)
-        optimal_soft_error = 0.25 + (volatility_factor * 0.3)
-        optimal_hard_error = 0.5 + (volatility_factor * 0.4)
 
         _LOGGER.info(
             "Auto-calibration complete: avg_slope=%.2f std=%.2f max=%.2f | avg_response=%.1fmin | limit_timeout=%d",
@@ -315,8 +423,6 @@ class ThermalLearning:
 
         result = {
             "deadband": round(optimal_deadband, 2),
-            "soft_error": round(optimal_soft_error, 2),
-            "hard_error": round(optimal_hard_error, 2),
             "limit_timeout": optimal_limit_timeout,
             "samples_count": self._slope_count,
             "response_samples": len(response_times),
@@ -336,7 +442,7 @@ class ThermalLearning:
             "response_events": self._response_events[-100:],
             "slope_count": self._slope_count,
             "slope_mean": self._slope_mean,
-            "slope_M2": self._slope_m2,
+            "slope_m2": self._slope_m2,
             "slope_max": self._slope_max,
         }
 
@@ -369,32 +475,33 @@ class ThermalLearning:
 
         Handles backward compatibility: old 3-tuple samples (timestamp, fan_mode, slope)
         are migrated to 4-tuples by appending hvac_mode="unknown".
+        Old 2-tuple response_events are migrated to 3-tuples by appending hvac_mode="unknown".
         """
         instance = cls()
 
         # Migrate slope_samples: support both 3-tuple (old) and 4-tuple (new)
         raw_samples = data.get("slope_samples", [])
         instance._slope_samples = []
-        migrated_legacy_samples = 0
         for sample in raw_samples:
             if len(sample) == 3:
                 instance._slope_samples.append((sample[0], sample[1], sample[2], "unknown"))
-                migrated_legacy_samples += 1
             else:
                 instance._slope_samples.append(tuple(sample))
 
-        instance._response_events = data.get("response_events", [])
+        # Migrate response_events: support both 2-tuple (old) and 3-tuple (new)
+        raw_response_events = data.get("response_events", [])
+        instance._response_events = []
+        for event in raw_response_events:
+            if len(event) == 2:
+                instance._response_events.append((event[0], event[1], "unknown"))
+            else:
+                instance._response_events.append(tuple(event))
 
-        # Restore incremental statistics
-        instance._slope_count = data.get("slope_count", 0)
-        instance._slope_mean = data.get("slope_mean", 0.0)
-        instance._slope_m2 = data.get("slope_M2", 0.0)
-        instance._slope_max = data.get("slope_max", 0.0)
-
-        # Apply sliding window cleanup on restore
+        # Apply sliding window cleanup on restore, keeping at least MIN_MODE_PROFILE_SAMPLES
+        # per profile so learned modes survive a quiet week without new samples.
         cutoff_time = time.time() - (instance._learning_window_hours * 3600)
-        instance._slope_samples = [s for s in instance._slope_samples if s[0] > cutoff_time]
-        instance._response_events = [(ts, t) for ts, t in instance._response_events if ts > cutoff_time]
+        instance._slope_samples = ThermalLearning.trim_with_min_retention(instance._slope_samples, cutoff_time, MIN_MODE_PROFILE_SAMPLES)
+        instance._response_events = [item for item in instance._response_events if item[0] > cutoff_time]
 
         # Rebuild stats from cleaned window
         instance.recompute_slope_stats()
@@ -404,8 +511,6 @@ class ThermalLearning:
             instance._ready_once = True
 
         instance._optimal_cache = None
-        if migrated_legacy_samples:
-            _LOGGER.info("Learning: migrated %d legacy slope samples to include hvac_mode", migrated_legacy_samples)
         _LOGGER.debug(
             "Learning: restored %d slope samples and %d response events from storage",
             len(instance._slope_samples),

@@ -1,6 +1,6 @@
 ---
 name: analyze-control-data
-description: "Analyze Smart Fan Controller CSV data files to diagnose algorithm behavior, identify missed MPC opportunities, detect defrost artifacts, and propose improvements. Use when: the user provides a CSV data file; asking to analyze overnight or morning behavior; asking why the fan did or did not change; evaluating MPC shadow accuracy; diagnosing defrost or setpoint-drop events."
+description: "Analyze Smart Fan Controller CSV data files to diagnose algorithm behavior, identify missed MPC opportunities, detect defrost artifacts, and propose improvements. Use when: the user provides a CSV data file; asking to analyze overnight or morning behavior; asking why the fan did or did not change; evaluating MPC decision quality; diagnosing defrost or setpoint-drop events."
 argument-hint: "CSV file path or description of the behavior to diagnose"
 ---
 
@@ -10,7 +10,7 @@ argument-hint: "CSV file path or description of the behavior to diagnose"
 
 - User provides a `smart_fan_controller_data_*.csv` file (from `data/`)
 - User describes unexpected behavior ("fan stayed on med all night", "slow morning rise")
-- User wants to compare MPC shadow decisions vs live decisions
+- User wants to evaluate MPC decision quality
 - Diagnosing defrost artifacts, setpoint drops, or window-open disturbances
 
 ## Column Reference
@@ -25,18 +25,18 @@ argument-hint: "CSV file path or description of the behavior to diagnose"
 | `error` | Signed error (positive = needs action) |
 | `current_fan` | Fan mode at start of cycle |
 | `fan_mode` | Fan mode selected by controller |
-| `reason` | Zone decision reason string |
+| `reason` | MPC decision reason string |
 | `phase` | `DEAD_TIME` / `TRANSIENT` / `ESTABLISHED` |
 | `effective_slope` | Slope actually used for decisions |
 | `is_window_open` | `True`/`False` |
 | `force` | `True` if timer was bypassed |
-| `mpc_shadow_fan_mode` | Fan mode the shadow would choose |
-| `mpc_shadow_status` | `Ready` / `Disabled` / `Setpoint drop` / `Disturbed` |
-| `mpc_shadow_matches_live` | `yes` / `no` / `disabled` |
-| `mpc_shadow_would_change` | `yes` / `no` |
-| `mpc_shadow_cost` | MPC optimization cost |
-| `mpc_shadow_confidence` | Profile coverage % |
-| `mpc_shadow_reason` | Shadow decision explanation |
+| `mpc_status` | `Ready` / `Not ready` / `Setpoint drop` / `Disturbed` / `Idle` / `Low confidence` |
+| `mpc_fan` | Fan mode chosen by MPC |
+| `mpc_would_change` | `yes` / `no` |
+| `mpc_cost` | MPC optimization cost |
+| `mpc_confidence` | Profile coverage % |
+| `mpc_temp_10m` | MPC 10-minute temperature prediction |
+| `mpc_temp_30m` | MPC 30-minute temperature prediction |
 | `defrost_active` | `True` when defrost protection is active |
 | `learning_ready` | `True` when ≥10 samples per profile |
 
@@ -52,35 +52,35 @@ argument-hint: "CSV file path or description of the behavior to diagnose"
 **Setpoint drop events (`reason` contains "Setpoint drop")**
 - Check `target_temp` drop magnitude
 - Verify `fan_mode` went to lowest mode
-- Check MPC shadow also reported "Setpoint drop"
+- Check MPC also reported "Setpoint drop"
 
 **Defrost events (`defrost_active == True`)**
 - Find the slope drop that triggered detection: look for `vtherm_slope` crossing sharply negative
-- Verify zones B/D were blocked (reason should contain "Defrost hold")
-- Check duration: 20-min cooldown from detection to next step-down
+- Verify MPC paused (status should be "Disturbed")
+- Check duration: 20-min cooldown from detection
 
-**MPC divergence periods (`mpc_shadow_matches_live == "no"`)**
-- Identify what shadow chose vs live
-- Check `mpc_shadow_confidence` — low confidence = not enough learning data
-- Check `mpc_shadow_known_profiles` — shadow needs ≥10 samples per mode
+**MPC disturbed periods (`mpc_status == "Disturbed"`)**
+- Identify what triggered the disturbance: defrost, window open, HVAC idle
+- Check `mpc_confidence` — low confidence = not enough learning data
+- Check `mpc_known_profiles` — MPC needs ≥10 samples per mode
 
 **Slow temperature recovery**
 - Plot `current_temp` vs `target_temp` over time
-- Look for unnecessary step-downs (reason "Maintenance: favorable slope" or "Braking")
+- Look for unnecessary step-downs (reason contains "Hysteresis" or step-down hold)
 - Cross-check with `defrost_active` — was defrost correctly detected?
 
 **Night setpoint drop mismatch (MPC on "med" instead of "silent")**
 - Filter to period where `target_temp` dropped significantly
-- Check `mpc_shadow_status` — should be "Setpoint drop" with lowest fan
-- If not, the snapshot was taken before the setpoint-drop fix was deployed
+- Check `mpc_status` — should be "Setpoint drop" with lowest fan
+- If not, check whether defrost or idle paused the MPC
 
 ### 3. Report Format
 
 Provide a narrative structured as:
 1. **Period summary**: time range, hvac mode, temperature trajectory
 2. **Key events**: defrost cycles, setpoint drops, fan changes — with timestamps
-3. **Algorithm assessment**: zones triggered correctly? any missed steps?
-4. **MPC shadow comparison**: agreement rate, key divergences and their cause
+3. **Algorithm assessment**: MPC decisions triggered correctly? any missed steps?
+4. **MPC quality**: confidence levels, key disturbance periods and their cause
 5. **Recommendations**: concrete parameter changes or code fixes if warranted
 
 ## Code Hints
@@ -88,5 +88,5 @@ Provide a narrative structured as:
 - Load CSV: `pd.read_csv(path, parse_dates=["timestamp"])`
 - Filter defrost: `df[df["defrost_active"] == True]`
 - Find mode changes: `df[df["current_fan"] != df["fan_mode"]]`
-- MPC divergence: `df[df["mpc_shadow_matches_live"] == "no"]`
-- Zone summary: `df["reason"].value_counts()`
+- MPC disturbance: `df[df["mpc_status"] == "Disturbed"]`
+- Reason summary: `df["reason"].value_counts()`

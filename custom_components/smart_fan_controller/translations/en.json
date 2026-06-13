@@ -8,10 +8,7 @@
                     "climate_entity": " ",
                     "deadband": "Deadband (°C)",
                     "min_interval": "Min Interval (minutes)",
-                    "soft_error": "Soft Error Threshold (°C)",
-                    "hard_error": "Hard Error Threshold (°C)",
                     "limit_timeout": "Interval Before Forcing Change (minutes)",
-                    "learning_enabled": "Enable Automatic Learning",
                     "data_collection": "Enable Data Collection (beta)",
                     "defrost_entity": "Defrost Entity (optional)",
                     "operating_entity": "Heat Pump Operating Entity (optional)"
@@ -20,18 +17,15 @@
                     "climate_entity": "Must come from a Versatile Thermostat.",
                     "deadband": "Range: 0.0-5.0 °C. Default: 0.2 °C.",
                     "min_interval": "Range: 1-60 min. Default: 10 min.",
-                    "soft_error": "Range: 0.0-10.0 °C. Default: 0.3 °C.",
-                    "hard_error": "Range: 0.0-10.0 °C. Default: 0.6 °C.",
                     "limit_timeout": "Range: 10-120 min. Default: 15 min.",
-                    "learning_enabled": "Enable automatic learning of optimal parameters. When ready, settings will be applied automatically.",
                     "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
                     "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode.",
                     "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off."
                 },
                 "error": {
+                    "already_configured": "This climate entity is already configured.",
                     "invalid_climate_entity": "This entity must come from Versatile Thermostat.",
-                    "no_versatile_thermostat": "No Versatile Thermostat entity found.",
-                    "invalid_thresholds": "Deadband must be less than Soft Error, which must be less than Hard Error."
+                    "no_versatile_thermostat": "No Versatile Thermostat entity found."
                 }
             }
         }
@@ -44,10 +38,7 @@
                     "climate_entity": " ",
                     "deadband": "Deadband (°C)",
                     "min_interval": "Min Interval (minutes)",
-                    "soft_error": "Soft Error Threshold (°C)",
-                    "hard_error": "Hard Error Threshold (°C)",
                     "limit_timeout": "Interval Before Forcing Change (minutes)",
-                    "learning_enabled": "Enable Automatic Learning",
                     "data_collection": "Enable Data Collection (beta)",
                     "defrost_entity": "Defrost Entity (optional)",
                     "operating_entity": "Heat Pump Operating Entity (optional)"
@@ -56,18 +47,15 @@
                     "climate_entity": "Must come from a Versatile Thermostat.",
                     "deadband": "Range: 0.0-5.0 °C. Default: 0.2 °C.",
                     "min_interval": "Range: 1-60 min. Default: 10 min.",
-                    "soft_error": "Range: 0.0-10.0 °C. Default: 0.3 °C.",
-                    "hard_error": "Range: 0.0-10.0 °C. Default: 0.6 °C.",
                     "limit_timeout": "Range: 10-120 min. Default: 15 min.",
-                    "learning_enabled": "Enable automatic learning of optimal parameters. When ready, settings will be applied automatically.",
                     "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
                     "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode.",
                     "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off."
                 },
                 "error": {
+                    "already_configured": "This climate entity is already configured.",
                     "invalid_climate_entity": "This entity must come from Versatile Thermostat.",
-                    "no_versatile_thermostat": "No Versatile Thermostat entity found.",
-                    "invalid_thresholds": "Deadband must be less than Soft Error, which must be less than Hard Error."
+                    "no_versatile_thermostat": "No Versatile Thermostat entity found."
                 }
             }
         }

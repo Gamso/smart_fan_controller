@@ -1,9 +1,10 @@
 """Constants for Smart Fan Controller."""
 from datetime import timedelta
 
+from homeassistant.util import slugify
+
 DOMAIN = "smart_fan_controller"
 DEVICE_NAME = "Smart Fan Controller"
-LEGACY_UNIQUE_ID_PREFIX = "smart_fan"
 ENTITY_UNIQUE_ID_PREFIX = DOMAIN
 EFFECTIVE_SLOPE_UNIT = "°C/h"
 PROFILE_HVAC_MODES = ("heat", "cool")
@@ -11,10 +12,7 @@ PROFILE_HVAC_MODES = ("heat", "cool")
 CONF_CLIMATE_ENTITY = "climate_entity"
 CONF_DEADBAND = "deadband"
 CONF_MIN_INTERVAL = "min_interval"
-CONF_SOFT_ERROR = "soft_error"
-CONF_HARD_ERROR = "hard_error"
 CONF_LIMIT_TIMEOUT = "limit_timeout"
-CONF_LEARNING_ENABLED = "learning_enabled"
 CONF_DATA_COLLECTION = "data_collection"
 CONF_DEFROST_ENTITY = "defrost_entity"
 CONF_OPERATING_ENTITY = "operating_entity"
@@ -22,10 +20,7 @@ CONF_OPERATING_ENTITY = "operating_entity"
 # Default values
 DEFAULT_DEADBAND = 0.2
 DEFAULT_MIN_INTERVAL = 10
-DEFAULT_SOFT_ERROR = 0.3
-DEFAULT_HARD_ERROR = 0.6
 DEFAULT_LIMIT_TIMEOUT = 15
-DEFAULT_LEARNING_ENABLED = True
 DEFAULT_DATA_COLLECTION = True
 
 DELTA_TIME_CONTROL_LOOP = 2  # minutes between each control loop execution
@@ -51,26 +46,8 @@ PHASE_ESTABLISHED = "ESTABLISHED"
 MIN_SAMPLES_LEARNING = 240  # Minimum slope samples required for initial readiness
 MIN_LIMIT_TIMEOUT = 5  # Minimum limit_timeout (minutes) derived from learning
 MIN_MODE_PROFILE_SAMPLES = 10  # Minimum samples per fan mode to consider profile reliable
-
-LEGACY_OBJECT_KEY_MAP = {
-    "reason": "status",
-    "fan_mode": "fan_mode",
-    "minutes_since_last_change": "fan_mode_last_change",
-    "projected_temperature": "temperature_projected_10_min",
-    "projected_temperature_error": "temperature_projected_error_10_min",
-    "temperature_error": "temperature_error",
-    "learning_progress": "learning_progress",
-    "learning_status": "learning_status",
-    "learning_samples": "learning_samples",
-    "learning_response_events": "learning_response_events",
-    "learned_dead_time": "learned_dead_time",
-    "effective_timeout": "effective_timeout",
-    "deadband": "learned_deadband",
-    "soft_error": "learned_soft_error",
-    "hard_error": "learned_hard_error",
-    "limit_timeout": "learned_limit_timeout",
-    "learning_enabled": "learning_enabled",
-}
+SETPOINT_DROP_LEARNING_COOLDOWN = 30.0  # Minutes to block learning after a setpoint drop
+MIN_ESTABLISHED_RATIO = 2.0  # Minimum factor × dead_time the fan mode must be active before learning
 
 
 def build_unique_id(object_key: str, entry_id: str) -> str:
@@ -83,16 +60,17 @@ def build_entity_id(platform_domain: str, object_key: str) -> str:
     return f"{platform_domain}.{DOMAIN}_{object_key}"
 
 
+def build_scoped_entity_id(platform_domain: str, climate_entity: str, object_key: str) -> str:
+    """Build the climate-scoped entity_id suggestion for an entity."""
+    climate_object_id = climate_entity.split(".", maxsplit=1)[-1]
+    return f"{platform_domain}.{DOMAIN}_{slugify(climate_object_id)}_{object_key}"
+
+
 def extract_object_key_from_unique_id(unique_id: str, entry_id: str) -> str | None:
-    """Extract the logical object key from either a legacy or canonical unique_id."""
+    """Extract the object key from the canonical unique_id format."""
+    prefix = f"{ENTITY_UNIQUE_ID_PREFIX}_"
     suffix = f"_{entry_id}"
-    if not unique_id.endswith(suffix):
+    if not unique_id.startswith(prefix) or not unique_id.endswith(suffix):
         return None
 
-    stem = unique_id[: -len(suffix)]
-    for prefix in (f"{ENTITY_UNIQUE_ID_PREFIX}_", f"{LEGACY_UNIQUE_ID_PREFIX}_"):
-        if stem.startswith(prefix):
-            raw_key = stem[len(prefix):]
-            return LEGACY_OBJECT_KEY_MAP.get(raw_key, raw_key)
-
-    return None
+    return unique_id[len(prefix) : -len(suffix)]

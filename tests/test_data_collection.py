@@ -6,7 +6,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.smart_fan_controller import async_setup_entry
+from custom_components.smart_fan_controller import (
+    _build_data_collection_decision,
+    async_setup_entry,
+)
 from custom_components.smart_fan_controller.const import CONF_CLIMATE_ENTITY, CONF_DATA_COLLECTION
 from custom_components.smart_fan_controller.data_collection import DataCollector, _HEADER
 
@@ -92,9 +95,56 @@ async def test_async_record_appends_row(tmp_path: Path) -> None:
         "0",
         "10.99",
         "0",
+        "Not ready",
+        "",
+        "no",
+        "",
+        "",
+        "",
+        "",
+        "0",
+        "",
         "0",
         "0",
     ]
+    assert hass.async_add_executor_job.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_async_record_handles_none_projected_values(tmp_path: Path) -> None:
+    """None projected values should fallback without raising."""
+    hass = _make_executor_hass()
+    collector = DataCollector(hass, str(tmp_path), "123456789")
+
+    await collector.async_initialize()
+    await collector.async_record(
+        hvac_mode="heat",
+        current_temp=20.1234,
+        target_temp=21.0,
+        vtherm_slope=-0.2468,
+        is_window_open=False,
+        decision={
+            "temperature_error": 0.8765,
+            "projected_temperature": None,
+            "projected_temperature_error": None,
+            "minutes_since_last_change": 12.345,
+            "current_fan": "low",
+            "fan_mode": "medium",
+            "reason": "Strong recovery",
+        },
+        phase="TRANSIENT",
+        effective_slope=-0.2468,
+        effective_timeout=15.4321,
+        force=True,
+        learning_ready=False,
+        dead_time=10.987,
+    )
+
+    with open(collector.path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+
+    assert len(rows) == 2
+    assert rows[1][7:9] == ["20.123", "0.0"]
     assert hass.async_add_executor_job.await_count == 2
 
 
@@ -152,8 +202,46 @@ async def test_async_setup_entry_initializes_data_collector() -> None:
         with patch("custom_components.smart_fan_controller.DataCollector", return_value=fake_collector) as collector_cls:
             with patch("custom_components.smart_fan_controller.async_track_time_interval", return_value=MagicMock()):
                 with patch("custom_components.smart_fan_controller.async_track_state_change_event", return_value=MagicMock()):
-                    result = await async_setup_entry(hass, entry)
+                    with patch("custom_components.smart_fan_controller._async_migrate_entity_ids", new=AsyncMock()):
+                        result = await async_setup_entry(hass, entry)
 
     assert result is True
     collector_cls.assert_called_once_with(hass, hass.config.config_dir, entry.entry_id)
     fake_collector.async_initialize.assert_awaited_once()
+
+
+def test_build_data_collection_decision_uses_live_cycle_metrics() -> None:
+    """CSV audit payload should include the live error and elapsed minutes from the loop."""
+    decision = _build_data_collection_decision(
+        effective_fan="high",
+        effective_reason="MPC: Strong recovery",
+        current_fan="medium",
+        current_error=0.8,
+        minutes_since_change=14.5,
+        hvac_mode="heat",
+        target_temp=20.0,
+        mpc_decision={},
+    )
+
+    assert decision["fan_mode"] == "high"
+    assert decision["temperature_error"] == pytest.approx(0.8)
+    assert decision["minutes_since_last_change"] == pytest.approx(14.5)
+    assert decision["projected_temperature"] is None
+    assert decision["projected_temperature_error"] is None
+
+
+def test_build_data_collection_decision_uses_mpc_projection() -> None:
+    """CSV audit payload should derive projected error from the MPC 10-minute temperature."""
+    decision = _build_data_collection_decision(
+        effective_fan="low",
+        effective_reason="MPC paused",
+        current_fan="low",
+        current_error=0.2,
+        minutes_since_change=6.0,
+        hvac_mode="heat",
+        target_temp=20.0,
+        mpc_decision={"mpc_predicted_temperature_10m": 19.6},
+    )
+
+    assert decision["projected_temperature"] == 19.6
+    assert decision["projected_temperature_error"] == pytest.approx(0.4)

@@ -8,7 +8,10 @@ CSV columns (in order):
   vtherm_slope, effective_slope, projected_temp, projected_error,
   phase, minutes_since_change, effective_timeout, current_fan, decided_fan,
   force, reason, learning_ready, dead_time, is_window_open,
-  defrost_active, hvac_idle
+  mpc_status, mpc_fan,
+  mpc_would_change, mpc_cost, mpc_confidence,
+  mpc_temp_10m, mpc_temp_30m, mpc_known_profiles,
+  mpc_disturbance, defrost_active, hvac_idle
 """
 
 import asyncio
@@ -42,6 +45,15 @@ _HEADER = [
     "learning_ready",
     "dead_time",
     "is_window_open",
+    "mpc_status",
+    "mpc_fan",
+    "mpc_would_change",
+    "mpc_cost",
+    "mpc_confidence",
+    "mpc_temp_10m",
+    "mpc_temp_30m",
+    "mpc_known_profiles",
+    "mpc_disturbance",
     "defrost_active",
     "hvac_idle",
 ]
@@ -50,13 +62,20 @@ _HEADER = [
 _MAX_FILE_SIZE = 10 * 1024 * 1024
 
 
+def _coalesce(value, default):
+    """Return *value* if it is not None, otherwise *default*."""
+    return value if value is not None else default
+
+
+
 class DataCollector:
     """Appends one CSV row per control cycle to a rotating log file."""
 
     def __init__(self, hass: HomeAssistant, config_dir: str, entry_id: str) -> None:
         self._hass = hass
         self._path = os.path.join(config_dir, f"smart_fan_controller_data_{entry_id[:8]}.csv")
-        self._rotated_path = self._path.replace(".csv", "_old.csv")
+        base, ext = os.path.splitext(self._path)
+        self._rotated_path = f"{base}_old{ext}"
         self._io_lock = asyncio.Lock()
 
     async def async_initialize(self) -> None:
@@ -79,10 +98,12 @@ class DataCollector:
         force: bool,
         learning_ready: bool,
         dead_time: float,
+        mpc_decision: dict | None = None,
         defrost_active: bool = False,
         is_hvac_idle: bool = False,
     ) -> None:
         """Append one row to the CSV file outside the event loop."""
+        mpc = mpc_decision or {}
         row = [
             datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             hvac_mode,
@@ -91,8 +112,8 @@ class DataCollector:
             round(decision.get("temperature_error", 0.0), 3),
             round(vtherm_slope, 4),
             round(effective_slope, 4),
-            round(decision.get("projected_temperature", current_temp), 3),
-            round(decision.get("projected_temperature_error", 0.0), 3),
+            round(_coalesce(decision.get("projected_temperature"), current_temp), 3),
+            round(_coalesce(decision.get("projected_temperature_error"), 0.0), 3),
             phase,
             round(decision.get("minutes_since_last_change", 0.0), 2),
             round(effective_timeout, 2),
@@ -103,6 +124,21 @@ class DataCollector:
             int(learning_ready),
             round(dead_time, 2),
             int(is_window_open),
+            mpc.get("mpc_status", "Not ready"),
+            mpc.get("mpc_fan_mode", ""),
+            mpc.get("mpc_would_change_now", "no"),
+            round(mpc.get("mpc_cost", 0.0), 3) if mpc.get("mpc_cost") is not None else "",
+            round(mpc.get("mpc_confidence", 0.0), 1) if mpc.get("mpc_confidence") is not None else "",
+            round(mpc.get("mpc_predicted_temperature_10m", 0.0), 3)
+            if mpc.get("mpc_predicted_temperature_10m") is not None
+            else "",
+            round(mpc.get("mpc_predicted_temperature_30m", 0.0), 3)
+            if mpc.get("mpc_predicted_temperature_30m") is not None
+            else "",
+            mpc.get("mpc_known_profiles", 0),
+            round(mpc.get("mpc_disturbance_bias", 0.0), 3)
+            if mpc.get("mpc_disturbance_bias") is not None
+            else "",
             int(defrost_active),
             int(is_hvac_idle),
         ]

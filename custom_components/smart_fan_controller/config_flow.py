@@ -1,3 +1,4 @@
+"""Config and options flow for Smart Fan Controller."""
 from typing import Any
 
 import voluptuous as vol
@@ -12,19 +13,13 @@ from .const import (
     CONF_CLIMATE_ENTITY,
     CONF_DEADBAND,
     CONF_MIN_INTERVAL,
-    CONF_SOFT_ERROR,
-    CONF_HARD_ERROR,
     CONF_LIMIT_TIMEOUT,
-    CONF_LEARNING_ENABLED,
     CONF_DATA_COLLECTION,
     CONF_DEFROST_ENTITY,
     CONF_OPERATING_ENTITY,
     DEFAULT_DEADBAND,
     DEFAULT_MIN_INTERVAL,
-    DEFAULT_SOFT_ERROR,
-    DEFAULT_HARD_ERROR,
     DEFAULT_LIMIT_TIMEOUT,
-    DEFAULT_LEARNING_ENABLED,
     DEFAULT_DATA_COLLECTION,
 )
 
@@ -47,18 +42,22 @@ def _validate_climate_state(state) -> str | None:
     return None
 
 
-def _validate_thresholds(input_data: dict) -> str | None:
-    """Return an error key if deadband/soft_error/hard_error are inconsistent, else None.
+def _is_climate_entity_already_configured(
+    hass,
+    climate_entity: str,
+    *,
+    exclude_entry_id: str | None = None,
+) -> bool:
+    """Return True when another Smart Fan Controller entry already targets the climate."""
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if exclude_entry_id is not None and entry.entry_id == exclude_entry_id:
+            continue
 
-    The three values must satisfy: deadband < soft_error < hard_error.
-    Accepting inconsistent values would make the controller algorithm unreliable.
-    """
-    deadband = input_data.get(CONF_DEADBAND, DEFAULT_DEADBAND)
-    soft_error = input_data.get(CONF_SOFT_ERROR, DEFAULT_SOFT_ERROR)
-    hard_error = input_data.get(CONF_HARD_ERROR, DEFAULT_HARD_ERROR)
-    if not deadband < soft_error < hard_error:
-        return "invalid_thresholds"
-    return None
+        existing_conf = {**entry.data, **entry.options}
+        if existing_conf.get(CONF_CLIMATE_ENTITY) == climate_entity:
+            return True
+
+    return False
 
 
 class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -87,12 +86,10 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             climate_error = _validate_climate_state(state)
             if climate_error:
                 errors[CONF_CLIMATE_ENTITY] = climate_error
+            elif _is_climate_entity_already_configured(self.hass, climate_id):
+                errors[CONF_CLIMATE_ENTITY] = "already_configured"
             else:
-                threshold_error = _validate_thresholds(user_input)
-                if threshold_error:
-                    errors["base"] = threshold_error
-                else:
-                    return self.async_create_entry(title=user_input[CONF_CLIMATE_ENTITY], data=user_input)
+                return self.async_create_entry(title=user_input[CONF_CLIMATE_ENTITY], data=user_input)
 
         # Build selector config without include_entities when none are available
         selector_config_kwargs: dict[str, Any] = {"domain": CLIMATE_DOMAIN}
@@ -108,16 +105,9 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_MIN_INTERVAL, default=DEFAULT_MIN_INTERVAL): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=1, max=60, step=1, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="min")
                 ),
-                vol.Optional(CONF_SOFT_ERROR, default=DEFAULT_SOFT_ERROR): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=0.0, max=10.0, step=0.05, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="°C")
-                ),
-                vol.Optional(CONF_HARD_ERROR, default=DEFAULT_HARD_ERROR): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=0.0, max=10.0, step=0.05, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="°C")
-                ),
                 vol.Optional(CONF_LIMIT_TIMEOUT, default=DEFAULT_LIMIT_TIMEOUT): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=10, max=120, step=5, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="min")
                 ),
-                vol.Optional(CONF_LEARNING_ENABLED, default=DEFAULT_LEARNING_ENABLED): selector.BooleanSelector(),
                 vol.Optional(CONF_DATA_COLLECTION, default=DEFAULT_DATA_COLLECTION): selector.BooleanSelector(),
                 vol.Optional(CONF_DEFROST_ENTITY): selector.EntitySelector(selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])),
                 vol.Optional(CONF_OPERATING_ENTITY): selector.EntitySelector(selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])),
@@ -139,10 +129,11 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
         """Manage the options."""
         available_climates = _get_climates_with_fan_modes_and_slope(self.hass)
         errors: dict[str, str] = {}
+        current_data = {**self.config_entry.data, **self.config_entry.options}
 
         if user_input is not None:
             climate_id = user_input[CONF_CLIMATE_ENTITY]
-            current_climate_id = self.config_entry.data.get(CONF_CLIMATE_ENTITY)
+            current_climate_id = current_data.get(CONF_CLIMATE_ENTITY)
 
             # Only validate the climate entity if the user is changing it
             if climate_id != current_climate_id:
@@ -150,17 +141,15 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
                 climate_error = _validate_climate_state(state)
                 if climate_error:
                     errors[CONF_CLIMATE_ENTITY] = climate_error
-
-            if not errors:
-                threshold_error = _validate_thresholds(user_input)
-                if threshold_error:
-                    errors["base"] = threshold_error
+                elif _is_climate_entity_already_configured(
+                    self.hass,
+                    climate_id,
+                    exclude_entry_id=self.config_entry.entry_id,
+                ):
+                    errors[CONF_CLIMATE_ENTITY] = "already_configured"
 
             if not errors:
                 return self.async_create_entry(title="", data=user_input)
-
-        # Merge data and options (options take priority)
-        current_data = {**self.config_entry.data, **self.config_entry.options}
 
         # Build selector config for options flow
         # Always include the current climate entity even if it's not in the filtered list
@@ -184,19 +173,16 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(CONF_MIN_INTERVAL, default=current_data.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL)): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=1, max=60, step=1, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="min")
                 ),
-                vol.Optional(CONF_SOFT_ERROR, default=current_data.get(CONF_SOFT_ERROR, DEFAULT_SOFT_ERROR)): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=0.0, max=10.0, step=0.05, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="°C")
-                ),
-                vol.Optional(CONF_HARD_ERROR, default=current_data.get(CONF_HARD_ERROR, DEFAULT_HARD_ERROR)): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=0.0, max=10.0, step=0.05, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="°C")
-                ),
                 vol.Optional(CONF_LIMIT_TIMEOUT, default=current_data.get(CONF_LIMIT_TIMEOUT, DEFAULT_LIMIT_TIMEOUT)): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=10, max=120, step=5, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="min")
                 ),
-                vol.Optional(CONF_LEARNING_ENABLED, default=current_data.get(CONF_LEARNING_ENABLED, DEFAULT_LEARNING_ENABLED)): selector.BooleanSelector(),
                 vol.Optional(CONF_DATA_COLLECTION, default=current_data.get(CONF_DATA_COLLECTION, DEFAULT_DATA_COLLECTION)): selector.BooleanSelector(),
-                vol.Optional(CONF_DEFROST_ENTITY, default=current_data.get(CONF_DEFROST_ENTITY, vol.UNDEFINED)): selector.EntitySelector(selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])),
-                vol.Optional(CONF_OPERATING_ENTITY, default=current_data.get(CONF_OPERATING_ENTITY, vol.UNDEFINED)): selector.EntitySelector(selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])),
+                vol.Optional(CONF_DEFROST_ENTITY, default=current_data.get(CONF_DEFROST_ENTITY, vol.UNDEFINED)): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])
+                ),
+                vol.Optional(CONF_OPERATING_ENTITY, default=current_data.get(CONF_OPERATING_ENTITY, vol.UNDEFINED)): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])
+                ),
             }
         )
 

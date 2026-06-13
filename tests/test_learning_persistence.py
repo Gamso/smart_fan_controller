@@ -1,7 +1,8 @@
 """Tests for learning data persistence functionality."""
 import time
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 
@@ -12,6 +13,7 @@ from custom_components.smart_fan_controller.const import (
     CONF_CLIMATE_ENTITY,
     CONF_DEADBAND,
     DEFAULT_DEADBAND,
+    MIN_MODE_PROFILE_SAMPLES,
 )
 
 
@@ -36,7 +38,7 @@ class TestLearningPersistence:
         assert "response_events" in data
         assert "slope_count" in data
         assert "slope_mean" in data
-        assert "slope_M2" in data
+        assert "slope_m2" in data
         assert "slope_max" in data
 
         # Verify data is preserved (at least partially for windowing)
@@ -121,11 +123,11 @@ class TestLearningPersistence:
         learning = ThermalLearning()
 
         # Manually add old samples (simulate data from a week ago)
-        DAYS_IN_SECONDS = 24 * 3600
-        old_timestamp = time.time() - (8 * DAYS_IN_SECONDS)  # 8 days ago
+        days_in_seconds = 24 * 3600
+        old_timestamp = time.time() - (8 * days_in_seconds)  # 8 days ago
         learning.slope_samples = [
-            (old_timestamp, "medium", 0.5),
-            (time.time(), "high", 0.8),
+            (old_timestamp, "medium", 0.5, "heat"),
+            (time.time(), "high", 0.8, "heat"),
         ]
         learning.response_events = [
             (old_timestamp, 12.5),
@@ -136,9 +138,36 @@ class TestLearningPersistence:
         data = learning.to_dict()
         restored = ThermalLearning.from_dict(data)
 
-        # Old samples should be removed (only recent ones kept)
-        assert len(restored.slope_samples) == 1
+        # Old "medium" sample expired and has no within-window replacement,
+        # but MIN_MODE_PROFILE_SAMPLES=10 means retention kicks in only when
+        # a profile already has >= 10 samples.  With only 1 expired sample,
+        # 1 is retained to preserve the profile's last known value.
+        assert len(restored.slope_samples) == 2  # both kept (each profile < min)
         assert len(restored.response_events) == 1
+
+    def test_learning_min_retention_preserves_rare_profile(self):
+        """Old samples for a rarely-used profile are kept up to MIN_MODE_PROFILE_SAMPLES."""
+        learning = ThermalLearning()
+        days_in_seconds = 24 * 3600
+        now = time.time()
+        old = now - (8 * days_in_seconds)
+
+        # Build sample lists directly and assign via public property
+        expired_med = [(old + i, "med", 0.5, "heat") for i in range(10)]
+        recent_med = [(now + i, "med", 0.4, "heat") for i in range(15)]
+        expired_high = [(old + 100 + i, "high", 1.5, "heat") for i in range(8)]
+        learning.slope_samples = expired_med + recent_med + expired_high
+
+        cutoff = now - (7 * days_in_seconds)
+        trimmed = ThermalLearning.trim_with_min_retention(learning.slope_samples, cutoff, MIN_MODE_PROFILE_SAMPLES)
+
+        med_samples = [s for s in trimmed if s[1] == "med"]
+        high_samples = [s for s in trimmed if s[1] == "high"]
+
+        # med: 15 within-window, no shortfall → all 10 expired dropped
+        assert len(med_samples) == 15
+        # high: 0 within-window, shortfall=10, only 8 available → keep all 8
+        assert len(high_samples) == 8
 
     @pytest.mark.asyncio
     async def test_integration_storage_persistence(self, hass: HomeAssistant):
@@ -186,7 +215,7 @@ class TestLearningPersistence:
                         mock_store_instance.async_load.assert_called_once()
 
                         # Verify controller has restored learning data
-                        controller = hass.data[DOMAIN][entry.entry_id]["controller"]
+                        learning = hass.data[DOMAIN][entry.entry_id]["learning"]
                         # After window cleanup, data should still be there (timestamps are recent)
-                        assert len(controller.learning.slope_samples) > 0
-                        assert len(controller.learning._response_events) > 0
+                        assert len(learning.slope_samples) > 0
+                        assert len(learning.response_events) > 0
