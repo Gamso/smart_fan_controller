@@ -510,6 +510,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "previous_slope": None,
         "last_hvac_mode": None,
         "defrost": {"active": False, "start_time": 0.0},
+        # Fan mode the controller itself just commanded, so the state-change
+        # listener can tell its own change apart from a genuine manual override.
+        "controller_commanded_fan": None,
     }
 
     async def run_control_loop(_):
@@ -672,6 +675,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 ctrl_state["last_change_time"] = time.time()
                 _LOGGER.debug("Confirmed fan change for %s at %.3f", climate_id, ctrl_state["last_change_time"])
 
+            # Mark this as a controller-initiated change so the resulting
+            # state-change event is not mislabelled as a manual override.
+            ctrl_state["controller_commanded_fan"] = effective_fan
             await _async_apply_fan_change(hass, climate_id, effective_fan, current_fan, effective_reason, _confirm)
         else:
             _LOGGER.debug("No fan mode change required for %s (%s)", climate_id, effective_reason)
@@ -689,6 +695,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if new_fan is None or new_fan == old_fan:
             return
 
+        # Ignore the state change produced by the controller's own command so it
+        # is not reported as a manual override.
+        if new_fan == ctrl_state.get("controller_commanded_fan"):
+            ctrl_state["controller_commanded_fan"] = None
+            _LOGGER.debug("Ignoring controller-initiated fan change for %s: %s -> %s", climate_id, old_fan, new_fan)
+            return
+
         _LOGGER.info("Manual fan mode change detected for %s: %s -> %s", climate_id, old_fan, new_fan)
         ctrl_state["last_change_time"] = time.time()
         manual_data = {"fan_mode": new_fan, "minutes_since_last_change": 0.0, "reason": "Manual Override"}
@@ -697,6 +710,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(async_track_time_interval(hass, run_control_loop, timedelta(minutes=DELTA_TIME_CONTROL_LOOP)))
     entry.async_on_unload(async_track_state_change_event(hass, [climate_id], _handle_manual_change))
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
     hass.async_create_task(run_control_loop(None))
 
@@ -750,7 +764,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload config entry."""
+    """Reload the config entry when its options change."""
     _LOGGER.info("Reloading Smart Fan Controller entry %s", entry.entry_id)
-    await async_unload_entry(hass, entry)
-    await async_setup_entry(hass, entry)
+    await hass.config_entries.async_reload(entry.entry_id)

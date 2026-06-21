@@ -24,6 +24,10 @@ FLOOR_VIOLATION_LINEAR_WEIGHT = 12.0
 FLOOR_VIOLATION_QUADRATIC_WEIGHT = 30.0
 MODE_CHANGE_DISTANCE_COST = 0.15
 MODE_RANK_COST = 0.05
+# Geometric growth of relative power draw per fan-mode rank. ~6**(1/3) so a
+# 4-mode ladder reproduces the legacy [1.0, 1.5, 3.0, 6.0] power scaling while
+# extending naturally to any number of modes.
+MODE_POWER_RATIO = 1.82
 MIN_INTERVAL_CHANGE_PENALTY = 25.0
 URGENCY_SENSITIVITY = 2.0
 
@@ -349,6 +353,10 @@ class MPCController:
         )
         if selection_note:
             reason += f" | {selection_note}"
+        # Surface capacity saturation: strongest fan selected yet still well short
+        # of target means the HVAC system is capacity-bound, not a control issue.
+        if best.fan_mode == fan_modes[-1] and current_error > self._deadband:
+            reason += f" | Saturated: max fan, {current_error:.1f}C from target (capacity-bound)"
         if abs(self._disturbance_bias) >= 0.05:
             reason += f" | Bias={self._disturbance_bias:+.2f}C/h"
         if not change_allowed:
@@ -571,13 +579,11 @@ class MPCController:
             cost += FLOOR_VIOLATION_QUADRATIC_WEIGHT * floor_violation * floor_violation
 
         cost += MODE_CHANGE_DISTANCE_COST * abs(candidate_index - current_index)
-        # Apply non-linear economic mode ranking cost to represent actual physical power scaling
-        # (Low: 1.0x, Medium: 1.5x, High: 3.0x, Superhigh: 6.0x equivalent)
-        # This replaces the abstract linear mode rank cost with a real physical relative power draw representation.
-        power_draw = [1.0, 1.5, 3.0, 6.0]
-        # Map indices to relative weights
-        p_index = min(candidate_index, len(power_draw) - 1)
-        relative_power = power_draw[p_index]
+        # Apply a non-linear economic mode-ranking cost representing physical power
+        # scaling. Relative power grows geometrically with the mode rank so every
+        # mode is differentiated regardless of how many the climate entity exposes
+        # (a 4-mode system reproduces the previous 1.0 / 1.8 / 3.3 / 6.0 ramp).
+        relative_power = MODE_POWER_RATIO ** candidate_index
         cost += MODE_RANK_COST * relative_power
         if candidate_fan != current_fan and not change_allowed:
             cost += MIN_INTERVAL_CHANGE_PENALTY
@@ -651,16 +657,29 @@ class MPCController:
     def _compute_confidence(self, known_profiles: int, total_profiles: int, phase: str, worst_spread: float = 0.0) -> float:
         """Return a coarse confidence score for the current recommendation.
 
+        Confidence is driven primarily by per-mode profile *coverage* and
+        *quality* (spread), not by the global readiness flag.  Previously the
+        global ``is_ready()`` threshold (240 samples) halved the score, so a
+        controller with every per-mode profile fully learned could still be
+        stuck reporting "Low confidence" until that global count was reached —
+        which never happened for an HVAC mode used only part of the year.
+
+        - coverage  : fraction of fan modes with a learned profile (main driver).
+        - readiness : small bonus once the global sample threshold is reached.
+        - phase     : transient/dead-time phases attenuate confidence.
+        - penalties : sustained disturbance bias and high profile spread.
+
         worst_spread is the maximum MAD/median ratio across all known profiles.
         Profiles with high spread (> 0.15) reduce confidence proportionally,
         capped at a 0.20 penalty.
         """
         coverage = known_profiles / max(total_profiles, 1)
-        base = 1.0 if self._learning.is_ready() else 0.45
+        coverage_score = 0.3 + 0.7 * coverage
+        readiness_bonus = 0.1 if self._learning.is_ready() else 0.0
         phase_factor = 1.0 if phase == PHASE_ESTABLISHED else 0.85
         disturbance_penalty = min(abs(self._disturbance_bias) / MAX_DISTURBANCE_BIAS, 0.35)
         spread_penalty = min(max(worst_spread - 0.15, 0.0) * 0.4, 0.20)
-        return max(0.1, min(1.0, (base * (0.5 + 0.5 * coverage) * phase_factor) - disturbance_penalty - spread_penalty))
+        return max(0.1, min(1.0, (coverage_score + readiness_bonus) * phase_factor - disturbance_penalty - spread_penalty))
 
     def _payload(
         self,

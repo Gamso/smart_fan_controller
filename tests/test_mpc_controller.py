@@ -294,6 +294,37 @@ def test_confidence_penalised_by_high_spread() -> None:
     assert result_tight["mpc_confidence"] > result_noisy["mpc_confidence"]
 
 
+def test_confidence_high_with_full_coverage_before_global_ready() -> None:
+    """Full per-mode profile coverage yields a Ready-level confidence even when
+    the global sample threshold (is_ready) has not been reached.
+
+    Regression guard for the previous behaviour where an HVAC mode used only
+    part of the year stayed stuck at 'Low confidence' despite every fan-mode
+    profile being fully learned.
+    """
+    learning = ThermalLearning()
+    # 12 tight samples per mode -> every profile ready, but well under the
+    # global MIN_SAMPLES_LEARNING threshold, so is_ready() stays False.
+    for _ in range(12):
+        learning.add_slope_sample("low", 0.25, 0.8, "heat")
+        learning.add_slope_sample("medium", 0.9, 0.8, "heat")
+        learning.add_slope_sample("high", 1.5, 0.8, "heat")
+    assert learning.is_ready() is False
+
+    mpc = _build_mpc(learning)
+    result = mpc.evaluate(
+        current_temp=19.5,
+        target_temp=20.0,
+        vtherm_slope=0.9,
+        hvac_mode="heat",
+        current_fan="high",
+        minutes_since_change=30.0,
+    )
+    assert result["mpc_known_profiles"] == 3
+    assert result["mpc_confidence"] >= 50.0
+    assert result["mpc_status"] == "Ready"
+
+
 @pytest.mark.asyncio
 async def test_data_collector_records_mpc_columns(tmp_path: Path) -> None:
     """Data collector CSV includes MPC-specific columns."""
