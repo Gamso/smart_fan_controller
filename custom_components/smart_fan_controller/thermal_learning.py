@@ -2,7 +2,13 @@ import logging
 import time
 import statistics
 
-from .const import MIN_SAMPLES_LEARNING, MIN_LIMIT_TIMEOUT, MIN_MODE_PROFILE_SAMPLES, DEFAULT_DEAD_TIME
+from .const import (
+    MIN_SAMPLES_LEARNING,
+    MIN_LIMIT_TIMEOUT,
+    MIN_MODE_PROFILE_SAMPLES,
+    DEFAULT_DEAD_TIME,
+    REFERENCE_SLOPE_ERROR,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -12,7 +18,7 @@ class ThermalLearning:
 
     def __init__(self):
         # Data collection with sliding window
-        self._slope_samples = []  # (timestamp, fan_mode, slope, hvac_mode)
+        self._slope_samples = []  # (timestamp, fan_mode, slope, hvac_mode, temperature_error)
         self._response_events = []  # (timestamp, response_time_minutes) - thermal response from fan change to slope change
         self._learning_window_hours = 168  # 7 days sliding window
         self._min_samples = MIN_SAMPLES_LEARNING  # Minimum samples for initial readiness (48-72h typical activity)
@@ -61,7 +67,7 @@ class ThermalLearning:
             _LOGGER.debug("Learning: Skipped sample (stagnation, slope=%.2f)", slope)
             return
 
-        self._slope_samples.append((time.time(), fan_mode, slope, hvac_mode))
+        self._slope_samples.append((time.time(), fan_mode, slope, hvac_mode, temperature_error))
         profile_samples = self.get_mode_sample_count(fan_mode, hvac_mode)
         _LOGGER.debug(
             "Learning: Collected slope sample #%d (fan=%s, slope=%.2f, err=%.2f, hvac=%s, profile=%d/%d)",
@@ -119,7 +125,7 @@ class ThermalLearning:
 
         Prevents a rarely-used mode from losing its learned profile solely
         because it hasn't been active in the past 7 days.
-        Samples are 4-tuples: (timestamp, fan_mode, slope, hvac_mode).
+        Samples are 5-tuples: (timestamp, fan_mode, slope, hvac_mode, temperature_error).
         """
         within = [s for s in samples if s[0] > cutoff_time]
         expired = [s for s in samples if s[0] <= cutoff_time]
@@ -128,8 +134,8 @@ class ThermalLearning:
 
         # Count within-window samples per (fan_mode, hvac_mode) profile
         profile_counts: dict[tuple, int] = {}
-        for _, fm, _, hm in within:
-            key = (fm, hm)
+        for s in within:
+            key = (s[1], s[3])
             profile_counts[key] = profile_counts.get(key, 0) + 1
 
         # Group expired samples by profile
@@ -283,11 +289,106 @@ class ThermalLearning:
             return DEFAULT_DEAD_TIME
         return statistics.median(response_times)
 
-    def get_mode_effective_slope(self, fan_mode: str, hvac_mode: str) -> float | None:
-        """Return the median effective slope for a fan mode in a given HVAC mode.
+    def _fit_mode_slope(self, fan_mode: str, hvac_mode: str) -> tuple[float, float, float | None] | None:
+        """Fit the gap-dependent slope model and return (intercept_a, gain_b, r_squared).
 
-        Uses median instead of mean for robustness against outlier samples
-        (e.g. residual inertia from a previous high-speed mode).
+        The effective cooling/heating rate is not constant: it scales with the
+        comfort error (distance to the setpoint), per Newton's law of cooling.
+        We model it as a linear relationship:
+
+            effective_slope(error) = a + b * error
+
+        fitted by ordinary least squares over the profile's (error, effective_slope)
+        samples. ``error`` is the signed comfort error (positive = needs more
+        cooling/heating). ``effective_slope`` is positive when moving towards target
+        (raw VTherm slope is inverted in cooling).
+
+        ``r_squared`` is the coefficient of determination of the fit (0..1); it is
+        ``None`` for the constant fallback (no real regression was performed).
+
+        Falls back to a constant model ``(median_effective_slope, 0.0, None)`` when
+        there are too few error-bearing samples or the error has no spread — which
+        keeps behaviour identical to the previous median estimator for legacy data
+        and for synthetic profiles seeded via ``set_mode_effective_slope``.
+
+        The gain ``b`` is clamped to be non-negative: a larger gap can only cool/heat
+        at least as fast, never slower.
+
+        Returns None if fewer than MIN_MODE_PROFILE_SAMPLES are available.
+        """
+        sign = -1.0 if hvac_mode == "cool" else 1.0
+        matching = [s for s in self._slope_samples if s[1] == fan_mode and s[3] == hvac_mode]
+        if len(matching) < MIN_MODE_PROFILE_SAMPLES:
+            return None
+
+        median_eff = sign * statistics.median([s[2] for s in matching])
+
+        # Only samples that carry a stored error can drive the regression.
+        points = [(s[4], sign * s[2]) for s in matching if len(s) > 4 and s[4] is not None]
+        if len(points) < MIN_MODE_PROFILE_SAMPLES:
+            return (median_eff, 0.0, None)
+
+        n = len(points)
+        mean_x = sum(x for x, _ in points) / n
+        mean_y = sum(y for _, y in points) / n
+        var_x = sum((x - mean_x) ** 2 for x, _ in points)
+        if var_x < 1e-6:
+            # All samples taken at (nearly) the same error: no slope can be fitted.
+            return (median_eff, 0.0, None)
+
+        cov_xy = sum((x - mean_x) * (y - mean_y) for x, y in points)
+        gain_b = max(0.0, cov_xy / var_x)
+        intercept_a = mean_y - gain_b * mean_x
+
+        # Coefficient of determination against the (clamped) fitted line.
+        ss_tot = sum((y - mean_y) ** 2 for _, y in points)
+        if ss_tot < 1e-9:
+            r_squared = None
+        else:
+            ss_res = sum((y - (intercept_a + gain_b * x)) ** 2 for x, y in points)
+            r_squared = max(0.0, 1.0 - ss_res / ss_tot)
+        return (intercept_a, gain_b, r_squared)
+
+    def get_mode_slope_model(self, fan_mode: str, hvac_mode: str) -> tuple[float, float] | None:
+        """Return the gap-dependent slope model ``(intercept_a, gain_b)`` for a profile.
+
+        See :meth:`_fit_mode_slope` for the model definition. Returns None if the
+        profile has fewer than MIN_MODE_PROFILE_SAMPLES samples.
+        """
+        fit = self._fit_mode_slope(fan_mode, hvac_mode)
+        return None if fit is None else (fit[0], fit[1])
+
+    def get_mode_slope_gain(self, fan_mode: str, hvac_mode: str) -> float:
+        """Return the gap gain ``b`` (°C/h per °C of comfort error) for a profile.
+
+        Returns 0.0 when the profile is unknown or the model is constant.
+        """
+        model = self.get_mode_slope_model(fan_mode, hvac_mode)
+        return 0.0 if model is None else model[1]
+
+    def get_mode_effective_slope_at(self, fan_mode: str, hvac_mode: str, error: float) -> float | None:
+        """Return the modelled effective slope at a given comfort error.
+
+        The error is floored at 0: at/below the setpoint there is no driving
+        force, so the modelled active cooling/heating rate is the intercept only.
+        Returns None if the profile is not learned yet.
+        """
+        model = self.get_mode_slope_model(fan_mode, hvac_mode)
+        if model is None:
+            return None
+        intercept_a, gain_b = model
+        return intercept_a + gain_b * max(error, 0.0)
+
+    def get_mode_effective_slope(self, fan_mode: str, hvac_mode: str) -> float | None:
+        """Return the representative "working" effective slope for a profile.
+
+        This is the gap-dependent model evaluated at REFERENCE_SLOPE_ERROR — a
+        representative non-trivial gap — so the reported value reflects the fan's
+        real cooling/heating power instead of the near-equilibrium median (which is
+        structurally diluted by the many samples collected close to the setpoint).
+
+        For legacy/synthetic constant profiles (gain == 0) this is exactly the old
+        median estimator, preserving backward compatibility.
 
         Effective slope is positive when moving towards target:
         - In heating: positive raw slope is good
@@ -295,11 +396,11 @@ class ThermalLearning:
 
         Returns None if fewer than MIN_MODE_PROFILE_SAMPLES are available.
         """
-        matching_slopes = [sl for (_, fm, sl, hm) in self._slope_samples if fm == fan_mode and hm == hvac_mode]
-        if len(matching_slopes) < MIN_MODE_PROFILE_SAMPLES:
+        model = self.get_mode_slope_model(fan_mode, hvac_mode)
+        if model is None:
             return None
-        med = statistics.median(matching_slopes)
-        return -med if hvac_mode == "cool" else med
+        intercept_a, gain_b = model
+        return intercept_a + gain_b * REFERENCE_SLOPE_ERROR
 
     def get_profile_spread(self, fan_mode: str, hvac_mode: str) -> float | None:
         """Return the MAD/median ratio for a profile's absolute slopes.
@@ -311,7 +412,7 @@ class ThermalLearning:
 
         Returns None if the profile has fewer than MIN_MODE_PROFILE_SAMPLES samples.
         """
-        abs_slopes = [abs(sl) for (_, fm, sl, hm) in self._slope_samples if fm == fan_mode and hm == hvac_mode]
+        abs_slopes = [abs(s[2]) for s in self._slope_samples if s[1] == fan_mode and s[3] == hvac_mode]
         if len(abs_slopes) < MIN_MODE_PROFILE_SAMPLES:
             return None
         med = statistics.median(abs_slopes)
@@ -334,10 +435,11 @@ class ThermalLearning:
         self._slope_samples = [s for s in self._slope_samples if not (s[1] == fan_mode and s[3] == hvac_mode)]
         removed = before - len(self._slope_samples)
 
-        # Insert MIN_MODE_PROFILE_SAMPLES synthetic samples at current time
+        # Insert MIN_MODE_PROFILE_SAMPLES synthetic samples at current time.
+        # error is None so they produce a constant model (gain 0) at exactly target_slope.
         now = time.time()
         for i in range(MIN_MODE_PROFILE_SAMPLES):
-            self._slope_samples.append((now + i, fan_mode, raw_slope, hvac_mode))
+            self._slope_samples.append((now + i, fan_mode, raw_slope, hvac_mode, None))
 
         self.recompute_slope_stats()
 
@@ -348,13 +450,13 @@ class ThermalLearning:
 
     def get_mode_sample_count(self, fan_mode: str, hvac_mode: str) -> int:
         """Return the number of collected samples for one fan/HVAC profile."""
-        return sum(1 for (_, fm, _, hm) in self._slope_samples if fm == fan_mode and hm == hvac_mode)
+        return sum(1 for s in self._slope_samples if s[1] == fan_mode and s[3] == hvac_mode)
 
     def get_known_fan_modes(self) -> list[str]:
         """Return unique fan modes seen in slope samples, preserving first-seen order."""
         seen: dict[str, None] = {}
-        for _, fan_mode, _, _ in self._slope_samples:
-            seen[fan_mode] = None
+        for s in self._slope_samples:
+            seen[s[1]] = None
         return list(seen.keys())
 
     def get_mode_profiles(self, hvac_mode: str, fan_modes: list[str] | None = None) -> dict[str, dict]:
@@ -362,7 +464,7 @@ class ThermalLearning:
         if fan_modes:
             ordered_modes = list(dict.fromkeys(fan_modes))
         else:
-            ordered_modes = sorted({fm for (_, fm, _, hm) in self._slope_samples if hm == hvac_mode})
+            ordered_modes = sorted({s[1] for s in self._slope_samples if s[3] == hvac_mode})
 
         profiles: dict[str, dict] = {}
         for fan_mode in ordered_modes:
@@ -454,9 +556,9 @@ class ThermalLearning:
         self._slope_max = 0.0
         self._optimal_cache = None  # Invalidate cache when stats are rebuilt
         self._profile_ready_logged = {
-            (hm, fm)
-            for (_, fm, _, hm) in self._slope_samples
-            if hm != "unknown" and self.get_mode_sample_count(fm, hm) >= MIN_MODE_PROFILE_SAMPLES
+            (s[3], s[1])
+            for s in self._slope_samples
+            if s[3] != "unknown" and self.get_mode_sample_count(s[1], s[3]) >= MIN_MODE_PROFILE_SAMPLES
         }
 
         for sample in self._slope_samples:
@@ -473,18 +575,24 @@ class ThermalLearning:
     def from_dict(cls, data: dict):
         """Restore from storage.
 
-        Handles backward compatibility: old 3-tuple samples (timestamp, fan_mode, slope)
-        are migrated to 4-tuples by appending hvac_mode="unknown".
+        Handles backward compatibility for slope_samples across schema versions:
+        - 3-tuple (timestamp, fan_mode, slope) → hvac_mode="unknown", error=None
+        - 4-tuple (timestamp, fan_mode, slope, hvac_mode) → error=None
+        - 5-tuple (timestamp, fan_mode, slope, hvac_mode, temperature_error) → as-is
+        Samples without a stored error simply don't contribute to the gap-slope
+        regression (they fall back to the constant median model).
         Old 2-tuple response_events are migrated to 3-tuples by appending hvac_mode="unknown".
         """
         instance = cls()
 
-        # Migrate slope_samples: support both 3-tuple (old) and 4-tuple (new)
+        # Migrate slope_samples to the canonical 5-tuple shape.
         raw_samples = data.get("slope_samples", [])
         instance._slope_samples = []
         for sample in raw_samples:
             if len(sample) == 3:
-                instance._slope_samples.append((sample[0], sample[1], sample[2], "unknown"))
+                instance._slope_samples.append((sample[0], sample[1], sample[2], "unknown", None))
+            elif len(sample) == 4:
+                instance._slope_samples.append((sample[0], sample[1], sample[2], sample[3], None))
             else:
                 instance._slope_samples.append(tuple(sample))
 

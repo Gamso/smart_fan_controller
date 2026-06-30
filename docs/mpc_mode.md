@@ -91,18 +91,46 @@ Where:
 The model reuses the current learning subsystem:
 
 - `learning.get_dead_time()` for thermal delay
-- `learning.get_mode_effective_slope(fan_mode, hvac_mode)` for reliable per-mode profiles
+- `learning.get_mode_slope_model(fan_mode, hvac_mode)` for reliable per-mode profiles
 
 If a reliable profile is not yet available for a fan mode, the MPC model falls back to a coarse rank-based estimate derived from the current slope. Confidence is lowered accordingly.
+
+### Gap-Dependent Slope Model
+
+Effective cooling/heating power is **not constant**: per Newton's law of cooling it scales with
+the distance to the setpoint. A single scalar (the historical median) is structurally diluted by the
+many samples collected near equilibrium, where the slope is naturally shallow — it under-states the
+fan's real working power.
+
+Each profile therefore learns a linear model by ordinary least squares over its
+`(comfort_error, effective_slope)` samples:
+
+```text
+effective_slope(error) = a + b * error      (b clamped to >= 0)
+```
+
+- `learning.get_mode_slope_model()` returns `(a, b)`; `get_mode_slope_gain()` returns `b`.
+- `learning.get_mode_effective_slope()` reports the representative **working** slope, i.e. the model
+  evaluated at `REFERENCE_SLOPE_ERROR` (1 °C). For legacy/synthetic constant profiles (`b == 0`) this
+  is exactly the previous median estimator, so behaviour is unchanged for those.
+- The simulator recomputes the slope **at each step** from the simulated error, so the projection
+  decelerates realistically as the room approaches the setpoint instead of cooling/heating at a fixed
+  rate (which produced phantom overshoot past the target), and uses the higher real power when the
+  room is far from target (faster, more accurate catch-up).
 
 ### Disturbance Handling
 
 When the current fan mode has a reliable learned profile and the controller is in `ESTABLISHED` phase, the MPC model estimates a slow disturbance bias from the residual:
 
 ```text
-residual = observed_effective_power - expected_effective_power
+residual = observed_effective_power - expected_effective_power(current_error)
 bias[k+1] = (1 - beta) * bias[k] + beta * residual
 ```
+
+The expected power is the gap-dependent model evaluated **at the current comfort error**, not at the
+reference gap. This keeps the bias clean: it captures only genuine external disturbances (solar gain,
+occupancy) instead of the systematic variation of power with the distance to setpoint, which the gap
+model now explains directly.
 
 This helps the MPC model remain usable when the room is slightly helped or hindered by effects not directly modeled by the fan itself.
 
@@ -111,7 +139,8 @@ When a window is detected as open, the MPC model does not trust its own predicti
 ## MPC-lite Decision Rule
 
 The controller simulates every available fan mode on a short fixed horizon of 30 minutes.
-The current scaffold keeps the action constant over the horizon to stay simple and fast.
+The candidate fan action is held constant over the horizon, but its effective slope is recomputed at
+each step from the simulated comfort error (see the gap-dependent slope model above).
 The simulator supports both `heat` and `cool`; cooling uses the same learned effective-power model with the sign inverted back to room-temperature evolution.
 
 Each candidate mode gets a scalar cost:

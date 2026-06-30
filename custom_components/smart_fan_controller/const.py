@@ -45,6 +45,10 @@ PHASE_ESTABLISHED = "ESTABLISHED"
 MIN_SAMPLES_LEARNING = 240  # Minimum slope samples required for initial readiness
 MIN_LIMIT_TIMEOUT = 5  # Minimum limit_timeout (minutes) derived from learning
 MIN_MODE_PROFILE_SAMPLES = 10  # Minimum samples per fan mode to consider profile reliable
+REFERENCE_SLOPE_ERROR = 1.0  # °C – reference comfort error at which the representative
+# "working" effective slope is reported. The learned slope model is slope(error) = a + b·error;
+# evaluating it at this gap yields a value reflecting real cooling/heating power rather than the
+# near-equilibrium median, which is structurally diluted by samples taken close to the setpoint.
 SETPOINT_DROP_LEARNING_COOLDOWN = 30.0  # Minutes to block learning after a setpoint drop
 MIN_ESTABLISHED_RATIO = 2.0  # Minimum factor × dead_time the fan mode must be active before learning
 

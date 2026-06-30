@@ -178,6 +178,80 @@ class TestThermalLearning:
         assert slope is not None
         assert slope == pytest.approx(0.15, abs=0.01)
 
+    def test_gap_model_learns_positive_gain(self):
+        """A profile whose slope scales with the comfort error yields a+b·error."""
+        learning = ThermalLearning()
+        # Perfectly linear: effective_slope = 0.4 + 0.8 * error
+        for err in [0.5, 1.0, 1.5, 2.0] * 3:
+            learning.add_slope_sample("superhigh", 0.4 + 0.8 * err, err, hvac_mode="heat")
+
+        a, b = learning.get_mode_slope_model("superhigh", "heat")
+        assert a == pytest.approx(0.4, abs=0.01)
+        assert b == pytest.approx(0.8, abs=0.01)
+        assert learning.get_mode_slope_gain("superhigh", "heat") == pytest.approx(0.8, abs=0.01)
+
+    def test_effective_slope_reports_working_value_at_reference(self):
+        """get_mode_effective_slope returns the model at REFERENCE_SLOPE_ERROR, not the median."""
+        learning = ThermalLearning()
+        for err in [0.5, 1.0, 1.5, 2.0] * 3:
+            learning.add_slope_sample("superhigh", 0.4 + 0.8 * err, err, hvac_mode="heat")
+
+        # Working slope at error=1.0 -> 0.4 + 0.8 = 1.2 (the median of the samples is ~1.4)
+        assert learning.get_mode_effective_slope("superhigh", "heat") == pytest.approx(1.2, abs=0.02)
+
+    def test_get_mode_effective_slope_at_scales_with_error(self):
+        """The modelled slope scales with the gap and floors the error at 0."""
+        learning = ThermalLearning()
+        for err in [0.5, 1.0, 1.5, 2.0] * 3:
+            learning.add_slope_sample("superhigh", 0.4 + 0.8 * err, err, hvac_mode="heat")
+
+        assert learning.get_mode_effective_slope_at("superhigh", "heat", 2.0) == pytest.approx(2.0, abs=0.02)
+        assert learning.get_mode_effective_slope_at("superhigh", "heat", 0.0) == pytest.approx(0.4, abs=0.02)
+        # Negative error is floored at 0 -> intercept only
+        assert learning.get_mode_effective_slope_at("superhigh", "heat", -3.0) == pytest.approx(0.4, abs=0.02)
+
+    def test_gap_model_cool_inversion(self):
+        """In cool mode the raw slope is inverted before fitting the gap model."""
+        learning = ThermalLearning()
+        for err in [0.5, 1.0, 1.5, 2.0] * 3:
+            # raw cooling slope is negative; effective = 0.4 + 0.8*err
+            learning.add_slope_sample("superhigh", -(0.4 + 0.8 * err), err, hvac_mode="cool")
+
+        a, b = learning.get_mode_slope_model("superhigh", "cool")
+        assert a == pytest.approx(0.4, abs=0.02)
+        assert b == pytest.approx(0.8, abs=0.02)
+
+    def test_constant_error_yields_zero_gain(self):
+        """When all samples share the same error, the model is the constant median."""
+        learning = ThermalLearning()
+        for _ in range(12):
+            learning.add_slope_sample("high", 0.9, 0.3, hvac_mode="heat")
+
+        a, b = learning.get_mode_slope_model("high", "heat")
+        assert b == 0.0
+        assert a == pytest.approx(0.9, abs=0.001)
+        assert learning.get_mode_effective_slope("high", "heat") == pytest.approx(0.9, abs=0.001)
+
+    def test_gain_clamped_non_negative(self):
+        """A spurious negative correlation (slope falls as gap grows) is clamped to 0."""
+        learning = ThermalLearning()
+        for err in [0.5, 1.0, 1.5, 2.0] * 3:
+            learning.add_slope_sample("high", 2.0 - 0.5 * err, err, hvac_mode="heat")
+
+        a, b = learning.get_mode_slope_model("high", "heat")
+        assert b == 0.0  # never model cooling/heating as weaker further from target
+
+    def test_error_persisted_and_restored(self):
+        """Sample errors survive a to_dict/from_dict round-trip so the gap model is stable."""
+        learning = ThermalLearning()
+        for err in [0.5, 1.0, 1.5, 2.0] * 3:
+            learning.add_slope_sample("superhigh", 0.4 + 0.8 * err, err, hvac_mode="heat")
+
+        restored = ThermalLearning.from_dict(learning.to_dict())
+        a, b = restored.get_mode_slope_model("superhigh", "heat")
+        assert a == pytest.approx(0.4, abs=0.02)
+        assert b == pytest.approx(0.8, abs=0.02)
+
     def test_get_dead_time_decoupled_by_hvac_mode(self):
         """Test that get_dead_time handles separate heating and cooling events correctly."""
         learning = ThermalLearning()

@@ -650,6 +650,68 @@ def test_mpc_handles_long_dead_time_without_blindness() -> None:
     assert result["mpc_would_change_now"] == "yes"
 
 
+def _seed_gap_profile(learning: ThermalLearning, fan_mode: str, hvac_mode: str, a: float, b: float) -> None:
+    """Seed a profile whose effective slope follows a + b·error."""
+    import time
+    now = time.time()
+    sign = -1.0 if hvac_mode == "cool" else 1.0
+    samples = []
+    for i, err in enumerate([0.5, 1.0, 1.5, 2.0, 2.5, 3.0] * 2):
+        samples.append((now + i, fan_mode, sign * (a + b * err), hvac_mode, err))
+    learning.slope_samples = list(learning.slope_samples) + samples
+
+
+def test_gap_model_projects_faster_cooling_when_far_from_target() -> None:
+    """A gap-dependent profile cools faster from a hot room than the same constant slope."""
+    gap_learning = ThermalLearning()
+    _seed_gap_profile(gap_learning, "superhigh", "cool", a=0.5, b=1.0)
+    gap_mpc = MPCController(learning=gap_learning, deadband=0.3, min_interval=10, fan_modes=["superhigh"])
+
+    # Equivalent constant-slope profile pinned to the gap model's working value.
+    working = gap_learning.get_mode_effective_slope("superhigh", "cool")
+    const_learning = ThermalLearning()
+    const_learning.set_mode_effective_slope("superhigh", "cool", working)
+    const_mpc = MPCController(learning=const_learning, deadband=0.3, min_interval=10, fan_modes=["superhigh"])
+
+    kwargs = dict(current_temp=26.0, target_temp=24.0, vtherm_slope=-1.0,
+                  hvac_mode="cool", current_fan="superhigh", minutes_since_change=20.0)
+    gap = gap_mpc.evaluate(**kwargs)
+    const = const_mpc.evaluate(**kwargs)
+
+    # Hot room (error 2.0): gap model uses ~2.5 °C/h, so it cools further than the constant ~1.5.
+    assert gap["mpc_predicted_temperature_30m"] < const["mpc_predicted_temperature_30m"]
+
+
+def test_gap_model_does_not_plunge_past_target() -> None:
+    """The gap model decelerates near the setpoint instead of projecting phantom overshoot."""
+    learning = ThermalLearning()
+    _seed_gap_profile(learning, "superhigh", "cool", a=0.5, b=1.0)
+    mpc = MPCController(learning=learning, deadband=0.3, min_interval=10, fan_modes=["superhigh"])
+
+    result = mpc.evaluate(
+        current_temp=24.4, target_temp=24.0, vtherm_slope=-0.5,
+        hvac_mode="cool", current_fan="superhigh", minutes_since_change=20.0,
+    )
+    # Starting only 0.4°C above target, a 30-min projection must asymptote toward 24.0,
+    # not dive well below it the way a constant-slope model would.
+    assert result["mpc_predicted_temperature_30m"] >= 23.7
+
+
+def test_gap_aware_disturbance_bias_stays_small_without_disturbance() -> None:
+    """When the observed slope matches the gap model at the current error, bias stays ~0."""
+    learning = ThermalLearning()
+    _seed_gap_profile(learning, "superhigh", "cool", a=0.5, b=1.0)
+    mpc = MPCController(learning=learning, deadband=0.3, min_interval=10, fan_modes=["superhigh"])
+
+    # Room 2°C above target -> model expects ~2.5 °C/h effective cooling (raw vtherm_slope ≈ -2.5).
+    for _ in range(10):
+        mpc.evaluate(
+            current_temp=26.0, target_temp=24.0, vtherm_slope=-2.5,
+            hvac_mode="cool", current_fan="superhigh", minutes_since_change=40.0,
+        )
+    assert abs(mpc.disturbance_bias) < 0.2
+
+
 def test_learning_response_sensor_with_mixed_tuple_lengths() -> None:
     """SmartFanLearningResponseSensor extra_state_attributes handles mixed lengths in response_events."""
     import time
