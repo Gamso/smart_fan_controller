@@ -252,6 +252,43 @@ class TestThermalLearning:
         assert a == pytest.approx(0.4, abs=0.02)
         assert b == pytest.approx(0.8, abs=0.02)
 
+    def test_r_squared_perfect_fit(self):
+        """A perfectly linear profile yields R² ≈ 1."""
+        learning = ThermalLearning()
+        for err in [0.5, 1.0, 1.5, 2.0] * 3:
+            learning.add_slope_sample("superhigh", 0.4 + 0.8 * err, err, hvac_mode="heat")
+
+        assert learning.get_mode_slope_r2("superhigh", "heat") == pytest.approx(1.0, abs=0.001)
+
+    def test_r_squared_and_time_constant_none_for_constant_profile(self):
+        """A constant (no-gain) profile has no regression R² and no time constant."""
+        learning = ThermalLearning()
+        for _ in range(12):
+            learning.add_slope_sample("high", 0.9, 0.3, hvac_mode="heat")
+
+        assert learning.get_mode_slope_r2("high", "heat") is None
+        assert learning.get_mode_time_constant("high", "heat") is None
+
+    def test_thermal_time_constant_is_inverse_gain(self):
+        """The thermal time constant equals 1/gain (hours)."""
+        learning = ThermalLearning()
+        for err in [0.5, 1.0, 1.5, 2.0] * 3:
+            learning.add_slope_sample("superhigh", 0.4 + 0.8 * err, err, hvac_mode="heat")
+
+        # gain b = 0.8 -> tau = 1.25 h
+        assert learning.get_mode_time_constant("superhigh", "heat") == pytest.approx(1.25, abs=0.02)
+
+    def test_profile_summary_exposes_r2_and_time_constant(self):
+        """get_mode_profiles surfaces r_squared and thermal_time_constant_h."""
+        learning = ThermalLearning()
+        for err in [0.5, 1.0, 1.5, 2.0] * 3:
+            learning.add_slope_sample("superhigh", 0.4 + 0.8 * err, err, hvac_mode="heat")
+
+        prof = learning.get_mode_profiles("heat", ["superhigh"])["superhigh"]
+        assert prof["r_squared"] == pytest.approx(1.0, abs=0.001)
+        assert prof["thermal_time_constant_h"] == pytest.approx(1.25, abs=0.02)
+        assert prof["slope_gain"] == pytest.approx(0.8, abs=0.02)
+
     def test_get_dead_time_decoupled_by_hvac_mode(self):
         """Test that get_dead_time handles separate heating and cooling events correctly."""
         learning = ThermalLearning()

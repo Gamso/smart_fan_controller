@@ -366,6 +366,29 @@ class ThermalLearning:
         model = self.get_mode_slope_model(fan_mode, hvac_mode)
         return 0.0 if model is None else model[1]
 
+    def get_mode_slope_r2(self, fan_mode: str, hvac_mode: str) -> float | None:
+        """Return the R² (goodness of fit, 0..1) of the gap-dependent slope model.
+
+        Higher values mean the cooling/heating rate is well explained by the
+        distance to the setpoint, i.e. the learned thermal model is reliable.
+        Returns None when the model is a constant fallback (no regression).
+        """
+        fit = self._fit_mode_slope(fan_mode, hvac_mode)
+        return None if fit is None else fit[2]
+
+    def get_mode_time_constant(self, fan_mode: str, hvac_mode: str) -> float | None:
+        """Return the thermal time constant τ (hours) for a profile.
+
+        In a first-order RC thermal model the rate of approach to the setpoint is
+        ``error / τ``, so the learned gain ``b`` (°C/h per °C) approximates ``1/τ``.
+        A larger τ means more thermal inertia / resistance (slower response).
+        Returns None when the gain is ~0 (constant model: τ is undefined).
+        """
+        gain = self.get_mode_slope_gain(fan_mode, hvac_mode)
+        if gain < 1e-3:
+            return None
+        return 1.0 / gain
+
     def get_mode_effective_slope_at(self, fan_mode: str, hvac_mode: str, error: float) -> float | None:
         """Return the modelled effective slope at a given comfort error.
 
@@ -468,12 +491,21 @@ class ThermalLearning:
 
         profiles: dict[str, dict] = {}
         for fan_mode in ordered_modes:
-            effective_slope = self.get_mode_effective_slope(fan_mode, hvac_mode)
+            fit = self._fit_mode_slope(fan_mode, hvac_mode)
             sample_count = self.get_mode_sample_count(fan_mode, hvac_mode)
+            if fit is None:
+                effective_slope = gain = r_squared = time_constant = None
+            else:
+                intercept_a, gain, r_squared = fit
+                effective_slope = intercept_a + gain * REFERENCE_SLOPE_ERROR
+                time_constant = (1.0 / gain) if gain >= 1e-3 else None
             profiles[fan_mode] = {
                 "effective_slope": round(effective_slope, 3) if effective_slope is not None else None,
+                "slope_gain": round(gain, 3) if gain is not None else None,
+                "r_squared": round(r_squared, 3) if r_squared is not None else None,
+                "thermal_time_constant_h": round(time_constant, 2) if time_constant is not None else None,
                 "samples": sample_count,
-                "ready": effective_slope is not None,
+                "ready": fit is not None,
             }
         return profiles
 

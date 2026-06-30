@@ -505,6 +505,8 @@ class SmartFanProfileEffectiveSlopeSensor(_SmartFanEntity):
         else:
             slope_intercept = round(model[0], 3)
             slope_gain = round(model[1], 3)
+        r_squared = learning.get_mode_slope_r2(self._fan_mode, self._hvac_mode)
+        time_constant = learning.get_mode_time_constant(self._fan_mode, self._hvac_mode)
         return {
             "hvac_mode": self._hvac_mode,
             "fan_mode": self._fan_mode,
@@ -516,6 +518,8 @@ class SmartFanProfileEffectiveSlopeSensor(_SmartFanEntity):
             "slope_intercept": slope_intercept,
             "slope_gain": slope_gain,
             "reference_error": REFERENCE_SLOPE_ERROR,
+            "model_r_squared": round(r_squared, 3) if r_squared is not None else None,
+            "thermal_time_constant_h": round(time_constant, 2) if time_constant is not None else None,
         }
 
 
