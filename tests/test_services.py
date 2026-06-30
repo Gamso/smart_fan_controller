@@ -9,6 +9,7 @@ from homeassistant.helpers import entity_registry as er
 from custom_components.smart_fan_controller import (
     _apply_optimal_parameters,
     _async_migrate_entity_ids,
+    _resolve_active_force,
     _resolve_controller_entry,
 )
 from custom_components.smart_fan_controller.thermal_learning import ThermalLearning
@@ -217,3 +218,38 @@ class TestResetLearning:
 
         assert learning.is_ready()
         assert learning.slope_sample_count() == MIN_SAMPLES_LEARNING
+
+
+class TestForceFan:
+    """Tests for the force_fan override resolution logic."""
+
+    FAN_MODES = ["silent", "low", "med", "high", "superhigh"]
+
+    def test_no_force_returns_none(self):
+        """No override configured -> MPC stays in control."""
+        entry_data = {"force": None}
+        assert _resolve_active_force(entry_data, self.FAN_MODES, now=1000.0, climate_id="climate.test") is None
+
+    def test_active_force_returns_fan_mode(self):
+        """An active override returns the forced fan mode."""
+        entry_data = {"force": {"fan_mode": "high", "until": 2000.0}}
+        assert _resolve_active_force(entry_data, self.FAN_MODES, now=1000.0, climate_id="climate.test") == "high"
+        # Override is preserved while active
+        assert entry_data["force"] is not None
+
+    def test_expired_force_is_cleared(self):
+        """An expired override returns None and is cleared so the MPC resumes."""
+        entry_data = {"force": {"fan_mode": "high", "until": 999.0}}
+        assert _resolve_active_force(entry_data, self.FAN_MODES, now=1000.0, climate_id="climate.test") is None
+        assert entry_data["force"] is None
+
+    def test_invalid_fan_mode_is_cleared(self):
+        """An override for an unknown fan mode is dropped."""
+        entry_data = {"force": {"fan_mode": "turbo", "until": 2000.0}}
+        assert _resolve_active_force(entry_data, self.FAN_MODES, now=1000.0, climate_id="climate.test") is None
+        assert entry_data["force"] is None
+
+    def test_unknown_fan_modes_does_not_block_force(self):
+        """Before fan modes are discovered, the override is still honoured."""
+        entry_data = {"force": {"fan_mode": "high", "until": 2000.0}}
+        assert _resolve_active_force(entry_data, None, now=1000.0, climate_id="climate.test") == "high"
