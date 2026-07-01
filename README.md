@@ -40,6 +40,7 @@ Predictive fan speed control for HVAC systems, designed to work with Versatile T
     - [`smart_fan_controller.apply_learned_settings`](#smart_fan_controllerapply_learned_settings)
     - [`smart_fan_controller.reset_learning`](#smart_fan_controllerreset_learning)
     - [`smart_fan_controller.set_effective_slope`](#smart_fan_controllerset_effective_slope)
+    - [`smart_fan_controller.force_fan`](#smart_fan_controllerforce_fan)
   - [Troubleshooting](#troubleshooting)
   - [License](#license)
 
@@ -338,6 +339,31 @@ data:
   fan_mode: silent
   effective_slope: 0.15
 ```
+
+### `smart_fan_controller.force_fan`
+
+Force a specific fan mode for a fixed duration, overriding the MPC. The override is applied
+immediately and automatically expires after the duration, handing control back to the MPC. Set
+`duration_minutes` to `0` to cancel an active override early.
+
+**Parameters**:
+
+| Parameter          | Required | Example               | Description                                                       |
+| ------------------ | -------- | --------------------- | ----------------------------------------------------------------- |
+| `climate_entity`   | No*      | `climate.living_room` | Required when several Smart Fan Controller entries are configured |
+| `fan_mode`         | Yes      | `high`                | The fan mode to force                                             |
+| `duration_minutes` | Yes      | `30`                  | How long to hold the forced mode; `0` cancels an active override  |
+
+**Example** (Developer Tools → Services):
+```yaml
+service: smart_fan_controller.force_fan
+data:
+  climate_entity: climate.living_room
+  fan_mode: high
+  duration_minutes: 30
+```
+
+While a force is active, `mpc_status` reports `Forced` and `mpc_reason` shows the remaining time.
 
 ---
 

@@ -2,10 +2,13 @@
   "domain": "smart_fan_controller",
   "name": "Smart Fan Controller",
   "documentation": "https://github.com/Gamso/smart_fan_controller",
+  "issue_tracker": "https://github.com/Gamso/smart_fan_controller/issues",
   "config_flow": true,
   "dependencies": [],
+  "after_dependencies": ["versatile_thermostat"],
   "integration_type": "service",
   "iot_class": "calculated",
+  "loggers": ["custom_components.smart_fan_controller"],
   "codeowners": [
     "@Gamso"
   ],

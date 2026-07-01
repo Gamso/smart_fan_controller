@@ -17,6 +17,7 @@ from .const import (
     EFFECTIVE_SLOPE_UNIT,
     MIN_MODE_PROFILE_SAMPLES,
     PROFILE_HVAC_MODES,
+    REFERENCE_SLOPE_ERROR,
     build_scoped_entity_id,
     build_unique_id,
 )
@@ -85,7 +86,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     climate_entity = data["climate_entity"]
 
     sensor_definitions = [
-        ("Fan Mode", "fan_mode", "fan_mode", None, SensorDeviceClass.ENUM, "mdi:fan", None),
+        # No ENUM device_class: it requires a static `options` list, but fan modes
+        # are discovered at runtime and vary per climate, which would emit HA
+        # validation warnings. A plain text sensor shows the fan mode just fine.
+        ("Fan Mode", "fan_mode", "fan_mode", None, None, "mdi:fan", None),
         (
             "Fan Mode Last Change",
             "fan_mode_last_change",
@@ -484,8 +488,9 @@ class SmartFanProfileEffectiveSlopeSensor(_SmartFanEntity):
     @property
     def extra_state_attributes(self) -> dict:
         """Expose sampling details for the current profile."""
-        samples = self._controller.learning.get_mode_sample_count(self._fan_mode, self._hvac_mode)
-        spread = self._controller.learning.get_profile_spread(self._fan_mode, self._hvac_mode)
+        learning = self._controller.learning
+        samples = learning.get_mode_sample_count(self._fan_mode, self._hvac_mode)
+        spread = learning.get_profile_spread(self._fan_mode, self._hvac_mode)
         if spread is None:
             quality = "unknown"
         elif spread < 0.15:
@@ -494,6 +499,17 @@ class SmartFanProfileEffectiveSlopeSensor(_SmartFanEntity):
             quality = "fair"
         else:
             quality = "poor"
+        # Gap-dependent slope model: effective_slope(error) = intercept + gain·error.
+        # The state value is this model evaluated at REFERENCE_SLOPE_ERROR.
+        model = learning.get_mode_slope_model(self._fan_mode, self._hvac_mode)
+        if model is None:
+            slope_intercept = None
+            slope_gain = None
+        else:
+            slope_intercept = round(model[0], 3)
+            slope_gain = round(model[1], 3)
+        r_squared = learning.get_mode_slope_r2(self._fan_mode, self._hvac_mode)
+        time_constant = learning.get_mode_time_constant(self._fan_mode, self._hvac_mode)
         return {
             "hvac_mode": self._hvac_mode,
             "fan_mode": self._fan_mode,
@@ -502,6 +518,11 @@ class SmartFanProfileEffectiveSlopeSensor(_SmartFanEntity):
             "ready": samples >= MIN_MODE_PROFILE_SAMPLES,
             "spread": spread,
             "quality": quality,
+            "slope_intercept": slope_intercept,
+            "slope_gain": slope_gain,
+            "reference_error": REFERENCE_SLOPE_ERROR,
+            "model_r_squared": round(r_squared, 3) if r_squared is not None else None,
+            "thermal_time_constant_h": round(time_constant, 2) if time_constant is not None else None,
         }
 
 

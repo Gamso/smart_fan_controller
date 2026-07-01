@@ -52,6 +52,7 @@ PLATFORMS = [Platform.SENSOR]
 SERVICE_APPLY_LEARNED_SETTINGS = "apply_learned_settings"
 SERVICE_RESET_LEARNING = "reset_learning"
 SERVICE_SET_EFFECTIVE_SLOPE = "set_effective_slope"
+SERVICE_FORCE_FAN = "force_fan"
 
 
 def _filter_supported_fan_modes(raw_modes: list[str] | None) -> list[str]:
@@ -187,6 +188,7 @@ async def _async_migrate_entity_ids(hass: HomeAssistant, entry: ConfigEntry, cli
 def _should_collect_slope_sample(
     *,
     current_fan: str | None,
+    hvac_mode: str,
     is_defrost_active: bool,
     is_hvac_idle: bool,
     phase: str,
@@ -196,6 +198,10 @@ def _should_collect_slope_sample(
     now: float,
 ) -> bool:
     """Return True when slope learning conditions are met."""
+    # Only heating/cooling produce meaningful thermal-response samples; skip
+    # off/dry/fan_only so those cycles don't pollute the learned profiles.
+    if hvac_mode not in ("heat", "cool"):
+        return False
     if current_fan is None or is_defrost_active or is_hvac_idle:
         return False
     if phase != PHASE_ESTABLISHED:
@@ -312,14 +318,78 @@ def _register_services(hass: HomeAssistant) -> None:
             "Set effective slope for %s/%s to %.3f", hvac_mode, fan_mode, effective_slope
         )
 
+    async def force_fan(call):
+        """Service to force a specific fan mode for a fixed duration (minutes).
+
+        A duration of 0 cancels any active override and hands control back to the MPC.
+        """
+        entry_id, entry_data = _resolve_controller_entry(hass, call.data.get(CONF_CLIMATE_ENTITY))
+        mpc_controller = entry_data["mpc_controller"]
+        climate_id = entry_data["climate_entity"]
+        fan_mode = call.data["fan_mode"]
+        duration_minutes = float(call.data["duration_minutes"])
+
+        if duration_minutes <= 0:
+            entry_data["force"] = None
+            _LOGGER.info("Force fan cancelled for %s; resuming MPC control", climate_id)
+        else:
+            available = mpc_controller.fan_modes or []
+            if available and fan_mode not in available:
+                raise HomeAssistantError(
+                    f"Fan mode '{fan_mode}' is not available for {climate_id}. "
+                    f"Known fan modes: {', '.join(available) or 'none yet'}"
+                )
+            entry_data["force"] = {"fan_mode": fan_mode, "until": time.time() + duration_minutes * 60.0}
+            _LOGGER.info(
+                "Forcing fan '%s' for %s for %.0f min", fan_mode, climate_id, duration_minutes
+            )
+
+        # Apply immediately instead of waiting for the next 2-minute cycle.
+        trigger_cycle = entry_data.get("trigger_cycle")
+        if callable(trigger_cycle):
+            trigger_cycle()
+
     hass.services.async_register(DOMAIN, SERVICE_APPLY_LEARNED_SETTINGS, apply_learned_settings)
     hass.services.async_register(DOMAIN, SERVICE_RESET_LEARNING, reset_learning)
     hass.services.async_register(DOMAIN, SERVICE_SET_EFFECTIVE_SLOPE, set_effective_slope)
+    hass.services.async_register(DOMAIN, SERVICE_FORCE_FAN, force_fan)
 
 
 # MPC statuses that mean the controller is paused; the current fan mode is
 # held when the MPC is in one of these states.
 _MPC_PAUSED_STATUSES = frozenset({"Idle", "Disturbed", "Not ready"})
+
+
+def _resolve_active_force(
+    entry_data: dict,
+    fan_modes: list[str] | None,
+    now: float,
+    climate_id: str,
+) -> str | None:
+    """Return the forced fan mode if a force override is currently active, else None.
+
+    Clears expired or invalid overrides as a side effect so control returns to the MPC.
+    """
+    force = entry_data.get("force")
+    if not force:
+        return None
+
+    if now >= force["until"]:
+        entry_data["force"] = None
+        _LOGGER.info("Force fan expired for %s; resuming MPC control", climate_id)
+        return None
+
+    forced_fan = force["fan_mode"]
+    if fan_modes and forced_fan not in fan_modes:
+        entry_data["force"] = None
+        _LOGGER.warning(
+            "Forced fan '%s' is no longer a valid mode for %s; cancelling override",
+            forced_fan,
+            climate_id,
+        )
+        return None
+
+    return forced_fan
 
 
 def _read_climate_cycle_data(
@@ -350,12 +420,29 @@ def _read_climate_cycle_data(
         )
         return None
 
+    # VTherm can briefly expose non-numeric values ("unknown"/"unavailable")
+    # during restarts; guard the conversion so a transient state skips the
+    # cycle instead of raising and aborting the control loop.
+    try:
+        vtherm_slope_value = float(vtherm_slope)
+        current_temp_value = float(current_temp)
+        target_temp_value = float(target_temp)
+    except (TypeError, ValueError):
+        _LOGGER.debug(
+            "Skipping control cycle for %s: non-numeric climate data (slope=%s, current=%s, target=%s)",
+            climate_id,
+            vtherm_slope,
+            current_temp,
+            target_temp,
+        )
+        return None
+
     window_mgr = attrs.get("window_manager", {})
     is_window_open = window_mgr.get("window_state") == "on" or window_mgr.get("window_auto_state") == "on" or attrs.get("specific_states", {}).get("hvac_off_reason") == "Window"
     return (
-        float(vtherm_slope),
-        float(current_temp),
-        float(target_temp),
+        vtherm_slope_value,
+        current_temp_value,
+        target_temp_value,
         str(hvac_mode),
         current_fan,
         is_window_open,
@@ -488,6 +575,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "sensors": [],
         "ensure_profile_sensors": None,
         "store": store,
+        # Manual override set by the force_fan service: {"fan_mode": str, "until": float}
+        "force": None,
+        "trigger_cycle": None,
     }
 
     if not hass.services.has_service(DOMAIN, SERVICE_APPLY_LEARNED_SETTINGS):
@@ -510,10 +600,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "previous_slope": None,
         "last_hvac_mode": None,
         "defrost": {"active": False, "start_time": 0.0},
+        # Fan mode the controller itself just commanded, so the state-change
+        # listener can tell its own change apart from a genuine manual override.
+        "controller_commanded_fan": None,
+        # Re-entrancy guard: True while a cycle is executing so overlapping
+        # triggers (periodic timer, startup run, force_fan) do not run concurrently.
+        "cycle_running": False,
     }
 
-    async def run_control_loop(_):
-        """Main control loop executed every 2 minutes."""
+    async def _execute_control_cycle():
+        """Run one full control cycle (guarded by run_control_loop)."""
         current_state = hass.states.get(climate_id)
         if not current_state:
             _LOGGER.warning("Climate entity %s not found; skipping control cycle", climate_id)
@@ -585,8 +681,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             mpc_decision.get("mpc_confidence"),
         )
 
-        # Determine effective fan: use MPC when status is actionable, else hold current
-        if mpc_decision.get("mpc_status") not in _MPC_PAUSED_STATUSES and mpc_decision.get("mpc_fan_mode"):
+        # Manual override: the force_fan service can pin a fan mode for a fixed window.
+        entry_data = domain_data[entry.entry_id]
+        forced_fan = _resolve_active_force(entry_data, mpc_controller.fan_modes, now, climate_id)
+
+        # Determine effective fan: forced > MPC (when actionable) > hold current
+        if forced_fan is not None:
+            remaining_min = (entry_data["force"]["until"] - now) / 60.0
+            effective_fan = forced_fan
+            effective_reason = f"Forced fan '{forced_fan}' ({remaining_min:.0f} min left)"
+            mpc_decision = {
+                **mpc_decision,
+                "mpc_status": "Forced",
+                "mpc_fan_mode": forced_fan,
+                "mpc_reason": effective_reason,
+                "mpc_would_change_now": "yes" if forced_fan != current_fan else "no",
+            }
+        elif mpc_decision.get("mpc_status") not in _MPC_PAUSED_STATUSES and mpc_decision.get("mpc_fan_mode"):
             effective_fan = mpc_decision["mpc_fan_mode"]
             effective_reason = f"MPC: {mpc_decision.get('mpc_reason', 'MPC')}"
         else:
@@ -605,6 +716,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Slope sample collection
         if _should_collect_slope_sample(
             current_fan=current_fan,
+            hvac_mode=hvac_mode,
             is_defrost_active=is_defrost_active,
             is_hvac_idle=is_hvac_idle,
             phase=phase,
@@ -646,7 +758,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 phase=phase,
                 effective_slope=-float(vtherm_slope) if hvac_mode == "cool" else float(vtherm_slope),
                 effective_timeout=mpc_controller.get_effective_timeout(hvac_mode),
-                force=False,
+                force=forced_fan is not None,
                 learning_ready=learning.is_ready(),
                 dead_time=learning.get_dead_time(hvac_mode),
                 mpc_decision=mpc_decision,
@@ -672,9 +784,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 ctrl_state["last_change_time"] = time.time()
                 _LOGGER.debug("Confirmed fan change for %s at %.3f", climate_id, ctrl_state["last_change_time"])
 
+            # Mark this as a controller-initiated change so the resulting
+            # state-change event is not mislabelled as a manual override.
+            ctrl_state["controller_commanded_fan"] = effective_fan
             await _async_apply_fan_change(hass, climate_id, effective_fan, current_fan, effective_reason, _confirm)
         else:
             _LOGGER.debug("No fan mode change required for %s (%s)", climate_id, effective_reason)
+
+    async def run_control_loop(_=None):
+        """Guarded entry point: run one cycle unless one is already in progress.
+
+        Skipping (rather than queuing) prevents overlapping triggers from racing
+        on shared state or issuing duplicate fan commands. A skipped force_fan
+        trigger is still applied by the next cycle, since the override is stored.
+        """
+        if ctrl_state["cycle_running"]:
+            _LOGGER.debug("Control cycle already in progress for %s; skipping overlapping trigger", climate_id)
+            return
+        ctrl_state["cycle_running"] = True
+        try:
+            await _execute_control_cycle()
+        finally:
+            ctrl_state["cycle_running"] = False
 
     async def _handle_manual_change(event):
         """Track manual fan mode changes to reset the controller cooldown."""
@@ -689,14 +820,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if new_fan is None or new_fan == old_fan:
             return
 
+        # Ignore the state change produced by the controller's own command so it
+        # is not reported as a manual override.
+        if new_fan == ctrl_state.get("controller_commanded_fan"):
+            ctrl_state["controller_commanded_fan"] = None
+            _LOGGER.debug("Ignoring controller-initiated fan change for %s: %s -> %s", climate_id, old_fan, new_fan)
+            return
+
         _LOGGER.info("Manual fan mode change detected for %s: %s -> %s", climate_id, old_fan, new_fan)
         ctrl_state["last_change_time"] = time.time()
         manual_data = {"fan_mode": new_fan, "minutes_since_last_change": 0.0, "reason": "Manual Override"}
 
         _update_sensors(hass, entry.entry_id, manual_data)
 
+    # Expose a way for the force_fan service to apply an override immediately.
+    domain_data[entry.entry_id]["trigger_cycle"] = lambda: hass.async_create_task(run_control_loop(None))
+
     entry.async_on_unload(async_track_time_interval(hass, run_control_loop, timedelta(minutes=DELTA_TIME_CONTROL_LOOP)))
     entry.async_on_unload(async_track_state_change_event(hass, [climate_id], _handle_manual_change))
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
     hass.async_create_task(run_control_loop(None))
 
@@ -743,6 +885,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass.services.async_remove(DOMAIN, SERVICE_APPLY_LEARNED_SETTINGS)
             hass.services.async_remove(DOMAIN, SERVICE_RESET_LEARNING)
             hass.services.async_remove(DOMAIN, SERVICE_SET_EFFECTIVE_SLOPE)
+            hass.services.async_remove(DOMAIN, SERVICE_FORCE_FAN)
             if not domain_data:
                 hass.data.pop(DOMAIN, None)
         _LOGGER.info("Unloaded Smart Fan Controller entry %s", entry.entry_id)
@@ -750,7 +893,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload config entry."""
+    """Reload the config entry when its options change."""
     _LOGGER.info("Reloading Smart Fan Controller entry %s", entry.entry_id)
-    await async_unload_entry(hass, entry)
-    await async_setup_entry(hass, entry)
+    await hass.config_entries.async_reload(entry.entry_id)

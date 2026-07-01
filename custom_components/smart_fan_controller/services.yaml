@@ -65,3 +65,35 @@ set_effective_slope:
           step: 0.001
           mode: box
           unit_of_measurement: "°C/h"
+
+force_fan:
+  name: Force fan mode
+  description: Force a specific fan mode for a fixed duration, overriding the MPC. Set the duration to 0 to cancel an active override and hand control back to the MPC.
+  fields:
+    climate_entity:
+      name: Climate entity
+      description: Optional when only one Smart Fan Controller entry is configured. Required when several climates are managed.
+      required: false
+      example: "climate.living_room"
+      selector:
+        entity:
+          domain: climate
+    fan_mode:
+      name: Fan mode
+      description: The fan mode to force (e.g. silent, low, med, high, superhigh).
+      required: true
+      example: "high"
+      selector:
+        text:
+    duration_minutes:
+      name: Duration (minutes)
+      description: How long to hold the forced fan mode. Use 0 to cancel an active override.
+      required: true
+      example: 30
+      selector:
+        number:
+          min: 0
+          max: 1440
+          step: 1
+          mode: box
+          unit_of_measurement: "min"

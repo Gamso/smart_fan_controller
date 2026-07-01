@@ -11,6 +11,7 @@ from .const import (
     PHASE_DEAD_TIME,
     PHASE_ESTABLISHED,
     PHASE_TRANSIENT,
+    REFERENCE_SLOPE_ERROR,
     THRESHOLD_TARGET_DROP,
 )
 from .thermal_learning import ThermalLearning
@@ -24,6 +25,10 @@ FLOOR_VIOLATION_LINEAR_WEIGHT = 12.0
 FLOOR_VIOLATION_QUADRATIC_WEIGHT = 30.0
 MODE_CHANGE_DISTANCE_COST = 0.15
 MODE_RANK_COST = 0.05
+# Geometric growth of relative power draw per fan-mode rank. ~6**(1/3) so a
+# 4-mode ladder reproduces the legacy [1.0, 1.5, 3.0, 6.0] power scaling while
+# extending naturally to any number of modes.
+MODE_POWER_RATIO = 1.82
 MIN_INTERVAL_CHANGE_PENALTY = 25.0
 URGENCY_SENSITIVITY = 2.0
 
@@ -177,6 +182,7 @@ class MPCController:
 
         active_fan = current_fan if current_fan in fan_modes else fan_modes[0]
         current_effective_slope = -vtherm_slope if hvac_mode == "cool" else vtherm_slope
+        current_error = self._temperature_error(current_temp, target_temp, hvac_mode)
         dead_time = self._learning.get_dead_time()
         change_allowed = minutes_since_change >= self._min_interval
         phase = self._detect_phase(minutes_since_change, dead_time)
@@ -187,9 +193,18 @@ class MPCController:
             current_effective_slope,
             fan_modes,
         )
+        # Compare the observed slope against what the gap-dependent model expects
+        # *at the current error*, not at the reference gap. This keeps the
+        # disturbance bias clean: it only captures genuine external disturbances
+        # (solar gain, occupancy) instead of the systematic variation of cooling
+        # power with the distance to setpoint.
+        current_mode_gain = (
+            self._learning.get_mode_slope_gain(active_fan, hvac_mode) if current_known_profile else 0.0
+        )
+        expected_slope_now = self._gap_slope(current_mode_slope, current_mode_gain, current_error)
         self._update_disturbance_bias(
             observed_effective_slope=current_effective_slope,
-            expected_effective_slope=current_mode_slope,
+            expected_effective_slope=expected_slope_now,
             known_profile=current_known_profile,
             phase=phase,
             is_window_open=is_window_open,
@@ -230,7 +245,6 @@ class MPCController:
         # Setpoint drop: when the target moves far away (e.g. night setpoint),
         # there is no point running the full MPC cost optimisation — the answer
         # is always the lowest mode.
-        current_error = self._temperature_error(current_temp, target_temp, hvac_mode)
         if current_error < THRESHOLD_TARGET_DROP:
             lowest_fan = fan_modes[0]
             would_change = "yes" if active_fan != lowest_fan else "no"
@@ -268,6 +282,7 @@ class MPCController:
                 fan_modes,
                 monotone_slopes,
             )
+            mode_gain = self._learning.get_mode_slope_gain(fan_mode, hvac_mode) if known_profile else 0.0
             sim = self._simulate_mode(
                 current_temp=current_temp,
                 target_temp=target_temp,
@@ -276,6 +291,7 @@ class MPCController:
                 candidate_fan=fan_mode,
                 current_effective_slope=current_effective_slope,
                 candidate_mode_slope=mode_slope,
+                candidate_mode_gain=mode_gain,
                 dead_time=dead_time,
                 candidate_index=fan_modes.index(fan_mode),
                 current_index=current_index,
@@ -349,6 +365,10 @@ class MPCController:
         )
         if selection_note:
             reason += f" | {selection_note}"
+        # Surface capacity saturation: strongest fan selected yet still well short
+        # of target means the HVAC system is capacity-bound, not a control issue.
+        if best.fan_mode == fan_modes[-1] and current_error > self._deadband:
+            reason += f" | Saturated: max fan, {current_error:.1f}C from target (capacity-bound)"
         if abs(self._disturbance_bias) >= 0.05:
             reason += f" | Bias={self._disturbance_bias:+.2f}C/h"
         if not change_allowed:
@@ -419,6 +439,20 @@ class MPCController:
             current_fan,
         )
         return scaled, False
+
+    @staticmethod
+    def _gap_slope(reference_slope: float, gain: float, error: float) -> float:
+        """Return the modelled effective slope at a given comfort error.
+
+        ``reference_slope`` is the representative slope at REFERENCE_SLOPE_ERROR
+        (a + b·REF) and ``gain`` is b, so the model at ``error`` is
+        reference_slope + b·(error − REF). The error is floored at 0 (no driving
+        force at/below setpoint) and the result is floored at 0 so the model never
+        projects active cooling/heating away from the setpoint; the additive
+        disturbance bias is applied separately by the caller.
+        """
+        modelled = reference_slope + gain * (max(error, 0.0) - REFERENCE_SLOPE_ERROR)
+        return max(0.0, modelled)
 
     @staticmethod
     def _detect_phase(minutes_since_change: float, dead_time: float) -> str:
@@ -522,6 +556,7 @@ class MPCController:
         candidate_fan: str,
         current_effective_slope: float,
         candidate_mode_slope: float,
+        candidate_mode_gain: float = 0.0,
         dead_time: float,
         candidate_index: int,
         current_index: int,
@@ -529,7 +564,16 @@ class MPCController:
         known_profile: bool,
         horizon_minutes: int | None = None,
     ) -> ModeSimulation:
-        """Simulate one constant fan mode over the prediction horizon."""
+        """Simulate one fan mode over the prediction horizon.
+
+        The candidate's effective slope is gap-dependent: at each step it is
+        recomputed from the simulated comfort error as
+        ``candidate_mode_slope + candidate_mode_gain·(error − REFERENCE_SLOPE_ERROR)``
+        (floored at 0), plus the disturbance bias. This makes the projection
+        decelerate realistically as the room approaches the setpoint instead of
+        cooling/heating at a constant rate, eliminating the phantom overshoot that a
+        constant-slope model produces past the target.
+        """
         horizon = horizon_minutes if horizon_minutes is not None else self._horizon_minutes
         steps = max(1, int(horizon / self._cycle_minutes))
         step_hours = self._cycle_minutes / 60.0
@@ -540,14 +584,17 @@ class MPCController:
         cost = 0.0
         thermal_power = current_effective_slope
         change_delay = 0.0 if candidate_fan == current_fan else dead_time
-        candidate_effective_slope = candidate_mode_slope + self._disturbance_bias
 
         for step in range(1, steps + 1):
             elapsed = step * self._cycle_minutes
             if elapsed <= change_delay:
                 target_effective_slope = current_effective_slope
             else:
-                target_effective_slope = candidate_effective_slope
+                step_error = self._temperature_error(sim_temp, target_temp, hvac_mode)
+                target_effective_slope = (
+                    self._gap_slope(candidate_mode_slope, candidate_mode_gain, step_error)
+                    + self._disturbance_bias
+                )
 
             thermal_power += blend * (target_effective_slope - thermal_power)
             raw_slope = -thermal_power if hvac_mode == "cool" else thermal_power
@@ -571,13 +618,11 @@ class MPCController:
             cost += FLOOR_VIOLATION_QUADRATIC_WEIGHT * floor_violation * floor_violation
 
         cost += MODE_CHANGE_DISTANCE_COST * abs(candidate_index - current_index)
-        # Apply non-linear economic mode ranking cost to represent actual physical power scaling
-        # (Low: 1.0x, Medium: 1.5x, High: 3.0x, Superhigh: 6.0x equivalent)
-        # This replaces the abstract linear mode rank cost with a real physical relative power draw representation.
-        power_draw = [1.0, 1.5, 3.0, 6.0]
-        # Map indices to relative weights
-        p_index = min(candidate_index, len(power_draw) - 1)
-        relative_power = power_draw[p_index]
+        # Apply a non-linear economic mode-ranking cost representing physical power
+        # scaling. Relative power grows geometrically with the mode rank so every
+        # mode is differentiated regardless of how many the climate entity exposes
+        # (a 4-mode system reproduces the previous 1.0 / 1.8 / 3.3 / 6.0 ramp).
+        relative_power = MODE_POWER_RATIO ** candidate_index
         cost += MODE_RANK_COST * relative_power
         if candidate_fan != current_fan and not change_allowed:
             cost += MIN_INTERVAL_CHANGE_PENALTY
@@ -651,16 +696,29 @@ class MPCController:
     def _compute_confidence(self, known_profiles: int, total_profiles: int, phase: str, worst_spread: float = 0.0) -> float:
         """Return a coarse confidence score for the current recommendation.
 
+        Confidence is driven primarily by per-mode profile *coverage* and
+        *quality* (spread), not by the global readiness flag.  Previously the
+        global ``is_ready()`` threshold (240 samples) halved the score, so a
+        controller with every per-mode profile fully learned could still be
+        stuck reporting "Low confidence" until that global count was reached —
+        which never happened for an HVAC mode used only part of the year.
+
+        - coverage  : fraction of fan modes with a learned profile (main driver).
+        - readiness : small bonus once the global sample threshold is reached.
+        - phase     : transient/dead-time phases attenuate confidence.
+        - penalties : sustained disturbance bias and high profile spread.
+
         worst_spread is the maximum MAD/median ratio across all known profiles.
         Profiles with high spread (> 0.15) reduce confidence proportionally,
         capped at a 0.20 penalty.
         """
         coverage = known_profiles / max(total_profiles, 1)
-        base = 1.0 if self._learning.is_ready() else 0.45
+        coverage_score = 0.3 + 0.7 * coverage
+        readiness_bonus = 0.1 if self._learning.is_ready() else 0.0
         phase_factor = 1.0 if phase == PHASE_ESTABLISHED else 0.85
         disturbance_penalty = min(abs(self._disturbance_bias) / MAX_DISTURBANCE_BIAS, 0.35)
         spread_penalty = min(max(worst_spread - 0.15, 0.0) * 0.4, 0.20)
-        return max(0.1, min(1.0, (base * (0.5 + 0.5 * coverage) * phase_factor) - disturbance_penalty - spread_penalty))
+        return max(0.1, min(1.0, (coverage_score + readiness_bonus) * phase_factor - disturbance_penalty - spread_penalty))
 
     def _payload(
         self,
