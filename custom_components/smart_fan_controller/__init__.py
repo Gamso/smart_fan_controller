@@ -415,12 +415,29 @@ def _read_climate_cycle_data(
         )
         return None
 
+    # VTherm can briefly expose non-numeric values ("unknown"/"unavailable")
+    # during restarts; guard the conversion so a transient state skips the
+    # cycle instead of raising and aborting the control loop.
+    try:
+        vtherm_slope_value = float(vtherm_slope)
+        current_temp_value = float(current_temp)
+        target_temp_value = float(target_temp)
+    except (TypeError, ValueError):
+        _LOGGER.debug(
+            "Skipping control cycle for %s: non-numeric climate data (slope=%s, current=%s, target=%s)",
+            climate_id,
+            vtherm_slope,
+            current_temp,
+            target_temp,
+        )
+        return None
+
     window_mgr = attrs.get("window_manager", {})
     is_window_open = window_mgr.get("window_state") == "on" or window_mgr.get("window_auto_state") == "on" or attrs.get("specific_states", {}).get("hvac_off_reason") == "Window"
     return (
-        float(vtherm_slope),
-        float(current_temp),
-        float(target_temp),
+        vtherm_slope_value,
+        current_temp_value,
+        target_temp_value,
         str(hvac_mode),
         current_fan,
         is_window_open,
@@ -581,10 +598,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Fan mode the controller itself just commanded, so the state-change
         # listener can tell its own change apart from a genuine manual override.
         "controller_commanded_fan": None,
+        # Re-entrancy guard: True while a cycle is executing so overlapping
+        # triggers (periodic timer, startup run, force_fan) do not run concurrently.
+        "cycle_running": False,
     }
 
-    async def run_control_loop(_):
-        """Main control loop executed every 2 minutes."""
+    async def _execute_control_cycle():
+        """Run one full control cycle (guarded by run_control_loop)."""
         current_state = hass.states.get(climate_id)
         if not current_state:
             _LOGGER.warning("Climate entity %s not found; skipping control cycle", climate_id)
@@ -764,6 +784,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await _async_apply_fan_change(hass, climate_id, effective_fan, current_fan, effective_reason, _confirm)
         else:
             _LOGGER.debug("No fan mode change required for %s (%s)", climate_id, effective_reason)
+
+    async def run_control_loop(_=None):
+        """Guarded entry point: run one cycle unless one is already in progress.
+
+        Skipping (rather than queuing) prevents overlapping triggers from racing
+        on shared state or issuing duplicate fan commands. A skipped force_fan
+        trigger is still applied by the next cycle, since the override is stored.
+        """
+        if ctrl_state["cycle_running"]:
+            _LOGGER.debug("Control cycle already in progress for %s; skipping overlapping trigger", climate_id)
+            return
+        ctrl_state["cycle_running"] = True
+        try:
+            await _execute_control_cycle()
+        finally:
+            ctrl_state["cycle_running"] = False
 
     async def _handle_manual_change(event):
         """Track manual fan mode changes to reset the controller cooldown."""

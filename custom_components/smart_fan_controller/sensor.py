@@ -86,7 +86,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     climate_entity = data["climate_entity"]
 
     sensor_definitions = [
-        ("Fan Mode", "fan_mode", "fan_mode", None, SensorDeviceClass.ENUM, "mdi:fan", None),
+        # No ENUM device_class: it requires a static `options` list, but fan modes
+        # are discovered at runtime and vary per climate, which would emit HA
+        # validation warnings. A plain text sensor shows the fan mode just fine.
+        ("Fan Mode", "fan_mode", "fan_mode", None, None, "mdi:fan", None),
         (
             "Fan Mode Last Change",
             "fan_mode_last_change",

@@ -6,9 +6,12 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 
+from types import SimpleNamespace
+
 from custom_components.smart_fan_controller import (
     _apply_optimal_parameters,
     _async_migrate_entity_ids,
+    _read_climate_cycle_data,
     _resolve_active_force,
     _resolve_controller_entry,
 )
@@ -253,3 +256,42 @@ class TestForceFan:
         """Before fan modes are discovered, the override is still honoured."""
         entry_data = {"force": {"fan_mode": "high", "until": 2000.0}}
         assert _resolve_active_force(entry_data, None, now=1000.0, climate_id="climate.test") == "high"
+
+
+class TestReadClimateCycleData:
+    """Tests for parsing/guarding VTherm climate state (M3 hardening)."""
+
+    @staticmethod
+    def _state(**overrides):
+        attrs = {
+            "specific_states": {"temperature_slope": 0.5},
+            "current_temperature": 22.0,
+            "temperature": 20.0,
+            "hvac_mode": "heat",
+            "fan_mode": "low",
+        }
+        attrs.update(overrides)
+        return SimpleNamespace(attributes=attrs)
+
+    def test_valid_state_returns_parsed_tuple(self):
+        result = _read_climate_cycle_data(self._state(), "climate.test")
+        assert result == (0.5, 22.0, 20.0, "heat", "low", False)
+
+    def test_non_numeric_slope_skips_cycle(self):
+        """A transient 'unavailable' slope must skip the cycle, not raise."""
+        state = self._state(specific_states={"temperature_slope": "unavailable"})
+        assert _read_climate_cycle_data(state, "climate.test") is None
+
+    def test_non_numeric_temperature_skips_cycle(self):
+        state = self._state(current_temperature="unknown")
+        assert _read_climate_cycle_data(state, "climate.test") is None
+
+    def test_missing_temperature_skips_cycle(self):
+        state = self._state(current_temperature=None)
+        assert _read_climate_cycle_data(state, "climate.test") is None
+
+    def test_missing_slope_defaults_to_zero(self):
+        """A missing temperature_slope key defaults to 0.0 (not a skip)."""
+        state = self._state(specific_states={})
+        result = _read_climate_cycle_data(state, "climate.test")
+        assert result is not None and result[0] == 0.0
