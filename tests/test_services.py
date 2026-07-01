@@ -10,18 +10,24 @@ from types import SimpleNamespace
 
 from custom_components.smart_fan_controller import (
     _apply_optimal_parameters,
+    _async_apply_fan_change,
     _async_migrate_entity_ids,
+    _detect_disturbances,
     _read_climate_cycle_data,
     _resolve_active_force,
     _resolve_controller_entry,
+    _should_collect_slope_sample,
 )
 from custom_components.smart_fan_controller.thermal_learning import ThermalLearning
 from custom_components.smart_fan_controller.const import (
     CONF_CLIMATE_ENTITY,
     CONF_DEADBAND,
+    CONF_DEFROST_ENTITY,
     CONF_LIMIT_TIMEOUT,
+    CONF_OPERATING_ENTITY,
     DOMAIN,
     MIN_SAMPLES_LEARNING,
+    PHASE_ESTABLISHED,
     build_unique_id,
 )
 
@@ -295,3 +301,111 @@ class TestReadClimateCycleData:
         state = self._state(specific_states={})
         result = _read_climate_cycle_data(state, "climate.test")
         assert result is not None and result[0] == 0.0
+
+
+class TestShouldCollectSlopeSample:
+    """Tests for slope-sample collection gating (incl. the heat/cool gate, L4)."""
+
+    @staticmethod
+    def _kwargs(**over):
+        base = dict(
+            current_fan="low",
+            hvac_mode="heat",
+            is_defrost_active=False,
+            is_hvac_idle=False,
+            phase=PHASE_ESTABLISHED,
+            minutes_since_change=25.0,
+            learned_dead_time=10.0,  # min stable window = 20 min
+            ctrl_state={"last_setpoint_drop_time": 0.0},
+            now=1000.0,
+        )
+        base.update(over)
+        return base
+
+    def test_happy_path_collects(self):
+        assert _should_collect_slope_sample(**self._kwargs()) is True
+
+    def test_off_mode_is_skipped(self):
+        assert _should_collect_slope_sample(**self._kwargs(hvac_mode="off")) is False
+
+    def test_dry_and_fan_only_skipped(self):
+        assert _should_collect_slope_sample(**self._kwargs(hvac_mode="dry")) is False
+        assert _should_collect_slope_sample(**self._kwargs(hvac_mode="fan_only")) is False
+
+    def test_cool_mode_collects(self):
+        assert _should_collect_slope_sample(**self._kwargs(hvac_mode="cool")) is True
+
+    def test_no_fan_skipped(self):
+        assert _should_collect_slope_sample(**self._kwargs(current_fan=None)) is False
+
+    def test_defrost_or_idle_skipped(self):
+        assert _should_collect_slope_sample(**self._kwargs(is_defrost_active=True)) is False
+        assert _should_collect_slope_sample(**self._kwargs(is_hvac_idle=True)) is False
+
+    def test_non_established_phase_skipped(self):
+        assert _should_collect_slope_sample(**self._kwargs(phase="DEAD_TIME")) is False
+
+    def test_not_stable_long_enough_skipped(self):
+        # 15 min < 2 * 10 min dead time
+        assert _should_collect_slope_sample(**self._kwargs(minutes_since_change=15.0)) is False
+
+    def test_recent_setpoint_drop_skipped(self):
+        # setpoint dropped 1 min ago -> within the learning cooldown
+        kwargs = self._kwargs(ctrl_state={"last_setpoint_drop_time": 940.0}, now=1000.0)
+        assert _should_collect_slope_sample(**kwargs) is False
+
+
+class TestDetectDisturbances:
+    """Tests for external defrost / idle detection."""
+
+    def test_defrost_entity_on_marks_active(self):
+        hass = MagicMock()
+        hass.states.get.return_value = SimpleNamespace(state="on")
+        defrost_state = {"active": False, "start_time": 0.0}
+        is_defrost, is_idle = _detect_disturbances(hass, {CONF_DEFROST_ENTITY: "binary_sensor.d"}, defrost_state)
+        assert is_defrost is True and is_idle is False
+        assert defrost_state["active"] is True
+
+    def test_defrost_expires_after_cooldown(self):
+        import time
+        hass = MagicMock()
+        defrost_state = {"active": True, "start_time": time.time() - 21 * 60}
+        is_defrost, _ = _detect_disturbances(hass, {}, defrost_state)
+        assert is_defrost is False
+        assert defrost_state["active"] is False
+
+    def test_operating_entity_off_marks_idle(self):
+        hass = MagicMock()
+        hass.states.get.return_value = SimpleNamespace(state="off")
+        _, is_idle = _detect_disturbances(hass, {CONF_OPERATING_ENTITY: "binary_sensor.op"}, {"active": False, "start_time": 0.0})
+        assert is_idle is True
+
+    def test_operating_entity_on_not_idle(self):
+        hass = MagicMock()
+        hass.states.get.return_value = SimpleNamespace(state="on")
+        _, is_idle = _detect_disturbances(hass, {CONF_OPERATING_ENTITY: "binary_sensor.op"}, {"active": False, "start_time": 0.0})
+        assert is_idle is False
+
+
+class TestApplyFanChange:
+    """Tests for _async_apply_fan_change confirmation semantics."""
+
+    @pytest.mark.asyncio
+    async def test_success_calls_service_and_confirms(self):
+        hass = MagicMock()
+        hass.services.async_call = AsyncMock()
+        confirmed = MagicMock()
+        await _async_apply_fan_change(hass, "climate.t", "high", "low", "reason", confirmed)
+        hass.services.async_call.assert_awaited_once()
+        args = hass.services.async_call.await_args
+        assert args.args[0] == "climate" and args.args[1] == "set_fan_mode"
+        assert args.args[2] == {"entity_id": "climate.t", "fan_mode": "high"}
+        confirmed.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_failure_still_confirms_to_avoid_retry_storm(self):
+        hass = MagicMock()
+        hass.services.async_call = AsyncMock(side_effect=RuntimeError("boom"))
+        confirmed = MagicMock()
+        await _async_apply_fan_change(hass, "climate.t", "high", "low", "reason", confirmed)
+        confirmed.assert_called_once()

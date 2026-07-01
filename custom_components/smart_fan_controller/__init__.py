@@ -188,6 +188,7 @@ async def _async_migrate_entity_ids(hass: HomeAssistant, entry: ConfigEntry, cli
 def _should_collect_slope_sample(
     *,
     current_fan: str | None,
+    hvac_mode: str,
     is_defrost_active: bool,
     is_hvac_idle: bool,
     phase: str,
@@ -197,6 +198,10 @@ def _should_collect_slope_sample(
     now: float,
 ) -> bool:
     """Return True when slope learning conditions are met."""
+    # Only heating/cooling produce meaningful thermal-response samples; skip
+    # off/dry/fan_only so those cycles don't pollute the learned profiles.
+    if hvac_mode not in ("heat", "cool"):
+        return False
     if current_fan is None or is_defrost_active or is_hvac_idle:
         return False
     if phase != PHASE_ESTABLISHED:
@@ -711,6 +716,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Slope sample collection
         if _should_collect_slope_sample(
             current_fan=current_fan,
+            hvac_mode=hvac_mode,
             is_defrost_active=is_defrost_active,
             is_hvac_idle=is_hvac_idle,
             phase=phase,
