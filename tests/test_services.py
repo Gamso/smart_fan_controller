@@ -23,7 +23,6 @@ from custom_components.smart_fan_controller.const import (
     CONF_CLIMATE_ENTITY,
     CONF_DEADBAND,
     CONF_DEFROST_ENTITY,
-    CONF_LIMIT_TIMEOUT,
     CONF_OPERATING_ENTITY,
     DOMAIN,
     MIN_SAMPLES_LEARNING,
@@ -52,7 +51,7 @@ class TestApplyLearnedSettings:
         learning = _make_ready_learning()
 
         entry = MagicMock()
-        entry.data = {CONF_DEADBAND: 0.2, CONF_LIMIT_TIMEOUT: 15}
+        entry.data = {CONF_DEADBAND: 0.2}
         entry.options = {}
 
         applied_data = {}
@@ -68,7 +67,6 @@ class TestApplyLearnedSettings:
                 await fake_apply(hass, entry, optimal)
 
         assert "deadband" in applied_data
-        assert "limit_timeout" in applied_data
 
     def test_apply_learned_settings_skipped_when_not_ready(self):
         """When learning is not ready, the service must not apply any parameters."""
@@ -84,7 +82,6 @@ class TestApplyLearnedSettings:
         optimal = learning.compute_optimal_parameters()
 
         assert optimal["deadband"] > 0, f"deadband ({optimal['deadband']}) must be positive"
-        assert optimal["limit_timeout"] > 0, f"limit_timeout ({optimal['limit_timeout']}) must be positive"
 
     def test_apply_optimal_sets_learning_auto_applied_flag(self):
         """_apply_optimal_parameters must set learning_auto_applied=True in entry.data."""
@@ -94,10 +91,10 @@ class TestApplyLearnedSettings:
         hass.config_entries.async_reload = AsyncMock()
 
         entry = MagicMock()
-        entry.data = {CONF_DEADBAND: 0.2, CONF_LIMIT_TIMEOUT: 15}
-        entry.options = {CONF_DEADBAND: 0.2, CONF_LIMIT_TIMEOUT: 15, CONF_CLIMATE_ENTITY: "climate.test"}
+        entry.data = {CONF_DEADBAND: 0.2}
+        entry.options = {CONF_DEADBAND: 0.2, CONF_CLIMATE_ENTITY: "climate.test"}
 
-        optimal = {"deadband": 0.25, "limit_timeout": 12}
+        optimal = {"deadband": 0.25}
 
         asyncio.get_event_loop().run_until_complete(_apply_optimal_parameters(hass, entry, optimal))
 
@@ -107,9 +104,7 @@ class TestApplyLearnedSettings:
         updated_options = call_args[1]["options"]
         assert updated_data.get("learning_auto_applied") is True
         assert updated_data[CONF_DEADBAND] == 0.25
-        assert updated_data[CONF_LIMIT_TIMEOUT] == 12
         assert updated_options[CONF_DEADBAND] == 0.25
-        assert updated_options[CONF_LIMIT_TIMEOUT] == 12
 
     def test_resolve_controller_entry_requires_target_when_multiple_entries(self):
         """Service routing must require a climate target when several entries are loaded."""

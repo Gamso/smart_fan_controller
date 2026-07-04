@@ -12,7 +12,6 @@ PROFILE_HVAC_MODES = ("heat", "cool")
 CONF_CLIMATE_ENTITY = "climate_entity"
 CONF_DEADBAND = "deadband"
 CONF_MIN_INTERVAL = "min_interval"
-CONF_LIMIT_TIMEOUT = "limit_timeout"
 CONF_DATA_COLLECTION = "data_collection"
 CONF_DEFROST_ENTITY = "defrost_entity"
 CONF_OPERATING_ENTITY = "operating_entity"
@@ -20,7 +19,6 @@ CONF_OPERATING_ENTITY = "operating_entity"
 # Default values
 DEFAULT_DEADBAND = 0.2
 DEFAULT_MIN_INTERVAL = 10
-DEFAULT_LIMIT_TIMEOUT = 15
 DEFAULT_DATA_COLLECTION = True
 
 DELTA_TIME_CONTROL_LOOP = 2  # minutes between each control loop execution
@@ -43,7 +41,6 @@ PHASE_ESTABLISHED = "ESTABLISHED"
 
 # Learning
 MIN_SAMPLES_LEARNING = 240  # Minimum slope samples required for initial readiness
-MIN_LIMIT_TIMEOUT = 5  # Minimum limit_timeout (minutes) derived from learning
 MIN_MODE_PROFILE_SAMPLES = 10  # Minimum samples per fan mode to consider profile reliable
 REFERENCE_SLOPE_ERROR = 1.0  # °C – reference comfort error at which the representative
 # "working" effective slope is reported. The learned slope model is slope(error) = a + b·error;

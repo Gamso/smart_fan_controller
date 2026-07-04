@@ -30,7 +30,6 @@ def _build_mpc(learning: ThermalLearning, *, fan_modes=None, min_interval: int =
         learning=learning,
         deadband=0.3,
         min_interval=min_interval,
-        limit_timeout=18,
         fan_modes=fan_modes or FAN_MODES,
     )
 

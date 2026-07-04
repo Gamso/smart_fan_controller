@@ -13,13 +13,11 @@ from .const import (
     CONF_CLIMATE_ENTITY,
     CONF_DEADBAND,
     CONF_MIN_INTERVAL,
-    CONF_LIMIT_TIMEOUT,
     CONF_DATA_COLLECTION,
     CONF_DEFROST_ENTITY,
     CONF_OPERATING_ENTITY,
     DEFAULT_DEADBAND,
     DEFAULT_MIN_INTERVAL,
-    DEFAULT_LIMIT_TIMEOUT,
     DEFAULT_DATA_COLLECTION,
 )
 
@@ -105,9 +103,6 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_MIN_INTERVAL, default=DEFAULT_MIN_INTERVAL): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=1, max=60, step=1, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="min")
                 ),
-                vol.Optional(CONF_LIMIT_TIMEOUT, default=DEFAULT_LIMIT_TIMEOUT): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=10, max=120, step=5, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="min")
-                ),
                 vol.Optional(CONF_DATA_COLLECTION, default=DEFAULT_DATA_COLLECTION): selector.BooleanSelector(),
                 vol.Optional(CONF_DEFROST_ENTITY): selector.EntitySelector(selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])),
                 vol.Optional(CONF_OPERATING_ENTITY): selector.EntitySelector(selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])),
@@ -172,9 +167,6 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
                 ),
                 vol.Optional(CONF_MIN_INTERVAL, default=current_data.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL)): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=1, max=60, step=1, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="min")
-                ),
-                vol.Optional(CONF_LIMIT_TIMEOUT, default=current_data.get(CONF_LIMIT_TIMEOUT, DEFAULT_LIMIT_TIMEOUT)): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=10, max=120, step=5, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="min")
                 ),
                 vol.Optional(CONF_DATA_COLLECTION, default=current_data.get(CONF_DATA_COLLECTION, DEFAULT_DATA_COLLECTION)): selector.BooleanSelector(),
                 vol.Optional(CONF_DEFROST_ENTITY, default=current_data.get(CONF_DEFROST_ENTITY, vol.UNDEFINED)): selector.EntitySelector(

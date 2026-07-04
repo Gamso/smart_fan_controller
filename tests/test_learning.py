@@ -2,7 +2,6 @@
 import pytest
 from custom_components.smart_fan_controller.thermal_learning import ThermalLearning
 from custom_components.smart_fan_controller.mpc_controller import MPCController
-from custom_components.smart_fan_controller.const import MIN_LIMIT_TIMEOUT
 from custom_components.smart_fan_controller.sensor import SmartFanLearnedDeadTimeSensor, SmartFanEffectiveTimeoutSensor
 
 FAN_MODES = ["low", "medium", "high"]
@@ -15,90 +14,29 @@ def _build_mpc(learning: ThermalLearning) -> MPCController:
         learning=learning,
         deadband=0.2,
         min_interval=10,
-        limit_timeout=15,
     )
 
 
 class TestThermalLearning:
     """Test auto-calibration and optimal parameter computation."""
 
-    def test_optimal_limit_timeout_with_median_response_times(self):
-        """Test that optimal_limit_timeout uses median to handle outliers."""
+    def test_optimal_parameters_reports_response_samples(self):
+        """compute_optimal_parameters exposes the response-sample count once ready."""
         learning = ThermalLearning()
 
-        # Add multiple slope samples to satisfy is_ready() requirements
-        # Note: slope sample parameters (fan mode, slope value) don't affect limit_timeout
         for _ in range(250):
             learning.add_slope_sample("medium", 0.3, 0.1)
-
-        # Verify that slope samples alone make the learning ready
         assert learning.is_ready()
 
-        # Add response times with outliers: most in 10-12 range, but some outliers at 30+
-        # Median should be 12, mean would be much higher
-        response_times = [10, 10, 11, 11, 12, 12, 30, 35, 40]  # median=12, mean≈19.0
-        for time in response_times:
-            learning.add_response_event(time)
-
-        assert learning.is_ready()
+        for response_time in [10, 11, 12, 13]:
+            learning.add_response_event(response_time)
 
         optimal = learning.compute_optimal_parameters()
 
-        # With median=12, optimal_limit_timeout should be 12 (using direct value, no multiplier)
-        # Should NOT be based on mean (≈19.0) - median is more robust to outliers
-        assert optimal["limit_timeout"] == 12
-
-    def test_optimal_limit_timeout_uses_observed_response_directly(self):
-        """Test that optimal_limit_timeout uses observed response time, floored by MIN_LIMIT_TIMEOUT."""
-        learning = ThermalLearning()
-
-        # Add samples (using consistent parameters across tests)
-        for _ in range(250):
-            learning.add_slope_sample("medium", 0.3, 0.1)
-
-        # Add very fast response times (median=4, below MIN_LIMIT_TIMEOUT=5)
-        for time in [3, 4, 4, 5]:
-            learning.add_response_event(time)
-
-        optimal = learning.compute_optimal_parameters()
-
-        # With median=4 and MIN_LIMIT_TIMEOUT=5, optimal should be clamped to 5
-
-        assert optimal["limit_timeout"] == max(MIN_LIMIT_TIMEOUT, 4)
-
-    def test_optimal_limit_timeout_with_slow_response(self):
-        """Test that optimal_limit_timeout follows observed response even when slow."""
-        learning = ThermalLearning()
-
-        # Add samples (using consistent parameters)
-        for _ in range(250):
-            learning.add_slope_sample("medium", 0.3, 0.1)
-
-        # Add very slow response times
-        for time in [18, 19, 20, 25, 30]:
-            learning.add_response_event(time)
-
-        optimal = learning.compute_optimal_parameters()
-
-        # With median=20, optimal should be 20 (no max cap applied)
-        assert optimal["limit_timeout"] == 20
-
-    def test_optimal_limit_timeout_typical_case(self):
-        """Test typical response times in 10-15 minute range."""
-        learning = ThermalLearning()
-
-        # Add samples
-        for _ in range(250):
-            learning.add_slope_sample("medium", 0.3, 0.2)
-
-        # Add typical response times user mentioned: 10-15 minutes
-        for time in [10, 11, 12, 13, 14, 15, 14, 13]:
-            learning.add_response_event(time)
-
-        optimal = learning.compute_optimal_parameters()
-
-        # With median≈13, optimal should be 13 (direct value, no multiplier)
-        assert optimal["limit_timeout"] == 13
+        # limit_timeout is no longer computed; deadband and diagnostics remain.
+        assert "limit_timeout" not in optimal
+        assert optimal["response_samples"] == 4
+        assert optimal["deadband"] > 0
 
     def test_learned_dead_time_sensor_reports_median_response(self):
         """The diagnostic dead-time sensor should expose the median response delay."""

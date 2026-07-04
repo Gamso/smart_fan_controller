@@ -110,7 +110,6 @@ All parameters can be changed at any time via **Settings → Devices & Services 
 | -------------------- | -------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Deadband**         | `0.2°C`  | `0.0` – `5.0°C`  | Comfort zone around target — no action taken within this range. Increase to reduce fan changes.                                                                                     |
 | **Min Interval**     | `10 min` | `1` – `60 min`   | Minimum time between non-emergency fan changes. Prevents rapid oscillations.                                                                                                        |
-| **Limit Timeout**    | `15 min` | `10` – `120 min` | Fallback timeout used before learning calibrates the dead time.                                                                                                                     |
 | **Data Collection**  | `true`   | —                | Records one CSV row every 2 minutes in the HA config folder (`smart_fan_controller_data_XXXXXXXX.csv`, max 10 MB, auto-rotated). Useful for offline analysis.                       |
 | **Defrost Entity**   | *(none)* | —                | Optional entity (`binary_sensor`, `sensor`, or `input_boolean`) that reports when the heat pump is in defrost cycle. See [Defrost Detection](#defrost-detection).                   |
 | **Operating Entity** | *(none)* | —                | Optional entity (`binary_sensor`, `sensor`, or `input_boolean`) that reports whether the heat pump compressor is actively running. See [HVAC Idle Detection](#hvac-idle-detection). |
@@ -144,7 +143,7 @@ Each candidate fan mode is scored with:
 
 - **Hysteresis**: a recommendation that changes the fan must beat the current mode by a minimum cost margin. The margin is larger when near the target (0.30) and smaller when far away (0.10).
 - **Step-down hold**: blocks downward moves when still under target and the temperature slope hasn't established yet.
-- **Min interval**: non-emergency changes respect the effective timeout (learned dead time × 1.5 for the specified HVAC mode, or the configured limit timeout).
+- **Min interval**: non-emergency changes respect the configured minimum interval between fan changes.
 
 ### Phase Detection
 
@@ -199,14 +198,13 @@ The integration includes an **automatic learning system** that collects data dur
 
 **Parameters computed from data**:
 
-| Parameter       | Formula                                           |
-| --------------- | ------------------------------------------------- |
-| `deadband`      | `0.15 + (volatility_factor × 0.2)`                |
-| `limit_timeout` | rounded median of measured thermal response times |
+| Parameter  | Formula                            |
+| ---------- | ---------------------------------- |
+| `deadband` | `0.15 + (volatility_factor × 0.2)` |
 
 Where `volatility_factor = min(slope_stdev / slope_mean, 3.0)`.
 
-> **Important**: the learned `limit_timeout` is the stored base response estimate. At runtime, non-emergency decisions use `effective_timeout = max(min_interval, dead_time × 1.5)` once learning is ready.
+> **Note**: the `effective_timeout` diagnostic (`max(min_interval, dead_time × 1.5)` once learning is ready) is exposed as a sensor for insight into the learned thermal lag, but it does not gate control decisions — the minimum interval between fan changes does.
 
 Once learning is ready, parameters are **automatically applied** and the integration reloads. To apply manually, use the `apply_learned_settings` service. To start over, use `reset_learning`.
 
@@ -278,9 +276,8 @@ Entity IDs are scoped by the configured climate entity. For example, a controlle
 | `sensor.smart_fan_controller_living_room_learning_samples`         | count | Number of slope samples collected                   |
 | `sensor.smart_fan_controller_living_room_learning_response_events` | count | Number of thermal response time measurements        |
 | `sensor.smart_fan_controller_living_room_learned_dead_time`        | min   | Median learned thermal response delay (`dead_time`) |
-| `sensor.smart_fan_controller_living_room_effective_timeout`        | min   | Actual non-emergency timeout currently used         |
+| `sensor.smart_fan_controller_living_room_effective_timeout`        | min   | Advisory adaptive timeout (diagnostic only)         |
 | `sensor.smart_fan_controller_living_room_learned_deadband`         | °C    | Learned optimal deadband                            |
-| `sensor.smart_fan_controller_living_room_learned_limit_timeout`    | min   | Learned base timeout stored in config               |
 
 ### Learning Profile Sensors
 

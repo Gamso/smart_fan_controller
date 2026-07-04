@@ -8,7 +8,6 @@
                     "climate_entity": " ",
                     "deadband": "Deadband (°C)",
                     "min_interval": "Min Interval (minutes)",
-                    "limit_timeout": "Interval Before Forcing Change (minutes)",
                     "data_collection": "Enable Data Collection (beta)",
                     "defrost_entity": "Defrost Entity (optional)",
                     "operating_entity": "Heat Pump Operating Entity (optional)"
@@ -17,7 +16,6 @@
                     "climate_entity": "Must come from a Versatile Thermostat.",
                     "deadband": "Range: 0.0-5.0 °C. Default: 0.2 °C.",
                     "min_interval": "Range: 1-60 min. Default: 10 min.",
-                    "limit_timeout": "Range: 10-120 min. Default: 15 min.",
                     "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
                     "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode.",
                     "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off."
@@ -38,7 +36,6 @@
                     "climate_entity": " ",
                     "deadband": "Deadband (°C)",
                     "min_interval": "Min Interval (minutes)",
-                    "limit_timeout": "Interval Before Forcing Change (minutes)",
                     "data_collection": "Enable Data Collection (beta)",
                     "defrost_entity": "Defrost Entity (optional)",
                     "operating_entity": "Heat Pump Operating Entity (optional)"
@@ -47,7 +44,6 @@
                     "climate_entity": "Must come from a Versatile Thermostat.",
                     "deadband": "Range: 0.0-5.0 °C. Default: 0.2 °C.",
                     "min_interval": "Range: 1-60 min. Default: 10 min.",
-                    "limit_timeout": "Range: 10-120 min. Default: 15 min.",
                     "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
                     "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode.",
                     "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off."
