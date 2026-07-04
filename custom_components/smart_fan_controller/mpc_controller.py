@@ -24,13 +24,24 @@ OVERSHOOT_QUADRATIC_WEIGHT = 3.0
 FLOOR_VIOLATION_LINEAR_WEIGHT = 12.0
 FLOOR_VIOLATION_QUADRATIC_WEIGHT = 30.0
 MODE_CHANGE_DISTANCE_COST = 0.15
-MODE_RANK_COST = 0.05
+# Per-step economic weight of the fan-mode rank. Raised from the legacy 0.05
+# now that the trajectory cost is normalised per step (see _simulate_mode): the
+# two are on the same scale, so this term expresses a real energy preference
+# instead of being drowned out by the comfort integral. Kept moderate so the
+# controller does not over-eagerly drop to the lowest mode and then jump back.
+MODE_RANK_COST = 0.15
 # Geometric growth of relative power draw per fan-mode rank. ~6**(1/3) so a
 # 4-mode ladder reproduces the legacy [1.0, 1.5, 3.0, 6.0] power scaling while
 # extending naturally to any number of modes.
 MODE_POWER_RATIO = 1.82
 MIN_INTERVAL_CHANGE_PENALTY = 25.0
 URGENCY_SENSITIVITY = 2.0
+
+# Relative hysteresis: a switch must beat the current mode's cost by at least
+# this fraction of that cost (on top of the absolute directional margin), so the
+# switch threshold scales with the magnitude of the discomfort instead of being
+# a fixed number compared against an unbounded cost. See _required_switch_gain.
+HYSTERESIS_REL_FRACTION = 0.15
 
 # Disturbance bias tracker
 DISTURBANCE_EMA_ALPHA = 0.2
@@ -183,7 +194,7 @@ class MPCController:
         active_fan = current_fan if current_fan in fan_modes else fan_modes[0]
         current_effective_slope = -vtherm_slope if hvac_mode == "cool" else vtherm_slope
         current_error = self._temperature_error(current_temp, target_temp, hvac_mode)
-        dead_time = self._learning.get_dead_time()
+        dead_time = self._learning.get_dead_time(hvac_mode)
         change_allowed = minutes_since_change >= self._min_interval
         phase = self._detect_phase(minutes_since_change, dead_time)
         current_mode_slope, current_known_profile = self._get_mode_slope(
@@ -320,6 +331,7 @@ class MPCController:
                 phase=phase,
                 candidate_index=best_index,
                 current_index=current_index,
+                current_cost=current_simulation.total_cost,
             )
             actual_gain = current_simulation.total_cost - best.total_cost
             if actual_gain < required_gain:
@@ -578,10 +590,11 @@ class MPCController:
         steps = max(1, int(horizon / self._cycle_minutes))
         step_hours = self._cycle_minutes / 60.0
         blend = 0.45
+        band = self._deadband
         sim_temp = current_temp
         predicted_10m = None
         predicted_30m = None
-        cost = 0.0
+        trajectory_cost = 0.0
         thermal_power = current_effective_slope
         change_delay = 0.0 if candidate_fan == current_fan else dead_time
 
@@ -605,18 +618,29 @@ class MPCController:
             if elapsed >= 30 and predicted_30m is None:
                 predicted_30m = sim_temp
 
+            # EMPC-lite tolerance band: no comfort/overshoot/floor penalty while the
+            # projected temperature stays within +/- band of the setpoint. Only
+            # deviations *beyond* the band are penalised, so the controller stops
+            # chasing sub-band sensor noise. ``error`` is the signed comfort error
+            # (positive = under-conditioned, needs more heating/cooling).
             error = self._temperature_error(sim_temp, target_temp, hvac_mode)
-            comfort_error = max(abs(error) - self._deadband, 0.0)
-            overshoot = max(-error, 0.0)
-            floor_violation = max(target_temp - sim_temp, 0.0) if hvac_mode == "heat" else max(sim_temp - target_temp, 0.0)
+            comfort_error = max(abs(error) - band, 0.0)
+            overshoot = max(-error - band, 0.0)
+            floor_violation = max(error - band, 0.0)
 
             # Step-by-step urgency weight calculated dynamically based on current simulated step comfort error
             step_urgency_weight = 1.0 + comfort_error * URGENCY_SENSITIVITY
-            cost += COMFORT_ERROR_WEIGHT * comfort_error * step_urgency_weight
-            cost += OVERSHOOT_QUADRATIC_WEIGHT * overshoot * overshoot
-            cost += FLOOR_VIOLATION_LINEAR_WEIGHT * floor_violation * step_urgency_weight
-            cost += FLOOR_VIOLATION_QUADRATIC_WEIGHT * floor_violation * floor_violation
+            trajectory_cost += COMFORT_ERROR_WEIGHT * comfort_error * step_urgency_weight
+            trajectory_cost += OVERSHOOT_QUADRATIC_WEIGHT * overshoot * overshoot
+            trajectory_cost += FLOOR_VIOLATION_LINEAR_WEIGHT * floor_violation * step_urgency_weight
+            trajectory_cost += FLOOR_VIOLATION_QUADRATIC_WEIGHT * floor_violation * floor_violation
 
+        # Normalise the trajectory penalty to an average per-step value so the cost
+        # magnitude is independent of the horizon length (which grows with the
+        # learned dead time) and comparable across control cycles. The one-time
+        # economic costs below are then on the same per-step scale, so mode-rank
+        # (energy) savings are no longer drowned out by a long comfort integral.
+        cost = trajectory_cost / steps
         cost += MODE_CHANGE_DISTANCE_COST * abs(candidate_index - current_index)
         # Apply a non-linear economic mode-ranking cost representing physical power
         # scaling. Relative power grows geometrically with the mode rank so every
@@ -642,8 +666,16 @@ class MPCController:
         phase: str,
         candidate_index: int,
         current_index: int,
+        current_cost: float = 0.0,
     ) -> float:
-        """Return the minimum cost gain required before switching fan mode."""
+        """Return the minimum cost gain required before switching fan mode.
+
+        The margin combines an absolute directional component (below) with a
+        relative component proportional to the current mode's cost. The relative
+        term is applied only when it does not fight comfort recovery — i.e. never
+        on an upward switch while the room is under-conditioned, where a fast
+        response matters more than avoiding a marginal change.
+        """
         if current_error < -self._deadband:
             margin = BASE_SWITCH_GAIN_MARGIN
         elif current_error > (self._deadband * 2):
@@ -661,6 +693,10 @@ class MPCController:
         if candidate_index < current_index and current_error > 0:
             margin += UNDER_TARGET_STEPDOWN_GAIN_MARGIN
             margin += UNDER_TARGET_STEPDOWN_GAIN_PER_DEG * current_error
+
+        stepping_up_under_target = candidate_index > current_index and current_error > self._deadband
+        if not stepping_up_under_target:
+            margin += HYSTERESIS_REL_FRACTION * abs(current_cost)
 
         return margin
 
