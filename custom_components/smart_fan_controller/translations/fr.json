@@ -8,7 +8,6 @@
                     "climate_entity": " ",
                     "deadband": "Bande morte (°C)",
                     "min_interval": "Intervalle minimum (minutes)",
-                    "limit_timeout": "Intervalle avant de forcer un changement (minutes)",
                     "data_collection": "Activer la collecte de données (bêta)",
                     "defrost_entity": "Entité dégivrage (optionnel)",
                     "operating_entity": "Entité fonctionnement PAC (optionnel)"
@@ -17,7 +16,6 @@
                     "climate_entity": "Doit provenir de Versatile Thermostat.",
                     "deadband": "Plage : 0.0-5.0 °C. Défaut : 0.2 °C.",
                     "min_interval": "Plage : 1-60 min. Défaut : 10 min.",
-                    "limit_timeout": "Plage : 10-120 min. Défaut : 15 min.",
                     "data_collection": "Enregistre une ligne CSV toutes les 2 minutes dans le dossier de configuration Home Assistant, à côté de configuration.yaml : smart_fan_controller_data_XXXXXXXX.csv (max 10 Mo, rotation automatique). Utile pour reproduire le comportement de l'algorithme et identifier des améliorations pendant la phase bêta.",
                     "defrost_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand la PAC est en dégivrage.",
                     "operating_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand le compresseur de la PAC est en marche. Utilisé pour éviter des changements de ventilation inutiles quand le compresseur est à l'arrêt."
@@ -38,7 +36,6 @@
                     "climate_entity": " ",
                     "deadband": "Bande morte (°C)",
                     "min_interval": "Intervalle minimum (minutes)",
-                    "limit_timeout": "Intervalle avant de forcer un changement (minutes)",
                     "data_collection": "Activer la collecte de données (bêta)",
                     "defrost_entity": "Entité dégivrage (optionnel)",
                     "operating_entity": "Entité fonctionnement PAC (optionnel)"
@@ -47,7 +44,6 @@
                     "climate_entity": "Doit provenir de Versatile Thermostat.",
                     "deadband": "Plage : 0.0-5.0 °C. Défaut : 0.2 °C.",
                     "min_interval": "Plage : 1-60 min. Défaut : 10 min.",
-                    "limit_timeout": "Plage : 10-120 min. Défaut : 15 min.",
                     "data_collection": "Enregistre une ligne CSV toutes les 2 minutes dans le dossier de configuration Home Assistant, à côté de configuration.yaml : smart_fan_controller_data_XXXXXXXX.csv (max 10 Mo, rotation automatique). Utile pour reproduire le comportement de l'algorithme et identifier des améliorations pendant la phase bêta.",
                     "defrost_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand la PAC est en dégivrage.",
                     "operating_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand le compresseur de la PAC est en marche. Utilisé pour éviter des changements de ventilation inutiles quand le compresseur est à l'arrêt."

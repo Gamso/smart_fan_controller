@@ -79,7 +79,6 @@ class MPCController:
         learning: ThermalLearning,
         deadband: float,
         min_interval: int,
-        limit_timeout: int = 15,
         fan_modes: list[str] | None = None,
         horizon_minutes: int = 30,
         cycle_minutes: int = DELTA_TIME_CONTROL_LOOP,
@@ -87,7 +86,6 @@ class MPCController:
         self._learning = learning
         self._deadband = deadband
         self._min_interval = min_interval
-        self._limit_timeout = limit_timeout
         self._fan_modes = fan_modes
         self._horizon_minutes = horizon_minutes
         self._cycle_minutes = cycle_minutes
@@ -132,17 +130,19 @@ class MPCController:
         """Return the ThermalLearning instance used by this controller."""
         return self._learning
 
-    @property
-    def limit_timeout(self) -> int:
-        """Return the configured static limit timeout (minutes)."""
-        return self._limit_timeout
-
     def get_effective_timeout(self, hvac_mode: str = "unknown") -> float:
-        """Return the adaptive timeout based on learned dead time, or static fallback."""
+        """Return the adaptive advisory timeout (diagnostic only).
+
+        This value is surfaced in sensors and the data-collection CSV to show how
+        long the controller would wait before forcing a re-evaluation; it does not
+        gate any control decision (that is the job of ``min_interval``). Before
+        learning is ready it falls back to the default dead time scaled by the
+        safety factor.
+        """
         if self._learning.is_ready():
             learned_dead_time = self._learning.get_dead_time(hvac_mode)
             return max(self._min_interval, learned_dead_time * DEAD_TIME_SAFETY_FACTOR)
-        return self._limit_timeout
+        return DEFAULT_DEAD_TIME * DEAD_TIME_SAFETY_FACTOR
 
     @property
     def disturbance_bias(self) -> float:

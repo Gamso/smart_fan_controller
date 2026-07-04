@@ -138,7 +138,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             SmartFanMpcProfilesSensor(entry.entry_id, climate_entity, mpc, "heat"),
             SmartFanMpcProfilesSensor(entry.entry_id, climate_entity, mpc, "cool"),
             SmartFanLearnedDeadbandSensor(entry.entry_id, climate_entity, mpc),
-            SmartFanLearnedLimitTimeoutSensor(entry.entry_id, climate_entity, mpc),
         ]
     )
 
@@ -255,7 +254,6 @@ class SmartFanLearningSensor(_SmartFanEntity):
         optimal = self._controller.learning.compute_optimal_parameters()
         if optimal:
             attrs["learned_deadband"] = optimal.get("deadband")
-            attrs["learned_limit_timeout"] = optimal.get("limit_timeout")
             attrs["learned_samples_count"] = optimal.get("samples_count")
             attrs["learned_response_samples"] = optimal.get("response_samples")
 
@@ -350,7 +348,6 @@ class SmartFanLearningResponseSensor(_SmartFanEntity):
             "avg_response_time_min": round(avg_response, 1),
             "median_response_time_min": round(learning.get_dead_time(), 2),
             "effective_timeout_min": round(self._controller.get_effective_timeout(), 2),
-            "computed_limit_timeout": optimal.get("limit_timeout", 0),
         }
 
 
@@ -409,7 +406,6 @@ class SmartFanEffectiveTimeoutSensor(_SmartFanEntity):
         return {
             "is_ready": self._controller.learning.is_ready(),
             "learned_dead_time": round(self._controller.learning.get_dead_time(), 2),
-            "configured_limit_timeout": round(self._controller.limit_timeout, 2),
         }
 
 
@@ -597,22 +593,4 @@ class SmartFanLearnedDeadbandSensor(_BaseLearnedParameterSensor):
             learning_key="deadband",
             icon="mdi:thermometer-lines",
             current_attr="deadband",
-        )
-
-
-class SmartFanLearnedLimitTimeoutSensor(_BaseLearnedParameterSensor):
-    """Learned limit_timeout parameter."""
-
-    def __init__(self, entry_id: str, climate_entity: str, controller) -> None:
-        super().__init__(
-            entry_id,
-            climate_entity,
-            controller,
-            name="Learned Limit Timeout",
-            object_key="learned_limit_timeout",
-            unit=UnitOfTime.MINUTES,
-            device_class=SensorDeviceClass.DURATION,
-            learning_key="limit_timeout",
-            icon="mdi:clock-check-outline",
-            current_attr="limit_timeout",
         )

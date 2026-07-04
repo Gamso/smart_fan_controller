@@ -19,14 +19,12 @@ from .const import (
     CONF_DATA_COLLECTION,
     CONF_DEADBAND,
     CONF_DEFROST_ENTITY,
-    CONF_LIMIT_TIMEOUT,
     CONF_MIN_INTERVAL,
     CONF_OPERATING_ENTITY,
     DEAD_TIME_SAFETY_FACTOR,
     DEFAULT_DATA_COLLECTION,
     DEFAULT_DEAD_TIME,
     DEFAULT_DEADBAND,
-    DEFAULT_LIMIT_TIMEOUT,
     DEFAULT_MIN_INTERVAL,
     DELTA_TIME_CONTROL_LOOP,
     DOMAIN,
@@ -233,16 +231,13 @@ async def _apply_optimal_parameters(
     new_data = {**entry.data}
     new_data["learning_auto_applied"] = True
     new_data[CONF_DEADBAND] = optimal["deadband"]
-    new_data[CONF_LIMIT_TIMEOUT] = optimal["limit_timeout"]
     new_options = {**entry.options}
     new_options[CONF_DEADBAND] = optimal["deadband"]
-    new_options[CONF_LIMIT_TIMEOUT] = optimal["limit_timeout"]
 
     _LOGGER.info(
-        "Applying learned settings for %s: deadband=%.2f limit_timeout=%d",
+        "Applying learned settings for %s: deadband=%.2f",
         entry.entry_id,
         optimal["deadband"],
-        optimal["limit_timeout"],
     )
 
     hass.config_entries.async_update_entry(entry, data=new_data, options=new_options)
@@ -558,7 +553,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         learning=learning,
         deadband=conf.get(CONF_DEADBAND, DEFAULT_DEADBAND),
         min_interval=conf.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL),
-        limit_timeout=conf.get(CONF_LIMIT_TIMEOUT, DEFAULT_LIMIT_TIMEOUT),
         fan_modes=initial_fan_modes or None,
     )
 
@@ -595,7 +589,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Mutable state shared between control-loop callbacks (closure variables)
     ctrl_state: dict = {
-        "last_change_time": time.time() - (conf.get(CONF_LIMIT_TIMEOUT, DEFAULT_LIMIT_TIMEOUT) * 60),
+        # Seed as if the min interval had just elapsed so the first cycle can act
+        # immediately instead of waiting out a fresh cooldown.
+        "last_change_time": time.time() - (conf.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL) * 60),
         "last_setpoint_drop_time": 0.0,
         "previous_slope": None,
         "last_hvac_mode": None,
