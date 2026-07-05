@@ -18,11 +18,17 @@ from .thermal_learning import ThermalLearning
 
 _LOGGER = logging.getLogger(__name__)
 
-# Cost function weights (simulation loop in _simulate_mode)
+# Cost function weights (simulation loop in _simulate_mode). The comfort band is
+# asymmetric: FLOOR_VIOLATION_* penalise being on the wrong side of the setpoint
+# (above target in cooling, below in heating) from the setpoint itself, while
+# OVERSHOOT_QUADRATIC_WEIGHT only gently discourages the acceptable side. The
+# under-side weights are graduated (moderate linear + quadratic) so a small
+# excursion past the setpoint triggers a proportionate step up rather than
+# slamming the fan to maximum, while a clear excursion still escalates hard.
 COMFORT_ERROR_WEIGHT = 1.0
-OVERSHOOT_QUADRATIC_WEIGHT = 3.0
-FLOOR_VIOLATION_LINEAR_WEIGHT = 12.0
-FLOOR_VIOLATION_QUADRATIC_WEIGHT = 30.0
+OVERSHOOT_QUADRATIC_WEIGHT = 8.0
+FLOOR_VIOLATION_LINEAR_WEIGHT = 4.0
+FLOOR_VIOLATION_QUADRATIC_WEIGHT = 12.0
 MODE_CHANGE_DISTANCE_COST = 0.15
 # Per-step economic weight of the fan-mode rank. Raised from the legacy 0.05
 # now that the trajectory cost is normalised per step (see _simulate_mode): the
@@ -284,14 +290,14 @@ class MPCController:
         # of their actual candidate slope, preventing the "dead-time blindness".
         sim_horizon = max(self._horizon_minutes, int(dead_time) + self._horizon_minutes)
 
-        # Energy (fan-rank) cost only applies inside the comfort band. When the
-        # room is under-conditioned beyond the band, comfort must dominate: the
-        # economic term is dropped so a cheap-but-ineffective mode can't be
-        # preferred over one that actually recovers the setpoint. Without this,
-        # when the higher modes' learned slopes are weak (e.g. a capacity-bound
-        # hot day), the rank cost tie-breaks toward the lowest mode and the
-        # controller sits quietly above the setpoint.
-        energy_weight = 0.0 if current_error > self._deadband else 1.0
+        # Energy (fan-rank) weight ramps down as the room goes past the setpoint on
+        # the wrong side. At/under target (error <= 0) economy is full (weight 1):
+        # drop to the quietest sufficient mode. As the error grows toward the
+        # deadband the economic pull fades linearly, so a small excursion yields a
+        # gentle step up while a clear one (error >= deadband) drops economy
+        # entirely (weight 0) and comfort dominates — which also prevents a
+        # cheap-but-ineffective mode being kept on a capacity-bound hot day.
+        energy_weight = max(0.0, 1.0 - max(current_error, 0.0) / max(self._deadband, 1e-6))
 
         for fan_mode in fan_modes:
             mode_slope, known_profile = self._get_mode_slope(
@@ -653,22 +659,34 @@ class MPCController:
             if elapsed >= 30 and predicted_30m is None:
                 predicted_30m = sim_temp
 
-            # EMPC-lite tolerance band: no comfort/overshoot/floor penalty while the
-            # projected temperature stays within +/- band of the setpoint. Only
-            # deviations *beyond* the band are penalised, so the controller stops
-            # chasing sub-band sensor noise. ``error`` is the signed comfort error
-            # (positive = under-conditioned, needs more heating/cooling).
+            # Asymmetric comfort band. The setpoint is a hard target on the
+            # under-conditioned side: in cooling the room must be kept at or below
+            # target, in heating at or above it. So any *positive* comfort error
+            # (``error`` > 0 = under-conditioned) is always penalised — there is no
+            # tolerance on the wrong side of the setpoint. Overshoot to the
+            # acceptable side (error < 0: cooler than needed when cooling, warmer
+            # when heating) is tolerated within the deadband to avoid hunting.
+            #
+            # The under-side penalty is graduated: a light linear comfort term
+            # applies from the setpoint (a gentle nudge back to target for a small
+            # excursion), while the heavy floor-violation terms only engage beyond
+            # the deadband (an aggressive push when the room is clearly on the wrong
+            # side). This keeps "at/below target in cooling" without slamming the
+            # fan to maximum for a single sensor step over the setpoint.
             error = self._temperature_error(sim_temp, target_temp, hvac_mode)
-            comfort_error = max(abs(error) - band, 0.0)
-            overshoot = max(-error - band, 0.0)
-            floor_violation = max(error - band, 0.0)
+            under = max(error, 0.0)                 # wrong side of setpoint: always penalised
+            overshoot = max(-error, 0.0)            # acceptable side: gently discouraged from the setpoint
+            comfort_error = under + overshoot
 
             # Step-by-step urgency weight calculated dynamically based on current simulated step comfort error
             step_urgency_weight = 1.0 + comfort_error * URGENCY_SENSITIVITY
             trajectory_cost += COMFORT_ERROR_WEIGHT * comfort_error * step_urgency_weight
             trajectory_cost += OVERSHOOT_QUADRATIC_WEIGHT * overshoot * overshoot
-            trajectory_cost += FLOOR_VIOLATION_LINEAR_WEIGHT * floor_violation * step_urgency_weight
-            trajectory_cost += FLOOR_VIOLATION_QUADRATIC_WEIGHT * floor_violation * floor_violation
+            # Under-side penalty applies from the setpoint (no tolerance) but is
+            # graduated: the linear term gives a gentle nudge for a small excursion,
+            # the quadratic term makes it escalate hard once clearly on the wrong side.
+            trajectory_cost += FLOOR_VIOLATION_LINEAR_WEIGHT * under * step_urgency_weight
+            trajectory_cost += FLOOR_VIOLATION_QUADRATIC_WEIGHT * under * under
 
         # Normalise the trajectory penalty to an average per-step value so the cost
         # magnitude is independent of the horizon length (which grows with the
@@ -729,7 +747,11 @@ class MPCController:
             margin += UNDER_TARGET_STEPDOWN_GAIN_MARGIN
             margin += UNDER_TARGET_STEPDOWN_GAIN_PER_DEG * current_error
 
-        stepping_up_under_target = candidate_index > current_index and current_error > self._deadband
+        # Under-conditioned means the room is on the wrong side of the setpoint
+        # (error > 0). With the asymmetric band there is no tolerance there, so an
+        # upward switch to recover should not be taxed by the relative-hysteresis
+        # term (that term only guards against churn in/near the comfort band).
+        stepping_up_under_target = candidate_index > current_index and current_error > 0.0
         if not stepping_up_under_target:
             margin += HYSTERESIS_REL_FRACTION * abs(current_cost)
 
