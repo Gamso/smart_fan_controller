@@ -489,32 +489,56 @@ class MPCController:
     def build_monotone_slopes(self, fan_modes: list[str], hvac_mode: str) -> dict[str, float]:
         """Return monotone-enforced slopes for all known profiles.
 
-        Fan modes are assumed ordered from weakest to strongest.  For each mode
-        with a learned profile, the slope is clamped to be >= the slope of the
-        last known lower mode (isotonic forward pass).  Modes without a learned
-        profile are omitted from the result — the caller falls back to rank-scaled
-        estimation for those.
+        Fan modes are assumed ordered from weakest to strongest, so a stronger
+        mode should never have a lower effective slope than a weaker one. This is
+        enforced with sample-weighted isotonic regression (pool-adjacent-
+        violators): adjacent out-of-order profiles are merged into their
+        sample-count-weighted mean until the sequence is non-decreasing.
 
-        Previously returned None when any profile was missing.  Now always
-        returns a (possibly empty) dict so known adjacent profiles are always
-        monotone-enforced even during partial learning.
+        Weighting by sample count is what makes this robust: the modes actually
+        used the most have far more samples and dominate the enforcement, so a
+        thin, noisy low-mode profile can no longer drag every stronger mode up to
+        its value (a naive forward ``max`` did exactly that — e.g. a 17-sample
+        ``silent`` profile pulling every heat mode to the same bogus value).
+
+        Modes without a learned profile are omitted from the result — the caller
+        falls back to rank-scaled estimation for those.
         """
-        enforced: dict[str, float] = {}
-        prev = float("-inf")
-        changed = False
+        # Collect (fan_mode, raw_slope, weight) for learned profiles, weakest->strongest.
+        items: list[tuple[str, float, int]] = []
         for fm in fan_modes:
             slope = self._learning.get_mode_effective_slope(fm, hvac_mode)
             if slope is None:
                 continue  # unknown profile — skip, caller uses rank-scaling fallback
-            clamped = max(slope, prev)
-            if clamped != slope:
-                changed = True
-            enforced[fm] = clamped
-            prev = clamped
+            weight = max(1, self._learning.get_mode_sample_count(fm, hvac_mode))
+            items.append((fm, slope, weight))
+
+        if not items:
+            return {}
+
+        # Pool-adjacent-violators: merge adjacent blocks whose values decrease.
+        blocks: list[list] = []  # each: [value, weight, [fan_modes...]]
+        for fm, slope, weight in items:
+            blocks.append([slope, weight, [fm]])
+            while len(blocks) >= 2 and blocks[-2][0] > blocks[-1][0]:
+                value2, weight2, modes2 = blocks.pop()
+                value1, weight1, modes1 = blocks.pop()
+                pooled_weight = weight1 + weight2
+                pooled_value = (value1 * weight1 + value2 * weight2) / pooled_weight
+                blocks.append([pooled_value, pooled_weight, modes1 + modes2])
+
+        enforced: dict[str, float] = {}
+        raw = {fm: slope for fm, slope, _ in items}
+        changed = False
+        for value, _weight, modes in blocks:
+            for fm in modes:
+                enforced[fm] = value
+                if abs(value - raw[fm]) > 1e-9:
+                    changed = True
 
         if changed:
             _LOGGER.debug(
-                "Monotone enforcement applied for %s: %s",
+                "Monotone (weighted isotonic) enforcement for %s: %s",
                 hvac_mode,
                 {fm: round(v, 3) for fm, v in enforced.items()},
             )

@@ -522,10 +522,10 @@ def test_mpc_disturbance_bias_decays_during_defrost() -> None:
 
 
 def test_monotone_constraint_enforces_ordering() -> None:
-    """Monotone constraint should clamp a lower mode's slope up to its neighbor when all profiles are ready."""
+    """Monotone constraint should produce a non-decreasing sequence via sample-weighted pooling."""
     learning = ThermalLearning()
 
-    # Create inverted profiles: silent > med (the real-world bug)
+    # Create inverted profiles: silent > low (the real-world bug)
     learning.set_mode_effective_slope("silent", "heat", 0.53)
     learning.set_mode_effective_slope("low", "heat", 0.0)
     learning.set_mode_effective_slope("med", "heat", 0.45)
@@ -542,9 +542,12 @@ def test_monotone_constraint_enforces_ordering() -> None:
     monotone = mpc.build_monotone_slopes(["silent", "low", "med", "high", "superhigh"], "heat")
     assert isinstance(monotone, dict)
 
-    # silent (0.53) should stay, low (0.0 → clamped to 0.53), med (0.45 → clamped to 0.53)
-    assert monotone["silent"] == pytest.approx(0.53, abs=0.001)
-    assert monotone["low"] >= monotone["silent"]
+    # silent (0.53) and low (0.0) are out of order with equal sample weight, so
+    # weighted isotonic pooling merges them to their mean (0.265) instead of the
+    # weaker mode dragging the stronger up. The sequence stays non-decreasing.
+    assert monotone["silent"] == pytest.approx(0.265, abs=0.001)
+    assert monotone["low"] == pytest.approx(0.265, abs=0.001)
+    assert monotone["low"] >= monotone["silent"] - 1e-9
     assert monotone["med"] >= monotone["low"]
     assert monotone["high"] >= monotone["med"]
     assert monotone["superhigh"] >= monotone["high"]
@@ -590,8 +593,10 @@ def test_monotone_constraint_partial_profiles_enforces_known_pairs() -> None:
     assert "med" not in result
     assert "high" in result
     assert "superhigh" in result
-    assert result["high"] == pytest.approx(1.59, abs=0.001)
-    assert result["superhigh"] == pytest.approx(1.59, abs=0.001)
+    # high (1.59) and superhigh (1.075) are inverted with equal sample weight, so
+    # weighted isotonic pooling merges them to their mean (1.3325).
+    assert result["high"] == pytest.approx(1.3325, abs=0.001)
+    assert result["superhigh"] == pytest.approx(1.3325, abs=0.001)
 
 
 def test_monotone_constraint_noop_when_already_ordered() -> None:

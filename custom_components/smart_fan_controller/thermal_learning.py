@@ -327,6 +327,16 @@ class ThermalLearning:
         if len(points) < MIN_MODE_PROFILE_SAMPLES:
             return (median_eff, 0.0, None)
 
+        # Anti-extrapolation guard: the representative slope is reported at
+        # REFERENCE_SLOPE_ERROR and the sim applies the gain across the whole
+        # horizon. If this profile has never been observed at an error anywhere
+        # near that reference gap (e.g. a mode only ever active at/below setpoint),
+        # extrapolating the gain out to REFERENCE_SLOPE_ERROR can explode into a
+        # physically impossible slope. Fall back to the constant median instead of
+        # trusting an unsupported extrapolation.
+        if max(x for x, _ in points) < REFERENCE_SLOPE_ERROR:
+            return (median_eff, 0.0, None)
+
         n = len(points)
         mean_x = sum(x for x, _ in points) / n
         mean_y = sum(y for _, y in points) / n
