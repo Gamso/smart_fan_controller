@@ -20,15 +20,16 @@ _LOGGER = logging.getLogger(__name__)
 
 # Cost function weights (simulation loop in _simulate_mode). The comfort band is
 # asymmetric: FLOOR_VIOLATION_* penalise being on the wrong side of the setpoint
-# (above target in cooling, below in heating) from the setpoint itself, while
-# OVERSHOOT_QUADRATIC_WEIGHT only gently discourages the acceptable side. The
-# under-side weights are graduated (moderate linear + quadratic) so a small
-# excursion past the setpoint triggers a proportionate step up rather than
-# slamming the fan to maximum, while a clear excursion still escalates hard.
+# (above target in cooling, below in heating) from the setpoint itself with no
+# tolerance, so the room is firmly driven back to the requested side. The full
+# (heavy) weights are used deliberately: escalating on a small in-deadband
+# excursion via the finite-horizon projection is otherwise fragile (it flips with
+# the learned dead time and disturbance bias), so a strong under-side penalty is
+# what makes "at/below target in cooling, at/above in heating" reliable.
 COMFORT_ERROR_WEIGHT = 1.0
-OVERSHOOT_QUADRATIC_WEIGHT = 8.0
-FLOOR_VIOLATION_LINEAR_WEIGHT = 4.0
-FLOOR_VIOLATION_QUADRATIC_WEIGHT = 12.0
+OVERSHOOT_QUADRATIC_WEIGHT = 3.0
+FLOOR_VIOLATION_LINEAR_WEIGHT = 12.0
+FLOOR_VIOLATION_QUADRATIC_WEIGHT = 30.0
 MODE_CHANGE_DISTANCE_COST = 0.15
 # Per-step economic weight of the fan-mode rank. Raised from the legacy 0.05
 # now that the trajectory cost is normalised per step (see _simulate_mode): the
@@ -675,7 +676,7 @@ class MPCController:
             # fan to maximum for a single sensor step over the setpoint.
             error = self._temperature_error(sim_temp, target_temp, hvac_mode)
             under = max(error, 0.0)                 # wrong side of setpoint: always penalised
-            overshoot = max(-error, 0.0)            # acceptable side: gently discouraged from the setpoint
+            overshoot = max(-error - band, 0.0)     # acceptable side: tolerated within the deadband
             comfort_error = under + overshoot
 
             # Step-by-step urgency weight calculated dynamically based on current simulated step comfort error
