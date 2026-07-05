@@ -284,6 +284,15 @@ class MPCController:
         # of their actual candidate slope, preventing the "dead-time blindness".
         sim_horizon = max(self._horizon_minutes, int(dead_time) + self._horizon_minutes)
 
+        # Energy (fan-rank) cost only applies inside the comfort band. When the
+        # room is under-conditioned beyond the band, comfort must dominate: the
+        # economic term is dropped so a cheap-but-ineffective mode can't be
+        # preferred over one that actually recovers the setpoint. Without this,
+        # when the higher modes' learned slopes are weak (e.g. a capacity-bound
+        # hot day), the rank cost tie-breaks toward the lowest mode and the
+        # controller sits quietly above the setpoint.
+        energy_weight = 0.0 if current_error > self._deadband else 1.0
+
         for fan_mode in fan_modes:
             mode_slope, known_profile = self._get_mode_slope(
                 fan_mode,
@@ -309,6 +318,7 @@ class MPCController:
                 change_allowed=change_allowed,
                 known_profile=known_profile,
                 horizon_minutes=sim_horizon,
+                energy_weight=energy_weight,
             )
             simulations.append(sim)
             known_profiles += int(known_profile)
@@ -575,6 +585,7 @@ class MPCController:
         change_allowed: bool,
         known_profile: bool,
         horizon_minutes: int | None = None,
+        energy_weight: float = 1.0,
     ) -> ModeSimulation:
         """Simulate one fan mode over the prediction horizon.
 
@@ -647,7 +658,7 @@ class MPCController:
         # mode is differentiated regardless of how many the climate entity exposes
         # (a 4-mode system reproduces the previous 1.0 / 1.8 / 3.3 / 6.0 ramp).
         relative_power = MODE_POWER_RATIO ** candidate_index
-        cost += MODE_RANK_COST * relative_power
+        cost += MODE_RANK_COST * relative_power * energy_weight
         if candidate_fan != current_fan and not change_allowed:
             cost += MIN_INTERVAL_CHANGE_PENALTY
 
