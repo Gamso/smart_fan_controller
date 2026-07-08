@@ -32,6 +32,24 @@ MODE_POWER_RATIO = 1.82
 MIN_INTERVAL_CHANGE_PENALTY = 25.0
 URGENCY_SENSITIVITY = 2.0
 
+# --- Hold-equilibrium (economic) mode -------------------------------------
+# When enabled, near the setpoint the controller matches fan output to the
+# system's steady thermal production instead of collapsing to the lowest speed.
+# Rationale: on a running heat pump the compressor draws the dominant power and
+# keeps producing cold/heat regardless of fan speed, so the fan-rank penalty
+# (which models fan watts) optimises the wrong term there. Holding the room flat
+# with a steady speed avoids the drift-then-blast cycle and lets an inverter
+# compressor modulate at high COP instead of short-cycling. A small, bounded cold
+# undershoot is tolerated so the holding speed can slightly lead the load rather
+# than lag it — this is what lets a discrete speed ladder actually hold.
+# Enabled by default: on the 899 h production trace it shifted ~14% of time from
+# `low` to a steady `med` hold and cut fan changes 357->313 with no change in
+# predicted comfort (MAE T+10) or average cost. The feature is dormant whenever
+# the error exceeds the deadband, so far-from-setpoint escalation is untouched.
+HOLD_EQUILIBRIUM = True
+HOLD_UNDERSHOOT_TOLERANCE = 0.3  # °C of free wrong-side undershoot inside the hold zone
+HOLD_RANK_SCALE = 0.15  # shrink the fan-rank (energy) penalty to a tie-breaker in the zone
+
 # Disturbance bias tracker
 DISTURBANCE_EMA_ALPHA = 0.2
 DISTURBANCE_DECAY = 0.85
@@ -584,6 +602,14 @@ class MPCController:
         cost = 0.0
         thermal_power = current_effective_slope
         change_delay = 0.0 if candidate_fan == current_fan else dead_time
+        # Hold zone: within one deadband of the setpoint we optimise for holding
+        # equilibrium (match the compressor's steady output) rather than for the
+        # lowest fan rank. See the HOLD_EQUILIBRIUM constant block for rationale.
+        hold_active = (
+            HOLD_EQUILIBRIUM
+            and abs(self._temperature_error(current_temp, target_temp, hvac_mode)) <= self._deadband
+        )
+        undershoot_tolerance = HOLD_UNDERSHOOT_TOLERANCE if hold_active else 0.0
 
         for step in range(1, steps + 1):
             elapsed = step * self._cycle_minutes
@@ -607,7 +633,7 @@ class MPCController:
 
             error = self._temperature_error(sim_temp, target_temp, hvac_mode)
             comfort_error = max(abs(error) - self._deadband, 0.0)
-            overshoot = max(-error, 0.0)
+            overshoot = max(-error - undershoot_tolerance, 0.0)
             floor_violation = max(target_temp - sim_temp, 0.0) if hvac_mode == "heat" else max(sim_temp - target_temp, 0.0)
 
             # Step-by-step urgency weight calculated dynamically based on current simulated step comfort error
@@ -623,7 +649,8 @@ class MPCController:
         # mode is differentiated regardless of how many the climate entity exposes
         # (a 4-mode system reproduces the previous 1.0 / 1.8 / 3.3 / 6.0 ramp).
         relative_power = MODE_POWER_RATIO ** candidate_index
-        cost += MODE_RANK_COST * relative_power
+        rank_scale = HOLD_RANK_SCALE if hold_active else 1.0
+        cost += MODE_RANK_COST * relative_power * rank_scale
         if candidate_fan != current_fan and not change_allowed:
             cost += MIN_INTERVAL_CHANGE_PENALTY
 

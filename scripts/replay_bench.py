@@ -61,6 +61,9 @@ TUNABLE = [
     "MODE_RANK_COST",
     "MIN_INTERVAL_CHANGE_PENALTY",
     "URGENCY_SENSITIVITY",
+    "HOLD_EQUILIBRIUM",
+    "HOLD_UNDERSHOOT_TOLERANCE",
+    "HOLD_RANK_SCALE",
 ]
 _DEFAULTS = {k: getattr(_mpc_mod, k) for k in TUNABLE}
 _PROFILE_ENTITY_RE = re.compile(r"_(heat|cool)_([^_]+)_effective_slope$")

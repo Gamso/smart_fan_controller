@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from custom_components.smart_fan_controller import mpc_controller as mpc_module
 from custom_components.smart_fan_controller.data_collection import DataCollector
 from custom_components.smart_fan_controller.mpc_controller import MPCController
 from custom_components.smart_fan_controller.sensor import (
@@ -730,4 +731,72 @@ def test_learning_response_sensor_with_mixed_tuple_lengths() -> None:
     attrs = sensor.extra_state_attributes
     assert attrs["response_samples"] == 0         # because is_ready() is False, returns fallback 0
     assert attrs["avg_response_time_min"] == pytest.approx(13.5)
+
+
+# --- Hold-equilibrium (economic) mode ------------------------------------
+_HOLD_FAN_MODES = ["low", "medium", "high"]
+
+
+def _build_hold_cool_mpc() -> MPCController:
+    """Build an MPC with cool profiles where low barely conditions and med/high hold."""
+    learning = ThermalLearning()
+    learning.set_mode_effective_slope("low", "cool", 0.05)
+    learning.set_mode_effective_slope("medium", "cool", 0.9)
+    learning.set_mode_effective_slope("high", "cool", 1.8)
+    learning.add_response_event(10.0, "cool")
+    return MPCController(
+        learning=learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=_HOLD_FAN_MODES,
+    )
+
+
+def _evaluate_hold(current_temp: float) -> dict:
+    """Run a cool evaluation at ``current_temp`` against a 24.0 setpoint."""
+    return _build_hold_cool_mpc().evaluate(
+        current_temp=current_temp,
+        target_temp=24.0,
+        vtherm_slope=0.0,
+        hvac_mode="cool",
+        current_fan="low",
+        minutes_since_change=60.0,
+    )
+
+
+def test_hold_equilibrium_enabled_by_default() -> None:
+    """The economic hold mode ships enabled after validation on the production trace."""
+    assert mpc_module.HOLD_EQUILIBRIUM is True
+
+
+def test_hold_equilibrium_dormant_beyond_deadband(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Far from the setpoint (error > deadband) the flag must not change anything."""
+    # 25.0 vs 24.0 target => 1.0 C error, well outside the 0.3 deadband.
+    monkeypatch.setattr(mpc_module, "HOLD_EQUILIBRIUM", False)
+    off = _evaluate_hold(25.0)
+    monkeypatch.setattr(mpc_module, "HOLD_EQUILIBRIUM", True)
+    on = _evaluate_hold(25.0)
+
+    assert on["mpc_fan_mode"] == off["mpc_fan_mode"]
+    assert on["mpc_cost"] == pytest.approx(off["mpc_cost"])
+
+
+def test_hold_equilibrium_holds_steady_instead_of_coasting_near_setpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inside the hold zone the controller never coasts to a weaker mode and never
+    costs more; here it holds harder (medium -> high) rather than let the room drift."""
+    monkeypatch.setattr(mpc_module, "HOLD_EQUILIBRIUM", False)
+    off = _evaluate_hold(24.2)
+    monkeypatch.setattr(mpc_module, "HOLD_EQUILIBRIUM", True)
+    on = _evaluate_hold(24.2)
+
+    off_rank = _HOLD_FAN_MODES.index(off["mpc_fan_mode"])
+    on_rank = _HOLD_FAN_MODES.index(on["mpc_fan_mode"])
+
+    # Never weaker than baseline, and the relaxed penalties never raise the cost.
+    assert on_rank >= off_rank
+    assert on["mpc_cost"] <= off["mpc_cost"] + 1e-9
+    # On this trace the tolerance lets it commit to a firmer steady hold.
+    assert (off["mpc_fan_mode"], on["mpc_fan_mode"]) == ("medium", "high")
 
