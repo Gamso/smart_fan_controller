@@ -800,3 +800,76 @@ def test_hold_equilibrium_holds_steady_instead_of_coasting_near_setpoint(
     # On this trace the tolerance lets it commit to a firmer steady hold.
     assert (off["mpc_fan_mode"], on["mpc_fan_mode"]) == ("medium", "high")
 
+
+# --- Adaptive min interval (coupled to learned dead time) -----------------
+def _ready_learning_with_dead_time(dead_time: float) -> ThermalLearning:
+    """Build a ready ThermalLearning whose learned dead time is ``dead_time``."""
+    learning = ThermalLearning()
+    for _ in range(90):  # 270 samples > MIN_SAMPLES_LEARNING (240) => is_ready()
+        learning.add_slope_sample("low", 0.3, 0.8, "heat")
+        learning.add_slope_sample("medium", 0.9, 0.8, "heat")
+        learning.add_slope_sample("high", 1.5, 0.8, "heat")
+    for _ in range(3):
+        learning.add_response_event(dead_time, "heat")
+    assert learning.is_ready()
+    return learning
+
+
+def test_effective_min_interval_rises_to_learned_dead_time() -> None:
+    """When the dead time exceeds the configured floor, the effective dwell follows it."""
+    learning = _ready_learning_with_dead_time(20.0)
+    mpc = _build_mpc(learning, min_interval=10)
+    assert mpc._effective_min_interval(learning.get_dead_time()) == pytest.approx(20.0)
+
+
+def test_effective_min_interval_is_floored_by_config() -> None:
+    """A short learned dead time never lowers the effective dwell below the config floor."""
+    learning = _ready_learning_with_dead_time(6.0)
+    mpc = _build_mpc(learning, min_interval=10)
+    assert mpc._effective_min_interval(learning.get_dead_time()) == pytest.approx(10.0)
+
+
+def test_effective_min_interval_is_capped() -> None:
+    """A spuriously large dead time is capped at MAX_ADAPTIVE_INTERVAL_FACTOR x floor."""
+    learning = _ready_learning_with_dead_time(40.0)
+    mpc = _build_mpc(learning, min_interval=10)
+    cap = 10 * mpc_module.MAX_ADAPTIVE_INTERVAL_FACTOR
+    assert mpc._effective_min_interval(learning.get_dead_time()) == pytest.approx(cap)
+
+
+def test_effective_min_interval_uses_config_before_learning_ready() -> None:
+    """Before learning is ready the fixed configured interval is used unchanged."""
+    learning = ThermalLearning()
+    learning.add_response_event(25.0, "heat")
+    mpc = _build_mpc(learning, min_interval=10)
+    assert not learning.is_ready()
+    assert mpc._effective_min_interval(learning.get_dead_time()) == pytest.approx(10.0)
+
+
+def test_adaptive_interval_holds_change_until_dead_time_elapses() -> None:
+    """A beneficial change is held until the dead-time-based interval elapses."""
+    learning = _ready_learning_with_dead_time(20.0)
+    mpc = _build_mpc(learning, min_interval=10)
+    # 15 min since last change: allowed under the old fixed 10-min rule, but the
+    # learned 20-min dead time means the previous change is not observable yet.
+    held = mpc.evaluate(
+        current_temp=19.0,
+        target_temp=20.0,
+        vtherm_slope=0.25,
+        hvac_mode="heat",
+        current_fan="low",
+        minutes_since_change=15.0,
+    )
+    assert held["mpc_would_change_now"] == "no"
+    assert "Min interval active" in held["mpc_reason"]
+
+    allowed = mpc.evaluate(
+        current_temp=19.0,
+        target_temp=20.0,
+        vtherm_slope=0.25,
+        hvac_mode="heat",
+        current_fan="low",
+        minutes_since_change=25.0,
+    )
+    assert allowed["mpc_would_change_now"] == "yes"
+

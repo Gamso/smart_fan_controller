@@ -32,6 +32,13 @@ MODE_POWER_RATIO = 1.82
 MIN_INTERVAL_CHANGE_PENALTY = 25.0
 URGENCY_SENSITIVITY = 2.0
 
+# The configured min_interval is a floor; once learning is ready the effective
+# dwell before a fan change is raised toward the learned dead time (you cannot
+# observe a change's effect faster than the dead time, so changing sooner just
+# invites oscillation). The rise is capped at this factor x the configured floor
+# so a spuriously large learned dead time cannot stall the controller.
+MAX_ADAPTIVE_INTERVAL_FACTOR = 3.0
+
 # --- Hold-equilibrium (economic) mode -------------------------------------
 # When enabled, near the setpoint the controller matches fan output to the
 # system's steady thermal production instead of collapsing to the lowest speed.
@@ -151,6 +158,23 @@ class MPCController:
             return max(self._min_interval, learned_dead_time * DEAD_TIME_SAFETY_FACTOR)
         return DEFAULT_DEAD_TIME * DEAD_TIME_SAFETY_FACTOR
 
+    def _effective_min_interval(self, dead_time: float) -> float:
+        """Return the minimum dwell (minutes) before a fan change is allowed.
+
+        The configured ``min_interval`` is a floor. Once learning is ready the
+        effective dwell is raised toward the learned ``dead_time`` — changing the
+        fan faster than the dead time means acting before the previous change's
+        effect can be observed, a guaranteed source of oscillation. The rise is
+        capped at ``MAX_ADAPTIVE_INTERVAL_FACTOR`` × the configured floor so a
+        spuriously large learned dead time cannot make the controller sluggish.
+        Urgent overrides (setpoint drop, window/defrost/idle) are handled before
+        this gate, so they are never blocked by a long adaptive interval.
+        """
+        if not self._learning.is_ready():
+            return float(self._min_interval)
+        capped = min(dead_time, self._min_interval * MAX_ADAPTIVE_INTERVAL_FACTOR)
+        return max(float(self._min_interval), capped)
+
     @property
     def disturbance_bias(self) -> float:
         """Return the current disturbance bias estimate (°C/h)."""
@@ -202,7 +226,8 @@ class MPCController:
         current_effective_slope = -vtherm_slope if hvac_mode == "cool" else vtherm_slope
         current_error = self._temperature_error(current_temp, target_temp, hvac_mode)
         dead_time = self._learning.get_dead_time()
-        change_allowed = minutes_since_change >= self._min_interval
+        effective_min_interval = self._effective_min_interval(dead_time)
+        change_allowed = minutes_since_change >= effective_min_interval
         phase = self._detect_phase(minutes_since_change, dead_time)
         current_mode_slope, current_known_profile = self._get_mode_slope(
             active_fan,
@@ -392,7 +417,7 @@ class MPCController:
         if not change_allowed:
             reason += (
                 f" | Min interval active ({minutes_since_change:.1f}/"
-                f"{self._min_interval:.1f} min)"
+                f"{effective_min_interval:.1f} min)"
             )
 
         _LOGGER.debug(
