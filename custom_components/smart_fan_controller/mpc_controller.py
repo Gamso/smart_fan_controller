@@ -39,6 +39,17 @@ URGENCY_SENSITIVITY = 2.0
 # so a spuriously large learned dead time cannot stall the controller.
 MAX_ADAPTIVE_INTERVAL_FACTOR = 3.0
 
+# The dead-time lock above has no visibility into whether the current fan mode
+# is actually holding comfort — a misjudged step (e.g. a multi-rank drop) can
+# leave the room drifting away from target for the full adaptive interval with
+# no escape. A static error threshold does not fit every deadband/system, so
+# instead this tracks how much the comfort error has *grown* since the fan
+# last changed (comparing against the error at that moment) — a direct read of
+# the room's actual trajectory rather than an arbitrary absolute cutoff. Past
+# this much growth, an *escalation only* (never a step-down) is allowed to
+# bypass the lock.
+DEAD_TIME_ESCALATION_GROWTH = 0.15  # degC comfort error allowed to worsen since the change
+
 # --- Hold-equilibrium (economic) mode -------------------------------------
 # When enabled, near the setpoint the controller matches fan output to the
 # system's steady thermal production instead of collapsing to the lowest speed.
@@ -104,6 +115,7 @@ class MPCController:
         self._horizon_minutes = horizon_minutes
         self._cycle_minutes = cycle_minutes
         self._disturbance_bias = 0.0
+        self._error_at_lock_start: float | None = None
 
     @property
     def fan_modes(self) -> list[str] | None:
@@ -228,6 +240,11 @@ class MPCController:
         dead_time = self._learning.get_dead_time()
         effective_min_interval = self._effective_min_interval(dead_time)
         change_allowed = minutes_since_change >= effective_min_interval
+        # Snapshot the comfort error at the start of each hold so growth since
+        # the fan last changed can be measured (see DEAD_TIME_ESCALATION_GROWTH).
+        if minutes_since_change < self._cycle_minutes or self._error_at_lock_start is None:
+            self._error_at_lock_start = current_error
+        error_growth_since_change = current_error - self._error_at_lock_start
         phase = self._detect_phase(minutes_since_change, dead_time)
         current_mode_slope, current_known_profile = self._get_mode_slope(
             active_fan,
@@ -354,8 +371,16 @@ class MPCController:
         selection_note = ""
 
         if not change_allowed and best.fan_mode != active_fan:
-            selection_note = f"Min interval holds {active_fan} until a change is allowed"
-            best = current_simulation
+            best_index = fan_modes.index(best.fan_mode)
+            if best_index > current_index and error_growth_since_change > DEAD_TIME_ESCALATION_GROWTH:
+                selection_note = (
+                    f"Emergency escalation to {best.fan_mode}: comfort error worsened by "
+                    f"{error_growth_since_change:.2f}C since the change bypasses the min interval"
+                )
+                change_allowed = True
+            else:
+                selection_note = f"Min interval holds {active_fan} until a change is allowed"
+                best = current_simulation
         elif change_allowed and best.fan_mode != active_fan:
             best_index = fan_modes.index(best.fan_mode)
             required_gain = self._required_switch_gain(

@@ -850,10 +850,22 @@ def test_adaptive_interval_holds_change_until_dead_time_elapses() -> None:
     """A beneficial change is held until the dead-time-based interval elapses."""
     learning = _ready_learning_with_dead_time(20.0)
     mpc = _build_mpc(learning, min_interval=10)
+    # First call establishes the comfort-error baseline for this hold (small
+    # growth budget below).
+    mpc.evaluate(
+        current_temp=19.7,
+        target_temp=20.0,
+        vtherm_slope=0.25,
+        hvac_mode="heat",
+        current_fan="low",
+        minutes_since_change=1.0,
+    )
     # 15 min since last change: allowed under the old fixed 10-min rule, but the
     # learned 20-min dead time means the previous change is not observable yet.
+    # Error only grew 0.05C since the baseline, well under the 0.15C escalation
+    # budget, so the hold is not bypassed.
     held = mpc.evaluate(
-        current_temp=19.0,
+        current_temp=19.65,
         target_temp=20.0,
         vtherm_slope=0.25,
         hvac_mode="heat",
@@ -864,7 +876,7 @@ def test_adaptive_interval_holds_change_until_dead_time_elapses() -> None:
     assert "Min interval active" in held["mpc_reason"]
 
     allowed = mpc.evaluate(
-        current_temp=19.0,
+        current_temp=19.65,
         target_temp=20.0,
         vtherm_slope=0.25,
         hvac_mode="heat",
@@ -872,4 +884,69 @@ def test_adaptive_interval_holds_change_until_dead_time_elapses() -> None:
         minutes_since_change=25.0,
     )
     assert allowed["mpc_would_change_now"] == "yes"
+
+
+def test_dead_time_lock_escalates_on_growing_error() -> None:
+    """Comfort error worsening since the change bypasses the dead-time lock.
+
+    Regression test: a misjudged step-down (e.g. hold-equilibrium picking a
+    fan mode that turns out too weak) used to leave the room drifting away
+    from target for the full ~20 min adaptive interval with no way out. The
+    escalation is trend-based (growth since the change) rather than a static
+    error threshold, so it fires however small the deadband is.
+    """
+    learning = _ready_learning_with_dead_time(20.0)
+    mpc = _build_mpc(learning, min_interval=10)
+    # First call establishes the baseline right after the change (small error).
+    mpc.evaluate(
+        current_temp=19.8,
+        target_temp=20.0,
+        vtherm_slope=0.25,
+        hvac_mode="heat",
+        current_fan="low",
+        minutes_since_change=1.0,
+    )
+    # 8 min later the room has drifted 0.2C further from target (> the 0.15C
+    # growth budget) while still inside the 20-min learned dead time.
+    escalated = mpc.evaluate(
+        current_temp=19.6,
+        target_temp=20.0,
+        vtherm_slope=0.25,
+        hvac_mode="heat",
+        current_fan="low",
+        minutes_since_change=8.0,
+    )
+    assert escalated["mpc_would_change_now"] == "yes"
+    assert escalated["mpc_fan_mode"] != "low"
+    assert "Emergency escalation" in escalated["mpc_reason"]
+
+
+def test_dead_time_lock_does_not_escalate_downward() -> None:
+    """The emergency escalation never lets the lock be bypassed to step down."""
+    learning = _ready_learning_with_dead_time(20.0)
+    mpc = _build_mpc(learning, min_interval=10)
+    # Overshoot past the setpoint in heat mode, still growing further past
+    # target - a large and worsening error, but the unconstrained candidate is
+    # weaker than the current fan, so this must stay held rather than treated
+    # as an emergency.
+    mpc.evaluate(
+        current_temp=20.9,
+        target_temp=20.0,
+        vtherm_slope=1.5,
+        hvac_mode="heat",
+        current_fan="high",
+        minutes_since_change=1.0,
+    )
+    held = mpc.evaluate(
+        current_temp=21.0,
+        target_temp=20.0,
+        vtherm_slope=1.5,
+        hvac_mode="heat",
+        current_fan="high",
+        minutes_since_change=8.0,
+    )
+    assert held["mpc_would_change_now"] == "no"
+    assert held["mpc_fan_mode"] == "high"
+    assert "Emergency escalation" not in held["mpc_reason"]
+    assert "Min interval active" in held["mpc_reason"]
 
