@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 from datetime import datetime
 from importlib import import_module
@@ -159,6 +160,10 @@ def load_csv(path: str) -> list[Row]:
     with open(path, newline="", encoding="utf-8") as fh:
         for r in csv.DictReader(fh):
             try:
+                # Guard against occasional corrupted export rows (e.g. embedded
+                # null bytes in the timestamp) so a single bad line can't abort
+                # an outdoor-temperature lookup mid-replay.
+                parse_timestamp(r["timestamp"])
                 rows.append(
                     Row(
                         timestamp=r["timestamp"],
@@ -186,7 +191,38 @@ def load_csv(path: str) -> list[Row]:
 # ---------------------------------------------------------------------------
 # Learning profile builder
 # ---------------------------------------------------------------------------
-def build_learning(rows: list[Row]) -> ThermalLearning:
+def load_outdoor_series(path: str, entity: str | None):
+    """Return a linear-interpolation function over an HA outdoor-temp history CSV."""
+    series: list[tuple[datetime, float]] = []
+    with open(path, newline="", encoding="utf-8") as fh:
+        for r in csv.reader(fh):
+            if not r or r[0] == "entity_id":
+                continue
+            if entity and r[0] != entity:
+                continue
+            try:
+                series.append((parse_timestamp(r[2]), float(r[1])))
+            except (ValueError, IndexError):
+                continue
+    series.sort()
+    if not series:
+        raise ValueError("no outdoor samples loaded (check --outdoor-entity)")
+    times = [t for t, _ in series]
+
+    def at(ts: datetime) -> float:
+        if ts <= series[0][0]:
+            return series[0][1]
+        if ts >= series[-1][0]:
+            return series[-1][1]
+        i = bisect.bisect_right(times, ts)
+        t0, v0 = series[i - 1]
+        t1, v1 = series[i]
+        return v0 + (v1 - v0) * ((ts - t0) / (t1 - t0))
+
+    return at
+
+
+def build_learning(rows: list[Row], outdoor_at=None) -> ThermalLearning:
     """Seed a ThermalLearning from established, undisturbed CSV rows."""
     learning = ThermalLearning()
     for row in rows:
@@ -209,6 +245,9 @@ def build_learning(rows: list[Row]) -> ThermalLearning:
             temperature_error=error,
             hvac_mode=row.hvac_mode,
         )
+        if outdoor_at is not None:
+            t_ext = outdoor_at(parse_timestamp(row.timestamp))
+            learning.add_envelope_sample(row.current_fan, t_ext - row.current_temp, row.vtherm_slope, row.hvac_mode)
     return learning
 
 
@@ -410,6 +449,7 @@ def replay(
     snapshot_events: list[SnapshotEvent] | None = None,
     snapshot_start_index: int = 0,
     cycle_minutes: int = 2,
+    outdoor_at=None,
 ) -> list[tuple[dict, str]]:
     """Replay CSV through MPC, tracking simulated fan state.
 
@@ -446,6 +486,7 @@ def replay(
                 is_defrost_active=row.defrost_active,
                 is_hvac_idle=row.hvac_idle,
                 minutes_since_change=sim_minutes,
+                outdoor_temp=(outdoor_at(parse_timestamp(row.timestamp)) if outdoor_at is not None else None),
             )
             rec_fan = payload.get("mpc_fan_mode") or sim_fan
             would_change = payload.get("mpc_would_change_now", "no")
@@ -700,6 +741,14 @@ def main() -> None:
         help=("Directory containing *_effective_slope.csv snapshots used to seed missing " "profiles (defaults to the CSV file directory when such files are present)"),
     )
     parser.add_argument(
+        "--outdoor-csv",
+        help="HA history CSV of an outdoor temperature sensor; enables the grey-box envelope feasibility gate",
+    )
+    parser.add_argument(
+        "--outdoor-entity",
+        help="entity_id to filter within --outdoor-csv (when it contains multiple sensors)",
+    )
+    parser.add_argument(
         "--start",
         help="Inclusive start timestamp (ISO-8601, e.g. 2026-04-17T17:40:00Z)",
     )
@@ -744,10 +793,22 @@ def main() -> None:
         fan_modes = detect_fan_modes(rows)
     print(f"  Fan modes: {fan_modes}")
 
+    # Optional outdoor sensor for the grey-box envelope feasibility gate
+    outdoor_at = None
+    if args.outdoor_csv:
+        outdoor_at = load_outdoor_series(args.outdoor_csv, args.outdoor_entity)
+        print(f"  Outdoor sensor loaded from {args.outdoor_csv}")
+
     # Build learning
     print("Building learning profiles...")
-    learning = build_learning(rows)
+    learning = build_learning(rows, outdoor_at=outdoor_at)
     print(f"  {learning.slope_sample_count()} slope samples ingested")
+    if outdoor_at is not None:
+        for hvac in sorted({r.hvac_mode for r in rows if r.hvac_mode not in ("off", "dry", "fan_only")}):
+            k = learning.get_envelope_conductance(hvac)
+            if k is not None:
+                caps = ", ".join(f"{fm}={learning.get_mode_cooling_power(fm, hvac):+.2f}" for fm in fan_modes if learning.get_mode_cooling_power(fm, hvac) is not None)
+                print(f"  Envelope[{hvac}]: k_env={k:.4f} (tau={1 / k:.0f}h)  u_fan: {caps}")
 
     snapshot_dir = args.seed_snapshots_dir or str(Path(args.csv_file).resolve().parent)
     snapshot_events = load_snapshot_events(
@@ -785,6 +846,7 @@ def main() -> None:
             args.min_interval,
             snapshot_events=snapshot_events,
             snapshot_start_index=snapshot_start_index,
+            outdoor_at=outdoor_at,
         )
         m = compute_metrics(name, overrides, rows, results)
         all_metrics.append(m)

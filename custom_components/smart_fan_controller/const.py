@@ -15,6 +15,7 @@ CONF_MIN_INTERVAL = "min_interval"
 CONF_DATA_COLLECTION = "data_collection"
 CONF_DEFROST_ENTITY = "defrost_entity"
 CONF_OPERATING_ENTITY = "operating_entity"
+CONF_OUTDOOR_ENTITY = "outdoor_entity"
 
 # Default values
 DEFAULT_DEADBAND = 0.2
@@ -48,6 +49,13 @@ REFERENCE_SLOPE_ERROR = 1.0  # °C – reference comfort error at which the repr
 # near-equilibrium median, which is structurally diluted by samples taken close to the setpoint.
 SETPOINT_DROP_LEARNING_COOLDOWN = 30.0  # Minutes to block learning after a setpoint drop
 MIN_ESTABLISHED_RATIO = 2.0  # Minimum factor × dead_time the fan mode must be active before learning
+
+# Grey-box envelope model (optional, only when an outdoor sensor is configured).
+# Fits dT/dt = k_env·(T_ext − T) + u_fan by fixed-effects OLS to separate the
+# fan-independent envelope conductance from each fan's own cooling/heating power.
+# See docs/effective_slope_analysis.md.
+MIN_ENVELOPE_SAMPLES = 40  # Minimum (T_ext−T, slope) samples before a fit is trusted
+ENVELOPE_MIN_GAP_VARIANCE = 1.0  # Minimum variance of (T_ext−T) required to identify k_env
 
 
 def build_unique_id(object_key: str, entry_id: str) -> str:

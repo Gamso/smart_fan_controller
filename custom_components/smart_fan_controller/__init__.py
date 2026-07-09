@@ -21,6 +21,7 @@ from .const import (
     CONF_DEFROST_ENTITY,
     CONF_MIN_INTERVAL,
     CONF_OPERATING_ENTITY,
+    CONF_OUTDOOR_ENTITY,
     DEAD_TIME_SAFETY_FACTOR,
     DEFAULT_DATA_COLLECTION,
     DEFAULT_DEAD_TIME,
@@ -478,6 +479,24 @@ def _detect_disturbances(hass, conf: dict, defrost_state: dict) -> tuple[bool, b
     return is_defrost, is_hvac_idle
 
 
+def _read_outdoor_temp(hass, conf: dict) -> float | None:
+    """Return the configured outdoor temperature (°C), or None when unavailable.
+
+    Optional: only used to drive the grey-box envelope model / feasibility gate.
+    A missing, non-numeric, or unavailable sensor simply disables that feature.
+    """
+    outdoor_entity_id = conf.get(CONF_OUTDOOR_ENTITY)
+    if not outdoor_entity_id:
+        return None
+    state = hass.states.get(outdoor_entity_id)
+    if state is None or state.state in ("unknown", "unavailable", "", None):
+        return None
+    try:
+        return float(state.state)
+    except (TypeError, ValueError):
+        return None
+
+
 async def _async_apply_fan_change(
     hass,
     climate_id: str,
@@ -625,6 +644,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
         vtherm_slope, current_temp, target_temp, hvac_mode, current_fan, is_window_open = cycle_data
         is_defrost_active, is_hvac_idle = _detect_disturbances(hass, conf, ctrl_state["defrost"])
+        outdoor_temp = _read_outdoor_temp(hass, conf)
 
         now = time.time()
         minutes_since_change = (now - ctrl_state["last_change_time"]) / 60.0
@@ -667,6 +687,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             is_defrost_active=is_defrost_active,
             is_hvac_idle=is_hvac_idle,
             minutes_since_change=minutes_since_change,
+            outdoor_temp=outdoor_temp,
         )
 
         _LOGGER.debug(
@@ -722,6 +743,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             now=now,
         ):  # current_fan is guaranteed non-None by _should_collect_slope_sample
             learning.add_slope_sample(current_fan, vtherm_slope, current_error, hvac_mode, is_window_open)  # type: ignore[arg-type]
+            # Grey-box envelope sample (only when an outdoor sensor is configured).
+            # Same ESTABLISHED, compressor-on, undisturbed gate as the slope sample
+            # above, but keyed on the outdoor gap instead of the comfort error.
+            if outdoor_temp is not None and current_fan is not None:
+                learning.add_envelope_sample(current_fan, outdoor_temp - current_temp, vtherm_slope, hvac_mode, is_window_open)
 
         # Response event collection
         if slope_change and ctrl_state["last_change_time"] > 0:

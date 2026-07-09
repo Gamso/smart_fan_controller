@@ -94,6 +94,14 @@ UNDER_TARGET_SHORTFALL_RESERVE = 0.1
 # blocks multi-rank plunges to a mode with no track record of holding.
 MIN_VIABLE_MULTI_RANK_STEPDOWN_SLOPE = 0.0
 
+# Grey-box feasibility gate (used only when an outdoor sensor is configured and
+# the envelope model is learned). A step-down candidate is excluded when its
+# predicted effective slope toward target *at the setpoint* falls below this
+# margin — i.e. it cannot hold the room against the current outdoor load. The
+# small negative tolerance lets a borderline mode (predicted ≈0) through so only
+# clear failures (a mode that actively loses ground) are blocked.
+FEASIBILITY_HOLD_MARGIN = -0.05
+
 
 @dataclass(slots=True)
 class ModeSimulation:
@@ -215,8 +223,16 @@ class MPCController:
         is_defrost_active: bool = False,
         is_hvac_idle: bool = False,
         minutes_since_change: float = 0.0,
+        outdoor_temp: float | None = None,
     ) -> dict:
-        """Evaluate the best fan mode for the current cycle."""
+        """Evaluate the best fan mode for the current cycle.
+
+        ``outdoor_temp`` is optional: when provided and the grey-box envelope
+        model is learned for this hvac mode, a per-fan feasibility gate excludes
+        speeds that cannot hold the setpoint at the current outdoor temperature
+        (see docs/effective_slope_analysis.md). When absent, behaviour is
+        unchanged and the raw-slope multi-rank guard is used instead.
+        """
         _LOGGER.debug(
             "MPC evaluate: hvac=%s current_temp=%.2f target=%.2f slope=%.3f current_fan=%s minutes_since_change=%.1f window_open=%s",
             hvac_mode,
@@ -382,8 +398,21 @@ class MPCController:
 
         def _stepdown_capable(sim: ModeSimulation) -> bool:
             candidate_index = fan_modes.index(sim.fan_mode)
+            if candidate_index >= current_index:
+                return True  # upward / same rank is always allowed
+            # Envelope feasibility (preferred): can this fan hold the setpoint at
+            # the current outdoor temperature? Applies to a step-down of any size.
+            if outdoor_temp is not None:
+                predicted = self._learning.envelope_predicted_slope(
+                    sim.fan_mode, hvac_mode, outdoor_temp - target_temp
+                )
+                if predicted is not None:
+                    effective = -predicted if hvac_mode == "cool" else predicted
+                    return effective > FEASIBILITY_HOLD_MARGIN
+            # Fallback (no outdoor sensor / envelope not learned): the original
+            # raw-slope guard, restricted to multi-rank plunges.
             if current_index - candidate_index <= 1:
-                return True  # adjacent (or upward) switches are unrestricted
+                return True
             raw_slope = self._learning.get_mode_effective_slope(sim.fan_mode, hvac_mode)
             return raw_slope is None or raw_slope > MIN_VIABLE_MULTI_RANK_STEPDOWN_SLOPE
 
@@ -394,11 +423,23 @@ class MPCController:
 
         if unfiltered_best.fan_mode != best.fan_mode:
             blocked_index = fan_modes.index(unfiltered_best.fan_mode)
-            blocked_slope = self._learning.get_mode_effective_slope(unfiltered_best.fan_mode, hvac_mode)
-            blocked_note = (
-                f"Blocked {current_index - blocked_index}-rank drop to {unfiltered_best.fan_mode}: "
-                f"its own profile ({blocked_slope:.2f}C/h) can't sustain progress"
-            )
+            ranks = current_index - blocked_index
+            if outdoor_temp is not None and self._learning.envelope_predicted_slope(
+                unfiltered_best.fan_mode, hvac_mode, outdoor_temp - target_temp
+            ) is not None:
+                predicted = self._learning.envelope_predicted_slope(
+                    unfiltered_best.fan_mode, hvac_mode, outdoor_temp - target_temp
+                )
+                blocked_note = (
+                    f"Blocked drop to {unfiltered_best.fan_mode}: can't hold the setpoint at "
+                    f"{outdoor_temp:.1f}C outdoor (predicted {predicted:+.2f}C/h)"
+                )
+            else:
+                blocked_slope = self._learning.get_mode_effective_slope(unfiltered_best.fan_mode, hvac_mode)
+                blocked_note = (
+                    f"Blocked {ranks}-rank drop to {unfiltered_best.fan_mode}: "
+                    f"its own profile ({blocked_slope:.2f}C/h) can't sustain progress"
+                )
 
         if not change_allowed and best.fan_mode != active_fan:
             best_index = fan_modes.index(best.fan_mode)

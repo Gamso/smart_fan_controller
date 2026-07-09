@@ -10,7 +10,8 @@
                     "min_interval": "Intervalle minimum (minutes)",
                     "data_collection": "Activer la collecte de données (bêta)",
                     "defrost_entity": "Entité dégivrage (optionnel)",
-                    "operating_entity": "Entité fonctionnement PAC (optionnel)"
+                    "operating_entity": "Entité fonctionnement PAC (optionnel)",
+                    "outdoor_entity": "Capteur de température extérieure (optionnel)"
                 },
                 "data_description": {
                     "climate_entity": "Doit provenir de Versatile Thermostat.",
@@ -18,7 +19,8 @@
                     "min_interval": "Plage : 1-60 min. Défaut : 10 min.",
                     "data_collection": "Enregistre une ligne CSV toutes les 2 minutes dans le dossier de configuration Home Assistant, à côté de configuration.yaml : smart_fan_controller_data_XXXXXXXX.csv (max 10 Mo, rotation automatique). Utile pour reproduire le comportement de l'algorithme et identifier des améliorations pendant la phase bêta.",
                     "defrost_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand la PAC est en dégivrage.",
-                    "operating_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand le compresseur de la PAC est en marche. Utilisé pour éviter des changements de ventilation inutiles quand le compresseur est à l'arrêt."
+                    "operating_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand le compresseur de la PAC est en marche. Utilisé pour éviter des changements de ventilation inutiles quand le compresseur est à l'arrêt.",
+                    "outdoor_entity": "Optionnel : un capteur de température extérieure. S'il est renseigné, un modèle thermique grey-box apprend la vraie puissance de refroidissement/chauffage de chaque vitesse et écarte les vitesses incapables de tenir la consigne à la température extérieure actuelle."
                 },
                 "error": {
                     "already_configured": "Cette entité climate est déjà configurée.",
@@ -38,7 +40,8 @@
                     "min_interval": "Intervalle minimum (minutes)",
                     "data_collection": "Activer la collecte de données (bêta)",
                     "defrost_entity": "Entité dégivrage (optionnel)",
-                    "operating_entity": "Entité fonctionnement PAC (optionnel)"
+                    "operating_entity": "Entité fonctionnement PAC (optionnel)",
+                    "outdoor_entity": "Capteur de température extérieure (optionnel)"
                 },
                 "data_description": {
                     "climate_entity": "Doit provenir de Versatile Thermostat.",
@@ -46,7 +49,8 @@
                     "min_interval": "Plage : 1-60 min. Défaut : 10 min.",
                     "data_collection": "Enregistre une ligne CSV toutes les 2 minutes dans le dossier de configuration Home Assistant, à côté de configuration.yaml : smart_fan_controller_data_XXXXXXXX.csv (max 10 Mo, rotation automatique). Utile pour reproduire le comportement de l'algorithme et identifier des améliorations pendant la phase bêta.",
                     "defrost_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand la PAC est en dégivrage.",
-                    "operating_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand le compresseur de la PAC est en marche. Utilisé pour éviter des changements de ventilation inutiles quand le compresseur est à l'arrêt."
+                    "operating_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand le compresseur de la PAC est en marche. Utilisé pour éviter des changements de ventilation inutiles quand le compresseur est à l'arrêt.",
+                    "outdoor_entity": "Optionnel : un capteur de température extérieure. S'il est renseigné, un modèle thermique grey-box apprend la vraie puissance de refroidissement/chauffage de chaque vitesse et écarte les vitesses incapables de tenir la consigne à la température extérieure actuelle."
                 },
                 "error": {
                     "already_configured": "Cette entité climate est déjà configurée.",

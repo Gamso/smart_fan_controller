@@ -7,6 +7,8 @@ from .const import (
     MIN_MODE_PROFILE_SAMPLES,
     DEFAULT_DEAD_TIME,
     REFERENCE_SLOPE_ERROR,
+    MIN_ENVELOPE_SAMPLES,
+    ENVELOPE_MIN_GAP_VARIANCE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -19,6 +21,10 @@ class ThermalLearning:
         # Data collection with sliding window
         self._slope_samples = []  # (timestamp, fan_mode, slope, hvac_mode, temperature_error)
         self._response_events = []  # (timestamp, response_time_minutes) - thermal response from fan change to slope change
+        # Grey-box envelope samples (only populated when an outdoor sensor is
+        # configured): (timestamp, fan_mode, outdoor_gap = T_ext − T, raw_slope = dT/dt, hvac_mode)
+        self._envelope_samples = []
+        self._envelope_cache: dict[str, tuple[float, dict[str, float], int] | None] = {}
         self._learning_window_hours = 168  # 7 days sliding window
         self._min_samples = MIN_SAMPLES_LEARNING  # Minimum samples for initial readiness (48-72h typical activity)
         self._ready_once = False  # Flag to track if we've ever reached ready state
@@ -37,6 +43,8 @@ class ThermalLearning:
         """Reset all learning data and statistics."""
         self._slope_samples.clear()
         self._response_events.clear()
+        self._envelope_samples.clear()
+        self._envelope_cache.clear()
         self._slope_count = 0
         self._slope_mean = 0.0
         self._slope_m2 = 0.0
@@ -190,9 +198,135 @@ class ThermalLearning:
                 before - len(self._response_events),
             )
 
+    def add_envelope_sample(
+        self,
+        fan_mode: str,
+        outdoor_gap: float,
+        slope: float,
+        hvac_mode: str = "unknown",
+        is_window_open: bool = False,
+    ) -> None:
+        """Record a grey-box envelope sample: (T_ext−T, raw dT/dt) for a fan mode.
+
+        Unlike ``add_slope_sample`` the near-stagnation (|slope|<0.15) filter is
+        deliberately NOT applied: near-equilibrium samples anchor the balance
+        point (where dT/dt≈0 ⇒ k_env·gap = −u_fan) and are what identify the
+        envelope conductance. The fixed-effects OLS is robust to their symmetric
+        derivative noise. Window-open samples are still dropped (external
+        disturbance). Compressor-idle/defrost gating is applied by the caller.
+        Only called when an outdoor sensor is configured; otherwise the buffer
+        stays empty and every envelope accessor returns ``None`` (dormant).
+        """
+        if is_window_open:
+            return
+        self._envelope_samples.append((time.time(), fan_mode, outdoor_gap, slope, hvac_mode))
+        self._envelope_cache.clear()
+
+        cutoff_time = time.time() - (self._learning_window_hours * 3600)
+        before = len(self._envelope_samples)
+        self._envelope_samples = [s for s in self._envelope_samples if s[0] > cutoff_time][-5000:]
+        if len(self._envelope_samples) < before:
+            _LOGGER.debug(
+                "Learning: dropped %d expired envelope samples from the sliding window",
+                before - len(self._envelope_samples),
+            )
+
+    def _fit_envelope(self, hvac_mode: str) -> tuple[float, dict[str, float], int] | None:
+        """Fit ``dT/dt = k_env·(T_ext−T) + u_fan`` for one hvac mode.
+
+        Fixed-effects OLS: one shared envelope conductance ``k_env`` (=1/τ) plus a
+        per-fan intercept ``u_fan`` (the fan's own cooling/heating power, freed of
+        the ambient load). Returns ``(k_env, {fan: u_fan}, n)`` or ``None`` when
+        there are too few samples or the outdoor gap has too little spread to
+        identify ``k_env``. See docs/effective_slope_analysis.md.
+        """
+        if hvac_mode in self._envelope_cache:
+            return self._envelope_cache[hvac_mode]
+
+        pts = [(s[1], s[2], s[3]) for s in self._envelope_samples if s[4] == hvac_mode]
+        fans = sorted({fan for fan, _, _ in pts})
+        result: tuple[float, dict[str, float], int] | None = None
+        if len(pts) >= MIN_ENVELOPE_SAMPLES and fans:
+            gaps = [g for _, g, _ in pts]
+            mean_gap = sum(gaps) / len(gaps)
+            gap_var = sum((g - mean_gap) ** 2 for g in gaps) / len(gaps)
+            if gap_var >= ENVELOPE_MIN_GAP_VARIANCE:
+                beta = self._solve_fixed_effects(pts, fans)
+                if beta is not None:
+                    k_env, u = beta
+                    if k_env > 1e-4:  # a warming envelope must have positive conductance
+                        result = (k_env, u, len(pts))
+
+        self._envelope_cache[hvac_mode] = result
+        return result
+
+    @staticmethod
+    def _solve_fixed_effects(
+        pts: list[tuple[str, float, float]], fans: list[str]
+    ) -> tuple[float, dict[str, float]] | None:
+        """Solve OLS for slope = k_env·gap + Σ u_fan·1[fan]; return (k_env, {fan:u})."""
+        p = 1 + len(fans)
+        idx = {f: 1 + i for i, f in enumerate(fans)}
+        a = [[0.0] * p for _ in range(p)]
+        b = [0.0] * p
+        for fan, gap, slope in pts:
+            x = [0.0] * p
+            x[0] = gap
+            x[idx[fan]] = 1.0
+            for i in range(p):
+                b[i] += x[i] * slope
+                for j in range(p):
+                    a[i][j] += x[i] * x[j]
+        # Gaussian elimination with partial pivoting
+        m = [a[i][:] + [b[i]] for i in range(p)]
+        for c in range(p):
+            piv = max(range(c, p), key=lambda r: abs(m[r][c]))
+            m[c], m[piv] = m[piv], m[c]
+            if abs(m[c][c]) < 1e-12:
+                return None
+            pv = m[c][c]
+            m[c] = [v / pv for v in m[c]]
+            for r in range(p):
+                if r != c and abs(m[r][c]) > 1e-12:
+                    f = m[r][c]
+                    m[r] = [m[r][k] - f * m[c][k] for k in range(p + 1)]
+        beta = [m[i][p] for i in range(p)]
+        return beta[0], {f: beta[idx[f]] for f in fans}
+
+    def get_envelope_conductance(self, hvac_mode: str) -> float | None:
+        """Return the learned envelope conductance k_env (1/h), or None if unlearned."""
+        fit = self._fit_envelope(hvac_mode)
+        return None if fit is None else fit[0]
+
+    def get_mode_cooling_power(self, fan_mode: str, hvac_mode: str) -> float | None:
+        """Return the fan's envelope-separated own power u_fan (°C/h), or None."""
+        fit = self._fit_envelope(hvac_mode)
+        if fit is None:
+            return None
+        return fit[1].get(fan_mode)
+
+    def envelope_predicted_slope(self, fan_mode: str, hvac_mode: str, outdoor_gap: float) -> float | None:
+        """Return the model's predicted raw dT/dt = k_env·gap + u_fan, or None.
+
+        Positive = warming, negative = cooling. Used both to project a candidate
+        fan cleanly and to test whether it can hold the setpoint (feasibility).
+        """
+        fit = self._fit_envelope(hvac_mode)
+        if fit is None:
+            return None
+        k_env, u, _ = fit
+        u_fan = u.get(fan_mode)
+        if u_fan is None:
+            return None
+        return k_env * outdoor_gap + u_fan
+
     def slope_sample_count(self) -> int:
         """Return number of collected slope samples."""
         return len(self._slope_samples)
+
+    def envelope_sample_count(self) -> int:
+        """Return number of collected envelope samples."""
+        return len(self._envelope_samples)
 
     def response_event_count(self) -> int:
         """Return number of recorded response events."""
@@ -567,6 +701,7 @@ class ThermalLearning:
         return {
             "slope_samples": self._slope_samples[-5000:],
             "response_events": self._response_events[-100:],
+            "envelope_samples": self._envelope_samples[-5000:],
             "slope_count": self._slope_count,
             "slope_mean": self._slope_mean,
             "slope_m2": self._slope_m2,
@@ -630,11 +765,16 @@ class ThermalLearning:
             else:
                 instance._response_events.append(tuple(event))
 
+        # Envelope samples are optional (only present when an outdoor sensor is
+        # configured); default to empty for backward compatibility.
+        instance._envelope_samples = [tuple(s) for s in data.get("envelope_samples", [])]
+
         # Apply sliding window cleanup on restore, keeping at least MIN_MODE_PROFILE_SAMPLES
         # per profile so learned modes survive a quiet week without new samples.
         cutoff_time = time.time() - (instance._learning_window_hours * 3600)
         instance._slope_samples = ThermalLearning.trim_with_min_retention(instance._slope_samples, cutoff_time, MIN_MODE_PROFILE_SAMPLES)
         instance._response_events = [item for item in instance._response_events if item[0] > cutoff_time]
+        instance._envelope_samples = [item for item in instance._envelope_samples if item[0] > cutoff_time]
 
         # Rebuild stats from cleaned window
         instance.recompute_slope_stats()

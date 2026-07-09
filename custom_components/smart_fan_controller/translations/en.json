@@ -10,7 +10,8 @@
                     "min_interval": "Min Interval (minutes)",
                     "data_collection": "Enable Data Collection (beta)",
                     "defrost_entity": "Defrost Entity (optional)",
-                    "operating_entity": "Heat Pump Operating Entity (optional)"
+                    "operating_entity": "Heat Pump Operating Entity (optional)",
+                    "outdoor_entity": "Outdoor Temperature Sensor (optional)"
                 },
                 "data_description": {
                     "climate_entity": "Must come from a Versatile Thermostat.",
@@ -18,7 +19,8 @@
                     "min_interval": "Range: 1-60 min. Default: 10 min.",
                     "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
                     "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode.",
-                    "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off."
+                    "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off.",
+                    "outdoor_entity": "Optional: an outdoor temperature sensor. When set, a grey-box thermal model learns each fan speed's real cooling/heating power and skips speeds that cannot hold the setpoint at the current outdoor temperature."
                 },
                 "error": {
                     "already_configured": "This climate entity is already configured.",
@@ -38,7 +40,8 @@
                     "min_interval": "Min Interval (minutes)",
                     "data_collection": "Enable Data Collection (beta)",
                     "defrost_entity": "Defrost Entity (optional)",
-                    "operating_entity": "Heat Pump Operating Entity (optional)"
+                    "operating_entity": "Heat Pump Operating Entity (optional)",
+                    "outdoor_entity": "Outdoor Temperature Sensor (optional)"
                 },
                 "data_description": {
                     "climate_entity": "Must come from a Versatile Thermostat.",
@@ -46,7 +49,8 @@
                     "min_interval": "Range: 1-60 min. Default: 10 min.",
                     "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
                     "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode.",
-                    "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off."
+                    "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off.",
+                    "outdoor_entity": "Optional: an outdoor temperature sensor. When set, a grey-box thermal model learns each fan speed's real cooling/heating power and skips speeds that cannot hold the setpoint at the current outdoor temperature."
                 },
                 "error": {
                     "already_configured": "This climate entity is already configured.",
