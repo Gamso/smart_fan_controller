@@ -950,3 +950,53 @@ def test_dead_time_lock_does_not_escalate_downward() -> None:
     assert "Emergency escalation" not in held["mpc_reason"]
     assert "Min interval active" in held["mpc_reason"]
 
+
+def test_multi_rank_stepdown_blocked_when_candidate_cannot_sustain_progress() -> None:
+    """A 2+ rank drop to a mode with a non-positive own profile is blocked.
+
+    Regression test for a real incident: with fan_modes ordered weakest to
+    strongest and learned profiles silent=-0.56, low=-0.1, med=0.24, high=0.5,
+    superhigh=1.05 C/h, the controller jumped straight from superhigh to low
+    near the deadband. Low's own profile shows it cannot cool this room at
+    all (negative slope even 1C from target) - the pick only looked good
+    because the forecast used for the switch-down check is dominated by
+    superhigh's momentum for the whole dead-time window, masking low's real
+    (in)capability. Once switched, the room drifted away from target.
+    """
+    fan_modes = ["silent", "low", "med", "high", "superhigh"]
+    slopes = {"silent": -0.56, "low": -0.1, "med": 0.24, "high": 0.5, "superhigh": 1.05}
+    learning = ThermalLearning()
+    for mode, slope in slopes.items():
+        learning.set_mode_effective_slope(mode, "cool", slope)
+    learning.add_response_event(20.0, "cool")
+
+    mpc = MPCController(learning=learning, deadband=0.2, min_interval=10, fan_modes=fan_modes)
+    decision = mpc.evaluate(
+        current_temp=24.2,
+        target_temp=24.0,
+        vtherm_slope=-1.02,
+        hvac_mode="cool",
+        current_fan="superhigh",
+        minutes_since_change=300.0,
+    )
+    assert decision["mpc_fan_mode"] not in ("low", "silent")
+    assert "Blocked 3-rank drop to low" in decision["mpc_reason"]
+
+    # Adjacent-rank switching stays untouched: high (1 rank down) is a
+    # legitimate cost-minimising pick when its own profile is sound.
+    slopes_adjacent_only = dict(slopes)
+    learning2 = ThermalLearning()
+    for mode, slope in slopes_adjacent_only.items():
+        learning2.set_mode_effective_slope(mode, "cool", slope)
+    learning2.add_response_event(20.0, "cool")
+    mpc2 = _build_mpc(learning2, fan_modes=fan_modes, min_interval=10)
+    decision2 = mpc2.evaluate(
+        current_temp=24.6,
+        target_temp=24.0,
+        vtherm_slope=-0.4,
+        hvac_mode="cool",
+        current_fan="superhigh",
+        minutes_since_change=300.0,
+    )
+    assert "Blocked" not in decision2["mpc_reason"]
+

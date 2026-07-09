@@ -83,6 +83,17 @@ UNDER_TARGET_STEPDOWN_GAIN_MARGIN = 0.2
 UNDER_TARGET_STEPDOWN_GAIN_PER_DEG = 0.5
 UNDER_TARGET_SHORTFALL_RESERVE = 0.1
 
+# Guard against jumping straight to a fan mode more than one rank below the
+# current one when that candidate's own learned profile shows it cannot
+# sustain progress (net effective slope <= 0 at the reference error). The
+# cost-based forecast cannot be trusted for this: during the dead-time-blind
+# window (see sim_horizon below) every candidate's near-term trajectory is
+# dominated by the *current* mode's momentum, not the candidate's own
+# behaviour, so a weak mode can look deceptively good right up until the
+# switch is committed. Adjacent-rank switches are left untouched — this only
+# blocks multi-rank plunges to a mode with no track record of holding.
+MIN_VIABLE_MULTI_RANK_STEPDOWN_SLOPE = 0.0
+
 
 @dataclass(slots=True)
 class ModeSimulation:
@@ -367,8 +378,27 @@ class MPCController:
                     worst_spread = max(worst_spread, spread)
 
         current_simulation = next(sim for sim in simulations if sim.fan_mode == active_fan)
-        best = min(simulations, key=lambda item: item.total_cost)
+        unfiltered_best = min(simulations, key=lambda item: item.total_cost)
+
+        def _stepdown_capable(sim: ModeSimulation) -> bool:
+            candidate_index = fan_modes.index(sim.fan_mode)
+            if current_index - candidate_index <= 1:
+                return True  # adjacent (or upward) switches are unrestricted
+            raw_slope = self._learning.get_mode_effective_slope(sim.fan_mode, hvac_mode)
+            return raw_slope is None or raw_slope > MIN_VIABLE_MULTI_RANK_STEPDOWN_SLOPE
+
+        eligible_simulations = [sim for sim in simulations if _stepdown_capable(sim)]
+        best = min(eligible_simulations, key=lambda item: item.total_cost)
         selection_note = ""
+        blocked_note = ""
+
+        if unfiltered_best.fan_mode != best.fan_mode:
+            blocked_index = fan_modes.index(unfiltered_best.fan_mode)
+            blocked_slope = self._learning.get_mode_effective_slope(unfiltered_best.fan_mode, hvac_mode)
+            blocked_note = (
+                f"Blocked {current_index - blocked_index}-rank drop to {unfiltered_best.fan_mode}: "
+                f"its own profile ({blocked_slope:.2f}C/h) can't sustain progress"
+            )
 
         if not change_allowed and best.fan_mode != active_fan:
             best_index = fan_modes.index(best.fan_mode)
@@ -431,6 +461,8 @@ class MPCController:
             f"MPC recommends {best.fan_mode}: cost={best.total_cost:.2f}, "
             f"T+10={best.predicted_temp_10m:.2f}C, T+30={best.predicted_temp_30m:.2f}C"
         )
+        if blocked_note:
+            reason += f" | {blocked_note}"
         if selection_note:
             reason += f" | {selection_note}"
         # Surface capacity saturation: strongest fan selected yet still well short
