@@ -786,6 +786,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 mpc_decision=mpc_decision,
                 defrost_active=is_defrost_active,
                 is_hvac_idle=is_hvac_idle,
+                outdoor_temp=outdoor_temp,
+                k_env=learning.get_envelope_conductance(hvac_mode),
+                envelope_samples=learning.envelope_sample_count(),
             )
 
         _update_sensors(hass, entry.entry_id, {

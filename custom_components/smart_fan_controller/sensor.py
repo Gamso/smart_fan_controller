@@ -506,6 +506,12 @@ class SmartFanProfileEffectiveSlopeSensor(_SmartFanEntity):
             slope_gain = round(model[1], 3)
         r_squared = learning.get_mode_slope_r2(self._fan_mode, self._hvac_mode)
         time_constant = learning.get_mode_time_constant(self._fan_mode, self._hvac_mode)
+        # Grey-box envelope model (only when an outdoor sensor is configured):
+        # u_fan is this fan's own cooling/heating power, separated from the
+        # ambient load — it keeps learning even near the setpoint where the
+        # gap-model above is starved by the stagnation filter.
+        cooling_power = learning.get_mode_cooling_power(self._fan_mode, self._hvac_mode)
+        k_env = learning.get_envelope_conductance(self._hvac_mode)
         return {
             "hvac_mode": self._hvac_mode,
             "fan_mode": self._fan_mode,
@@ -519,6 +525,9 @@ class SmartFanProfileEffectiveSlopeSensor(_SmartFanEntity):
             "reference_error": REFERENCE_SLOPE_ERROR,
             "model_r_squared": round(r_squared, 3) if r_squared is not None else None,
             "thermal_time_constant_h": round(time_constant, 2) if time_constant is not None else None,
+            "envelope_cooling_power": round(cooling_power, 3) if cooling_power is not None else None,
+            "envelope_conductance": round(k_env, 4) if k_env is not None else None,
+            "envelope_samples": learning.envelope_sample_count(),
         }
 
 

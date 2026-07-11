@@ -56,6 +56,9 @@ _HEADER = [
     "mpc_disturbance",
     "defrost_active",
     "hvac_idle",
+    "outdoor_temp",
+    "k_env",
+    "envelope_samples",
 ]
 
 # Rotate the file when it exceeds this size (bytes). 10 MB keeps ~200 000 rows.
@@ -101,6 +104,9 @@ class DataCollector:
         mpc_decision: dict | None = None,
         defrost_active: bool = False,
         is_hvac_idle: bool = False,
+        outdoor_temp: float | None = None,
+        k_env: float | None = None,
+        envelope_samples: int = 0,
     ) -> None:
         """Append one row to the CSV file outside the event loop."""
         mpc = mpc_decision or {}
@@ -141,6 +147,9 @@ class DataCollector:
             else "",
             int(defrost_active),
             int(is_hvac_idle),
+            round(outdoor_temp, 2) if outdoor_temp is not None else "",
+            round(k_env, 4) if k_env is not None else "",
+            envelope_samples,
         ]
         async with self._io_lock:
             await self._hass.async_add_executor_job(self._write_row, row)
