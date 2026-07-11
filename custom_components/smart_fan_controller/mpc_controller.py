@@ -102,6 +102,24 @@ MIN_VIABLE_MULTI_RANK_STEPDOWN_SLOPE = 0.0
 # clear failures (a mode that actively loses ground) are blocked.
 FEASIBILITY_HOLD_MARGIN = -0.05
 
+# When enabled and an outdoor sensor + learned envelope are available, the MPC
+# projects each candidate's temperature with the grey-box model
+# ``dT/dt = k_env·(T_ext − T) + u_fan`` instead of the comfort-error gap model.
+# This uses each fan's ambient-decoupled own power (u_fan) — the clean estimate
+# that keeps learning near the setpoint — so the projection no longer relies on
+# the gap slopes that the stagnation filter starves for the weak modes. The
+# solar residual not captured by k_env·(T_ext−T) is left to the feedback loop
+# (it is small relative to the fan/compressor term). Dormant without an outdoor
+# sensor; toggled off here reverts to the gap-model projection for A/B.
+#
+# OFF by default: an open-loop replay A/B on the 899 h trace showed it slightly
+# WORSE than the gap-model projection (fan changes 315→352, cost 652→673, comfort
+# MAE flat) — near/below the setpoint the envelope correctly sees the weak modes
+# warming the room back toward target and switches to them more often, which
+# open-loop replay penalises as extra churn. Kept as a gated, tested path for a
+# proper closed-loop A/B on-device; not enabled on replay evidence alone.
+USE_ENVELOPE_PROJECTION = False
+
 
 @dataclass(slots=True)
 class ModeSimulation:
@@ -370,6 +388,7 @@ class MPCController:
                 monotone_slopes,
             )
             mode_gain = self._learning.get_mode_slope_gain(fan_mode, hvac_mode) if known_profile else 0.0
+            envelope_params = self._envelope_params(fan_mode, hvac_mode, outdoor_temp)
             sim = self._simulate_mode(
                 current_temp=current_temp,
                 target_temp=target_temp,
@@ -385,6 +404,8 @@ class MPCController:
                 change_allowed=change_allowed,
                 known_profile=known_profile,
                 horizon_minutes=sim_horizon,
+                outdoor_temp=outdoor_temp,
+                envelope_params=envelope_params,
             )
             simulations.append(sim)
             known_profiles += int(known_profile)
@@ -687,6 +708,23 @@ class MPCController:
             residual,
         )
 
+    def _envelope_params(
+        self, fan_mode: str, hvac_mode: str, outdoor_temp: float | None
+    ) -> tuple[float, float] | None:
+        """Return ``(k_env, u_fan)`` for envelope projection, or None when unavailable.
+
+        Requires the feature enabled, an outdoor temperature, and a learned
+        envelope (conductance + this fan's own power). Otherwise the caller falls
+        back to the gap-model projection.
+        """
+        if not USE_ENVELOPE_PROJECTION or outdoor_temp is None:
+            return None
+        k_env = self._learning.get_envelope_conductance(hvac_mode)
+        u_fan = self._learning.get_mode_cooling_power(fan_mode, hvac_mode)
+        if k_env is None or u_fan is None:
+            return None
+        return (k_env, u_fan)
+
     def _simulate_mode(
         self,
         *,
@@ -704,6 +742,8 @@ class MPCController:
         change_allowed: bool,
         known_profile: bool,
         horizon_minutes: int | None = None,
+        outdoor_temp: float | None = None,
+        envelope_params: tuple[float, float] | None = None,
     ) -> ModeSimulation:
         """Simulate one fan mode over the prediction horizon.
 
@@ -738,6 +778,12 @@ class MPCController:
             elapsed = step * self._cycle_minutes
             if elapsed <= change_delay:
                 target_effective_slope = current_effective_slope
+            elif envelope_params is not None and outdoor_temp is not None:
+                # Grey-box projection: dT/dt = k_env·(T_ext − T) + u_fan, expressed
+                # as an effective slope toward target (positive = making progress).
+                k_env, u_fan = envelope_params
+                env_dtdt = k_env * (outdoor_temp - sim_temp) + u_fan
+                target_effective_slope = -env_dtdt if hvac_mode == "cool" else env_dtdt
             else:
                 step_error = self._temperature_error(sim_temp, target_temp, hvac_mode)
                 target_effective_slope = (

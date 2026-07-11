@@ -7,6 +7,7 @@ the current outdoor temperature. See docs/effective_slope_analysis.md.
 """
 import random
 
+from custom_components.smart_fan_controller import mpc_controller as mpc_module
 from custom_components.smart_fan_controller.thermal_learning import ThermalLearning
 from custom_components.smart_fan_controller.mpc_controller import MPCController
 
@@ -133,6 +134,56 @@ def test_feasibility_gate_allows_stepdown_when_mild() -> None:
     assert decision["mpc_would_change_now"] == "yes"
     assert decision["mpc_fan_mode"] in ("low", "med")
     assert "Blocked" not in decision["mpc_reason"]
+
+
+def test_envelope_projection_uses_grey_box_model_when_enabled() -> None:
+    """With USE_ENVELOPE_PROJECTION on, projections follow k_env·(Text-T)+u_fan.
+
+    The gap-model and envelope projections should diverge for the same state,
+    confirming the envelope path is actually driving the simulation. Off by
+    default, so this flips the module flag explicitly.
+    """
+    learning = ThermalLearning()
+    learning.set_mode_effective_slope("low", "cool", 0.2)
+    learning.set_mode_effective_slope("med", "cool", 0.5)
+    learning.set_mode_effective_slope("high", "cool", 1.0)
+    _seed_envelope(learning)
+    mpc = MPCController(learning=learning, deadband=0.2, min_interval=10, fan_modes=FAN_MODES)
+
+    kwargs = dict(
+        current_temp=26.0,
+        target_temp=24.0,
+        vtherm_slope=-1.0,
+        hvac_mode="cool",
+        current_fan="high",
+        minutes_since_change=60.0,
+        outdoor_temp=34.0,
+    )
+    original = mpc_module.USE_ENVELOPE_PROJECTION
+    try:
+        mpc_module.USE_ENVELOPE_PROJECTION = False
+        gap = mpc.evaluate(**kwargs)
+        mpc_module.USE_ENVELOPE_PROJECTION = True
+        env = mpc.evaluate(**kwargs)
+    finally:
+        mpc_module.USE_ENVELOPE_PROJECTION = original
+
+    # Same far-from-target state, but the two projection models give different
+    # 30-min temperature forecasts.
+    assert gap["mpc_predicted_temperature_30m"] != env["mpc_predicted_temperature_30m"]
+
+
+def test_envelope_projection_dormant_without_outdoor() -> None:
+    """Even with the flag on, no outdoor temp means the gap model is used."""
+    learning = ThermalLearning()
+    _seed_envelope(learning)
+    mpc = MPCController(learning=learning, deadband=0.2, min_interval=10, fan_modes=FAN_MODES)
+    original = mpc_module.USE_ENVELOPE_PROJECTION
+    try:
+        mpc_module.USE_ENVELOPE_PROJECTION = True
+        assert mpc._envelope_params("low", "cool", None) is None
+    finally:
+        mpc_module.USE_ENVELOPE_PROJECTION = original
 
 
 def test_no_outdoor_temp_leaves_envelope_note_absent() -> None:
