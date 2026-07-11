@@ -24,7 +24,7 @@ class ThermalLearning:
         # Grey-box envelope samples (only populated when an outdoor sensor is
         # configured): (timestamp, fan_mode, outdoor_gap = T_ext − T, raw_slope = dT/dt, hvac_mode)
         self._envelope_samples = []
-        self._envelope_cache: dict[str, tuple[float, dict[str, float], int] | None] = {}
+        self._envelope_cache: dict[str, dict] = {}
         self._learning_window_hours = 168  # 7 days sliding window
         self._min_samples = MIN_SAMPLES_LEARNING  # Minimum samples for initial readiness (48-72h typical activity)
         self._ready_once = False  # Flag to track if we've ever reached ready state
@@ -240,25 +240,69 @@ class ThermalLearning:
         there are too few samples or the outdoor gap has too little spread to
         identify ``k_env``. See docs/effective_slope_analysis.md.
         """
+        diag = self._envelope_diagnostics(hvac_mode)
+        return None if diag["accepted"] is False else (diag["k_env"], diag["u_fan"], diag["sample_count"])
+
+    def _envelope_diagnostics(self, hvac_mode: str) -> dict:
+        """Return the full envelope-fit diagnostic, computing and caching it once.
+
+        Exposes *why* a fit was rejected (too few samples, too little outdoor-gap
+        spread to separate the envelope from fan power, a near-singular design
+        from fan choice correlating with outdoor conditions, or a non-positive
+        raw k_env) instead of silently returning None. See
+        :meth:`get_envelope_fit_diagnostics` for the public accessor.
+        """
         if hvac_mode in self._envelope_cache:
             return self._envelope_cache[hvac_mode]
 
         pts = [(s[1], s[2], s[3]) for s in self._envelope_samples if s[4] == hvac_mode]
         fans = sorted({fan for fan, _, _ in pts})
-        result: tuple[float, dict[str, float], int] | None = None
-        if len(pts) >= MIN_ENVELOPE_SAMPLES and fans:
+        diag: dict = {
+            "sample_count": len(pts),
+            "fan_count": len(fans),
+            "gap_variance": None,
+            "raw_k_env": None,
+            "k_env": None,
+            "u_fan": None,
+            "accepted": False,
+            "reason": None,
+        }
+
+        if len(pts) < MIN_ENVELOPE_SAMPLES or not fans:
+            diag["reason"] = f"only {len(pts)} samples (need {MIN_ENVELOPE_SAMPLES})"
+        else:
             gaps = [g for _, g, _ in pts]
             mean_gap = sum(gaps) / len(gaps)
             gap_var = sum((g - mean_gap) ** 2 for g in gaps) / len(gaps)
-            if gap_var >= ENVELOPE_MIN_GAP_VARIANCE:
+            diag["gap_variance"] = gap_var
+            if gap_var < ENVELOPE_MIN_GAP_VARIANCE:
+                diag["reason"] = f"outdoor-gap variance too low ({gap_var:.2f} < {ENVELOPE_MIN_GAP_VARIANCE})"
+            else:
                 beta = self._solve_fixed_effects(pts, fans)
-                if beta is not None:
+                if beta is None:
+                    diag["reason"] = "near-singular fit (fan choice too collinear with outdoor gap)"
+                else:
                     k_env, u = beta
-                    if k_env > 1e-4:  # a warming envelope must have positive conductance
-                        result = (k_env, u, len(pts))
+                    diag["raw_k_env"] = k_env
+                    if k_env <= 1e-4:
+                        diag["reason"] = f"non-positive raw k_env ({k_env:.4f}); likely fan/outdoor collinearity"
+                    else:
+                        diag["k_env"] = k_env
+                        diag["u_fan"] = u
+                        diag["accepted"] = True
 
-        self._envelope_cache[hvac_mode] = result
-        return result
+        if not diag["accepted"]:
+            _LOGGER.debug("Learning: envelope fit rejected for %s: %s", hvac_mode, diag["reason"])
+        self._envelope_cache[hvac_mode] = diag
+        return diag
+
+    def get_envelope_fit_diagnostics(self, hvac_mode: str) -> dict:
+        """Return why the envelope fit for *hvac_mode* is or isn't accepted.
+
+        Keys: sample_count, fan_count, gap_variance, raw_k_env (computed even
+        when rejected), k_env/u_fan (only when accepted), accepted, reason.
+        """
+        return self._envelope_diagnostics(hvac_mode)
 
     @staticmethod
     def _solve_fixed_effects(

@@ -512,6 +512,7 @@ class SmartFanProfileEffectiveSlopeSensor(_SmartFanEntity):
         # gap-model above is starved by the stagnation filter.
         cooling_power = learning.get_mode_cooling_power(self._fan_mode, self._hvac_mode)
         k_env = learning.get_envelope_conductance(self._hvac_mode)
+        envelope_diag = learning.get_envelope_fit_diagnostics(self._hvac_mode)
         return {
             "hvac_mode": self._hvac_mode,
             "fan_mode": self._fan_mode,
@@ -528,6 +529,9 @@ class SmartFanProfileEffectiveSlopeSensor(_SmartFanEntity):
             "envelope_cooling_power": round(cooling_power, 3) if cooling_power is not None else None,
             "envelope_conductance": round(k_env, 4) if k_env is not None else None,
             "envelope_samples": learning.envelope_sample_count(),
+            "envelope_gap_variance": round(envelope_diag["gap_variance"], 2) if envelope_diag["gap_variance"] is not None else None,
+            "envelope_raw_k_env": round(envelope_diag["raw_k_env"], 4) if envelope_diag["raw_k_env"] is not None else None,
+            "envelope_reject_reason": envelope_diag["reason"],
         }
 
 

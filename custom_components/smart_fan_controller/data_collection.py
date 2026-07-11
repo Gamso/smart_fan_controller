@@ -59,6 +59,9 @@ _HEADER = [
     "outdoor_temp",
     "k_env",
     "envelope_samples",
+    "envelope_gap_variance",
+    "envelope_raw_k_env",
+    "envelope_reject_reason",
 ]
 
 # Rotate the file when it exceeds this size (bytes). 10 MB keeps ~200 000 rows.
@@ -107,6 +110,9 @@ class DataCollector:
         outdoor_temp: float | None = None,
         k_env: float | None = None,
         envelope_samples: int = 0,
+        envelope_gap_variance: float | None = None,
+        envelope_raw_k_env: float | None = None,
+        envelope_reject_reason: str | None = None,
     ) -> None:
         """Append one row to the CSV file outside the event loop."""
         mpc = mpc_decision or {}
@@ -150,6 +156,9 @@ class DataCollector:
             round(outdoor_temp, 2) if outdoor_temp is not None else "",
             round(k_env, 4) if k_env is not None else "",
             envelope_samples,
+            round(envelope_gap_variance, 2) if envelope_gap_variance is not None else "",
+            round(envelope_raw_k_env, 4) if envelope_raw_k_env is not None else "",
+            envelope_reject_reason or "",
         ]
         async with self._io_lock:
             await self._hass.async_add_executor_job(self._write_row, row)

@@ -770,6 +770,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 target_temp=target_temp,
                 mpc_decision=mpc_decision,
             )
+            envelope_diag = learning.get_envelope_fit_diagnostics(hvac_mode)
             await collector.async_record(
                 hvac_mode=hvac_mode,
                 current_temp=current_temp,
@@ -787,8 +788,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 defrost_active=is_defrost_active,
                 is_hvac_idle=is_hvac_idle,
                 outdoor_temp=outdoor_temp,
-                k_env=learning.get_envelope_conductance(hvac_mode),
+                k_env=envelope_diag["k_env"],
                 envelope_samples=learning.envelope_sample_count(),
+                envelope_gap_variance=envelope_diag["gap_variance"],
+                envelope_raw_k_env=envelope_diag["raw_k_env"],
+                envelope_reject_reason=envelope_diag["reason"],
             )
 
         _update_sensors(hass, entry.entry_id, {

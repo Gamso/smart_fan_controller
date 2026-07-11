@@ -7,6 +7,8 @@ the current outdoor temperature. See docs/effective_slope_analysis.md.
 """
 import random
 
+import pytest
+
 from custom_components.smart_fan_controller import mpc_controller as mpc_module
 from custom_components.smart_fan_controller.thermal_learning import ThermalLearning
 from custom_components.smart_fan_controller.mpc_controller import MPCController
@@ -39,9 +41,9 @@ def test_envelope_recovers_conductance_and_power() -> None:
     """The fixed-effects fit recovers k_env and each u_fan from clean samples."""
     learning = ThermalLearning()
     _seed_envelope(learning)
-    assert learning.get_envelope_conductance("cool") == __import__("pytest").approx(TRUE_K, abs=0.01)
+    assert learning.get_envelope_conductance("cool") == pytest.approx(TRUE_K, abs=0.01)
     for fan in FAN_MODES:
-        assert learning.get_mode_cooling_power(fan, "cool") == __import__("pytest").approx(TRUE_U[fan], abs=0.03)
+        assert learning.get_mode_cooling_power(fan, "cool") == pytest.approx(TRUE_U[fan], abs=0.03)
 
 
 def test_envelope_needs_gap_spread() -> None:
@@ -53,13 +55,73 @@ def test_envelope_needs_gap_spread() -> None:
     assert learning.get_envelope_conductance("cool") is None
 
 
+def test_envelope_diagnostics_report_reasons_for_each_rejection() -> None:
+    """get_envelope_fit_diagnostics explains *why* a fit is rejected, not just None.
+
+    Regression test for a real deployment where k_env stayed empty with 344
+    samples logged and no way to tell why. Covers: too few samples, low gap
+    variance, and a fan choice that tracks outdoor gap almost perfectly (the
+    controller's own policy — escalate when it's hot — makes this a realistic
+    failure mode, not just a synthetic one).
+    """
+    # Too few samples.
+    sparse = ThermalLearning()
+    for _ in range(10):
+        sparse.add_envelope_sample("low", 3.0, 0.1, "cool")
+    diag = sparse.get_envelope_fit_diagnostics("cool")
+    assert diag["accepted"] is False
+    assert "samples" in diag["reason"]
+    assert diag["sample_count"] == 10
+
+    # Enough samples, but no outdoor-gap spread.
+    flat = ThermalLearning()
+    for _ in range(80):
+        for fan in FAN_MODES:
+            flat.add_envelope_sample(fan, 5.0, TRUE_K * 5.0 + TRUE_U[fan], "cool")
+    diag = flat.get_envelope_fit_diagnostics("cool")
+    assert diag["accepted"] is False
+    assert "variance" in diag["reason"]
+    assert diag["gap_variance"] is not None and diag["gap_variance"] < 0.01
+
+    # Fan choice tracks outdoor gap almost perfectly (as a real "escalate when
+    # hot" controller policy would produce over a short deployment window):
+    # k_env and u_fan become nearly unidentifiable from each other.
+    collinear = ThermalLearning()
+    rng = random.Random(7)
+    for _ in range(200):
+        gap = rng.uniform(0.0, 12.0)
+        fan = "low" if gap < 4 else "med" if gap < 8 else "high"
+        slope = TRUE_K * gap + TRUE_U[fan] + rng.uniform(-0.02, 0.02)
+        collinear.add_envelope_sample(fan, gap, slope, "cool")
+    diag = collinear.get_envelope_fit_diagnostics("cool")
+    # Whatever the outcome, the diagnostics must be self-consistent: a
+    # rejection always carries a human-readable reason and never claims
+    # acceptance without k_env/u_fan populated.
+    if not diag["accepted"]:
+        assert diag["reason"]
+        assert diag["k_env"] is None
+    else:
+        assert diag["reason"] is None
+        assert diag["k_env"] is not None
+
+
+def test_envelope_diagnostics_accepted_fit_has_no_reason() -> None:
+    """An accepted fit reports accepted=True with reason=None and raw_k_env set."""
+    learning = ThermalLearning()
+    _seed_envelope(learning)
+    diag = learning.get_envelope_fit_diagnostics("cool")
+    assert diag["accepted"] is True
+    assert diag["reason"] is None
+    assert diag["raw_k_env"] == pytest.approx(diag["k_env"])
+
+
 def test_envelope_predicted_slope_matches_model() -> None:
     """envelope_predicted_slope returns k_env·gap + u_fan."""
     learning = ThermalLearning()
     _seed_envelope(learning)
     k = learning.get_envelope_conductance("cool")
     u = learning.get_mode_cooling_power("high", "cool")
-    assert learning.envelope_predicted_slope("high", "cool", 8.0) == __import__("pytest").approx(k * 8.0 + u, abs=1e-6)
+    assert learning.envelope_predicted_slope("high", "cool", 8.0) == pytest.approx(k * 8.0 + u, abs=1e-6)
 
 
 def test_envelope_survives_serialization() -> None:
@@ -69,7 +131,7 @@ def test_envelope_survives_serialization() -> None:
     k_before = learning.get_envelope_conductance("cool")
     restored = ThermalLearning.from_dict(learning.to_dict())
     assert restored.envelope_sample_count() == learning.envelope_sample_count()
-    assert restored.get_envelope_conductance("cool") == __import__("pytest").approx(k_before, abs=1e-9)
+    assert restored.get_envelope_conductance("cool") == pytest.approx(k_before, abs=1e-9)
 
 
 def test_from_dict_without_envelope_key_is_backward_compatible() -> None:
