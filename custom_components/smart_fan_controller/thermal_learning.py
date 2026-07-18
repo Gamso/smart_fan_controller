@@ -372,6 +372,10 @@ class ThermalLearning:
         """Return number of collected envelope samples."""
         return len(self._envelope_samples)
 
+    def envelope_sample_count_for(self, fan_mode: str, hvac_mode: str) -> int:
+        """Return number of collected envelope samples for one fan/hvac-mode pair."""
+        return sum(1 for s in self._envelope_samples if s[1] == fan_mode and s[4] == hvac_mode)
+
     def response_event_count(self) -> int:
         """Return number of recorded response events."""
         return len(self._response_events)

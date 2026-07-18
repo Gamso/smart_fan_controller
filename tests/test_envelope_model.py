@@ -9,9 +9,9 @@ import random
 
 import pytest
 
-from custom_components.smart_fan_controller import mpc_controller as mpc_module
 from custom_components.smart_fan_controller.thermal_learning import ThermalLearning
 from custom_components.smart_fan_controller.mpc_controller import MPCController
+from custom_components.smart_fan_controller.sensor import SmartFanProfileEnvelopePowerSensor
 
 FAN_MODES = ["low", "med", "high"]
 # Ground-truth model used to synthesize samples (cool): dT/dt = k*(Text-T) + u_fan
@@ -199,11 +199,12 @@ def test_feasibility_gate_allows_stepdown_when_mild() -> None:
 
 
 def test_envelope_projection_uses_grey_box_model_when_enabled() -> None:
-    """With USE_ENVELOPE_PROJECTION on, projections follow k_env·(Text-T)+u_fan.
+    """With use_envelope_projection on, projections follow k_env·(Text-T)+u_fan.
 
     The gap-model and envelope projections should diverge for the same state,
     confirming the envelope path is actually driving the simulation. Off by
-    default, so this flips the module flag explicitly.
+    default, so this flips the per-instance switch explicitly (mirrors the
+    "Envelope Projection" switch entity in switch.py).
     """
     learning = ThermalLearning()
     learning.set_mode_effective_slope("low", "cool", 0.2)
@@ -221,14 +222,10 @@ def test_envelope_projection_uses_grey_box_model_when_enabled() -> None:
         minutes_since_change=60.0,
         outdoor_temp=34.0,
     )
-    original = mpc_module.USE_ENVELOPE_PROJECTION
-    try:
-        mpc_module.USE_ENVELOPE_PROJECTION = False
-        gap = mpc.evaluate(**kwargs)
-        mpc_module.USE_ENVELOPE_PROJECTION = True
-        env = mpc.evaluate(**kwargs)
-    finally:
-        mpc_module.USE_ENVELOPE_PROJECTION = original
+    mpc.use_envelope_projection = False
+    gap = mpc.evaluate(**kwargs)
+    mpc.use_envelope_projection = True
+    env = mpc.evaluate(**kwargs)
 
     # Same far-from-target state, but the two projection models give different
     # 30-min temperature forecasts.
@@ -236,16 +233,12 @@ def test_envelope_projection_uses_grey_box_model_when_enabled() -> None:
 
 
 def test_envelope_projection_dormant_without_outdoor() -> None:
-    """Even with the flag on, no outdoor temp means the gap model is used."""
+    """Even with the switch on, no outdoor temp means the gap model is used."""
     learning = ThermalLearning()
     _seed_envelope(learning)
     mpc = MPCController(learning=learning, deadband=0.2, min_interval=10, fan_modes=FAN_MODES)
-    original = mpc_module.USE_ENVELOPE_PROJECTION
-    try:
-        mpc_module.USE_ENVELOPE_PROJECTION = True
-        assert mpc._envelope_params("low", "cool", None) is None
-    finally:
-        mpc_module.USE_ENVELOPE_PROJECTION = original
+    mpc.use_envelope_projection = True
+    assert mpc._envelope_params("low", "cool", None) is None
 
 
 def test_no_outdoor_temp_leaves_envelope_note_absent() -> None:
@@ -261,3 +254,27 @@ def test_no_outdoor_temp_leaves_envelope_note_absent() -> None:
     )
     # No outdoor sensor: the envelope feasibility note must never appear.
     assert "can't hold the setpoint" not in decision["mpc_reason"]
+
+
+def test_envelope_power_sensor_is_none_on_fresh_install() -> None:
+    """On a fresh install (no envelope samples yet), u_fan is unknown, not zero."""
+    learning = ThermalLearning()
+    mpc = MPCController(learning=learning, deadband=0.2, min_interval=10, fan_modes=FAN_MODES)
+    sensor = SmartFanProfileEnvelopePowerSensor("entry-1", "climate.living_room", mpc, "cool", "low")
+
+    assert sensor.entity_id == "sensor.smart_fan_controller_living_room_cool_low_envelope_power"
+    assert sensor.native_value is None
+    assert sensor.extra_state_attributes["accepted"] is False
+    assert sensor.extra_state_attributes["samples_for_this_fan"] == 0
+
+
+def test_envelope_power_sensor_tracks_learned_u_fan() -> None:
+    """Once the fixed-effects fit is accepted, the sensor reports this fan's u_fan."""
+    learning = ThermalLearning()
+    _seed_envelope(learning)
+    mpc = MPCController(learning=learning, deadband=0.2, min_interval=10, fan_modes=FAN_MODES)
+    sensor = SmartFanProfileEnvelopePowerSensor("entry-1", "climate.living_room", mpc, "cool", "low")
+
+    assert sensor.native_value == pytest.approx(TRUE_U["low"], abs=0.03)
+    assert sensor.extra_state_attributes["accepted"] is True
+    assert sensor.extra_state_attributes["samples_for_this_fan"] == 60

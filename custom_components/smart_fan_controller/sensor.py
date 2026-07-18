@@ -79,6 +79,40 @@ def _build_profile_effective_slope_entities(
     return entities
 
 
+def _profile_envelope_power_object_key(hvac_mode: str, fan_mode: str) -> str:
+    """Return the canonical object key for a profile envelope power (u_fan) sensor."""
+    return f"{hvac_mode}_{slugify(fan_mode)}_envelope_power"
+
+
+def _build_profile_envelope_power_entities(
+    entry_id: str,
+    climate_entity: str,
+    controller,
+    known_keys: set[tuple[str, str]],
+) -> list["SmartFanProfileEnvelopePowerSensor"]:
+    """Create per-fan envelope power (u_fan) sensors for fan modes without one yet."""
+    entities: list[SmartFanProfileEnvelopePowerSensor] = []
+
+    for hvac_mode in PROFILE_HVAC_MODES:
+        for fan_mode in controller.fan_modes or []:
+            key = (hvac_mode, fan_mode)
+            if key in known_keys:
+                continue
+
+            known_keys.add(key)
+            entities.append(
+                SmartFanProfileEnvelopePowerSensor(
+                    entry_id,
+                    climate_entity,
+                    controller,
+                    hvac_mode,
+                    fan_mode,
+                )
+            )
+
+    return entities
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     """Set up the sensor platform from a config entry."""
     data = hass.data[DOMAIN][entry.entry_id]
@@ -152,6 +186,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     )
     entities.extend(profile_entities)
 
+    envelope_power_sensor_keys: set[tuple[str, str]] = set()
+    envelope_power_entities = _build_profile_envelope_power_entities(
+        entry.entry_id,
+        climate_entity,
+        mpc,
+        envelope_power_sensor_keys,
+    )
+    entities.extend(envelope_power_entities)
+
     if profile_entities:
         _LOGGER.info(
             "Created %d initial effective slope profile sensors for %s: %s",
@@ -163,15 +206,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         _LOGGER.debug("No fan modes known yet for %s; profile slope sensors will be added later", entry.entry_id)
 
     data["profile_sensor_keys"] = profile_sensor_keys
+    data["envelope_power_sensor_keys"] = envelope_power_sensor_keys
     data["sensors"] = entities
 
     def ensure_profile_sensors() -> None:
-        """Add late-discovered profile slope sensors once fan modes are known."""
+        """Add late-discovered profile slope and envelope power sensors once fan modes are known."""
         new_entities = _build_profile_effective_slope_entities(
             entry.entry_id,
             climate_entity,
             mpc,
             profile_sensor_keys,
+        )
+        new_entities.extend(
+            _build_profile_envelope_power_entities(
+                entry.entry_id,
+                climate_entity,
+                mpc,
+                envelope_power_sensor_keys,
+            )
         )
         if not new_entities:
             return
@@ -179,7 +231,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         entities.extend(new_entities)
         async_add_entities(new_entities)
         _LOGGER.info(
-            "Added %d effective slope profile sensors for %s: %s",
+            "Added %d profile sensors for %s: %s",
             len(new_entities),
             entry.entry_id,
             [entity.name for entity in new_entities],
@@ -583,6 +635,60 @@ class SmartFanProfileEffectiveSlopeSensor(_SmartFanEntity):
             "envelope_gap_variance": round(envelope_diag["gap_variance"], 2) if envelope_diag["gap_variance"] is not None else None,
             "envelope_raw_k_env": round(envelope_diag["raw_k_env"], 4) if envelope_diag["raw_k_env"] is not None else None,
             "envelope_reject_reason": envelope_diag["reason"],
+        }
+
+
+class SmartFanProfileEnvelopePowerSensor(_SmartFanEntity):
+    """Historized per-fan grey-box envelope own power (u_fan) for one HVAC/fan combination.
+
+    Unlike the effective-slope sensor above, this keeps updating even for fans
+    that mostly run near equilibrium (silent/low/med): envelope samples aren't
+    filtered by the near-stagnation guard, so u_fan is the value to watch to
+    see those profiles actually learn on a fresh install. See
+    docs/effective_slope_analysis.md.
+    """
+
+    def __init__(
+        self,
+        entry_id: str,
+        climate_entity: str,
+        controller,
+        hvac_mode: str,
+        fan_mode: str,
+    ) -> None:
+        self._entry_id = entry_id
+        self._climate_entity = climate_entity
+        self._controller = controller
+        self._hvac_mode = hvac_mode
+        self._fan_mode = fan_mode
+
+        object_key = _profile_envelope_power_object_key(hvac_mode, fan_mode)
+        self._attr_name = f"{hvac_mode.title()} {fan_mode.title()} Envelope Power"
+        self._attr_unique_id = build_unique_id(object_key, entry_id)
+        self._attr_native_unit_of_measurement = EFFECTIVE_SLOPE_UNIT
+        self._attr_icon = "mdi:fan-chevron-down"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._set_entity_id(object_key)
+
+    @property
+    def native_value(self) -> float | None:
+        """Return u_fan: this fan's envelope-separated own power, or None until the fit is accepted."""
+        u_fan = self._controller.learning.get_mode_cooling_power(self._fan_mode, self._hvac_mode)
+        return round(u_fan, 3) if u_fan is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Expose the fit status and this fan's own sample count."""
+        learning = self._controller.learning
+        diag = learning.get_envelope_fit_diagnostics(self._hvac_mode)
+        return {
+            "hvac_mode": self._hvac_mode,
+            "fan_mode": self._fan_mode,
+            "accepted": diag["accepted"],
+            "samples_for_this_fan": learning.envelope_sample_count_for(self._fan_mode, self._hvac_mode),
+            "total_envelope_samples": diag["sample_count"],
+            "envelope_conductance": round(diag["k_env"], 4) if diag["k_env"] is not None else None,
+            "reject_reason": diag["reason"],
         }
 
 
