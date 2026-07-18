@@ -74,6 +74,17 @@ def fnum(x: str) -> float | None:
         return None
 
 
+# Rated airflow (m3/h) from the fan's spec sheet, for the airflow-constrained
+# u_fan = a + b*airflow fit (see thermal_learning.ThermalLearning._envelope_diagnostics).
+AIRFLOW_M3H = {
+    "silent": 216,
+    "low": 300,
+    "med": 378,
+    "high": 468,
+    "superhigh": 666,
+}
+
+
 def solve(A: list[list[float]], b: list[float]) -> list[float]:
     """Solve A·x = b by Gaussian elimination with partial pivoting."""
     n = len(A)
@@ -162,6 +173,56 @@ def main() -> None:
     print(f"\n{'fan':10s} {'u_fan(C/h)':>11s}  max (Text-T) held flat = -u_fan/k_env")
     for f in fans:
         print(f"  {f:10s} {u[f]:+11.3f}   {-u[f] / k_env:+6.1f} C")
+
+    # --- airflow-constrained fit: dT/dt = k_env*(Text-T) + a + b*airflow(fan) ---
+    known_fans = [f for f in fans if f in AIRFLOW_M3H]
+    if len(known_fans) >= 2 and len(S) >= 2:
+        p2 = 3
+        A2 = [[0.0] * p2 for _ in range(p2)]
+        b2 = [0.0] * p2
+        n2 = 0
+        for f, dext, vs, _ in S:
+            if f not in AIRFLOW_M3H:
+                continue
+            x = [dext, 1.0, AIRFLOW_M3H[f]]
+            for i in range(p2):
+                b2[i] += x[i] * vs
+                for j in range(p2):
+                    A2[i][j] += x[i] * x[j]
+            n2 += 1
+        beta2 = solve(A2, b2)
+        k_env2, a_coef, b_coef = beta2
+        u2 = {f: a_coef + b_coef * flow for f, flow in AIRFLOW_M3H.items()}
+
+        ybar2 = sum(s[2] for s in S if s[0] in AIRFLOW_M3H) / n2
+        ss_res2 = ss_tot2 = 0.0
+        for f, dext, vs, _ in S:
+            if f not in AIRFLOW_M3H:
+                continue
+            yhat = k_env2 * dext + u2[f]
+            ss_res2 += (vs - yhat) ** 2
+            ss_tot2 += (vs - ybar2) ** 2
+        r2_2 = 1 - ss_res2 / ss_tot2 if ss_tot2 else float("nan")
+
+        print(f"\n=== Airflow-constrained fit:  dT/dt = k_env*(Text - T) + a + b*airflow ===")
+        print(f"k_env = {k_env2:.4f} /h   tau = {1 / k_env2:.1f} h" if k_env2 > 1e-6 else f"k_env = {k_env2:.4f} /h (non-positive)")
+        print(f"a (intercept) = {a_coef:+.4f}   b (per m3/h) = {b_coef:+.6f}")
+        print(f"R2 = {r2_2:.3f}  (fixed-effects fit above: R2 = {r2:.3f}; a large gap here means the affine-in-airflow "
+              f"assumption is a worse fit than letting each fan be free)")
+        print(f"\n{'fan':10s} {'u_fan free':>11s} {'u_fan(airflow)':>15s} {'delta':>8s}   airflow(m3/h)  n samples")
+        for f in fans:
+            u_free = u.get(f)
+            flow = AIRFLOW_M3H.get(f)
+            u_af = u2.get(f)
+            n_f = sum(1 for s in S if s[0] == f)
+            delta = f"{u_af - u_free:+.3f}" if (u_af is not None and u_free is not None) else "n/a"
+            print(f"  {f:10s} {u_free:+11.3f} {(f'{u_af:+.3f}' if u_af is not None else 'n/a'):>15s} {delta:>8s}   "
+                  f"{(str(flow) if flow is not None else '?'):>10s}  {n_f}")
+        missing = [f for f in fans if f not in AIRFLOW_M3H]
+        if missing:
+            print(f"\n(no rated airflow on file for: {missing} -- edit AIRFLOW_M3H at the top of this script)")
+    else:
+        print("\n(skipping airflow-constrained fit: need >=2 fan speeds with a known rated airflow)")
 
     # --- is u_fan constant? bin delivered cooling by demand (comfort error) ---
     print("\n=== Delivered cooling (-dT/dt, + = cools) by fan x comfort-error band ===")
