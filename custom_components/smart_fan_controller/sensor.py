@@ -138,6 +138,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             SmartFanMpcProfilesSensor(entry.entry_id, climate_entity, mpc, "heat"),
             SmartFanMpcProfilesSensor(entry.entry_id, climate_entity, mpc, "cool"),
             SmartFanLearnedDeadbandSensor(entry.entry_id, climate_entity, mpc),
+            SmartFanEnvelopeTimeConstantSensor(entry.entry_id, climate_entity, mpc, "heat"),
+            SmartFanEnvelopeTimeConstantSensor(entry.entry_id, climate_entity, mpc, "cool"),
         ]
     )
 
@@ -406,6 +408,55 @@ class SmartFanEffectiveTimeoutSensor(_SmartFanEntity):
         return {
             "is_ready": self._controller.learning.is_ready(),
             "learned_dead_time": round(self._controller.learning.get_dead_time(), 2),
+        }
+
+
+class SmartFanEnvelopeTimeConstantSensor(_SmartFanEntity):
+    """Sensor exposing the learned grey-box envelope thermal time constant.
+
+    The envelope model (see docs/effective_slope_analysis.md) fits
+    ``dT/dt = k_env·(T_ext − T) + u_fan``: k_env is a single, fan-independent
+    property of the building envelope (walls, windows, insulation), shared
+    across all fan speeds — unlike the per-fan effective-slope sensors, this is
+    one value per hvac mode. Reported as τ = 1/k_env (hours): roughly how long
+    the room would take to passively drift toward outdoor temperature with no
+    active heating/cooling. Only populated once an outdoor sensor is
+    configured and the fit is accepted (see the ``reject_reason`` attribute
+    while it isn't).
+    """
+
+    def __init__(self, entry_id: str, climate_entity: str, controller, hvac_mode: str) -> None:
+        self._entry_id = entry_id
+        self._climate_entity = climate_entity
+        self._controller = controller
+        self._hvac_mode = hvac_mode
+        self._attr_name = f"{hvac_mode.title()} Envelope Time Constant"
+        self._attr_unique_id = build_unique_id(f"{hvac_mode}_envelope_time_constant", entry_id)
+        self._attr_native_unit_of_measurement = UnitOfTime.HOURS
+        self._attr_device_class = SensorDeviceClass.DURATION
+        self._attr_icon = "mdi:home-thermometer-outline"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._set_entity_id(f"{hvac_mode}_envelope_time_constant")
+
+    @property
+    def native_value(self) -> float | None:
+        """Return tau = 1/k_env in hours, or None until the fit is accepted."""
+        k_env = self._controller.learning.get_envelope_conductance(self._hvac_mode)
+        return round(1.0 / k_env, 1) if k_env else None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Expose the raw envelope-fit diagnostics (conductance, sample count, rejection reason)."""
+        diag = self._controller.learning.get_envelope_fit_diagnostics(self._hvac_mode)
+        return {
+            "hvac_mode": self._hvac_mode,
+            "accepted": diag["accepted"],
+            "envelope_conductance": round(diag["k_env"], 4) if diag["k_env"] is not None else None,
+            "sample_count": diag["sample_count"],
+            "fan_count": diag["fan_count"],
+            "gap_variance": round(diag["gap_variance"], 2) if diag["gap_variance"] is not None else None,
+            "raw_k_env": round(diag["raw_k_env"], 4) if diag["raw_k_env"] is not None else None,
+            "reject_reason": diag["reason"],
         }
 
 
