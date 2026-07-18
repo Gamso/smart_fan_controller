@@ -688,6 +688,11 @@ class SmartFanProfileEnvelopePowerSensor(_SmartFanEntity):
             "samples_for_this_fan": learning.envelope_sample_count_for(self._fan_mode, self._hvac_mode),
             "total_envelope_samples": diag["sample_count"],
             "envelope_conductance": round(diag["k_env"], 4) if diag["k_env"] is not None else None,
+            "model": diag["model"],
+            "rated_airflow_m3h": learning.get_airflow(self._fan_mode),
+            "airflow_intercept": round(diag["airflow_intercept"], 4) if diag["airflow_intercept"] is not None else None,
+            "airflow_gain": round(diag["airflow_gain"], 6) if diag["airflow_gain"] is not None else None,
+            "airflow_missing_for": diag["airflow_missing_for"],
             "reject_reason": diag["reason"],
         }
 

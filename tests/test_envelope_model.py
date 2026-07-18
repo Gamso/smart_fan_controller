@@ -12,6 +12,7 @@ import pytest
 from custom_components.smart_fan_controller.thermal_learning import ThermalLearning
 from custom_components.smart_fan_controller.mpc_controller import MPCController
 from custom_components.smart_fan_controller.sensor import SmartFanProfileEnvelopePowerSensor
+from custom_components.smart_fan_controller.number import SmartFanAirflowNumber
 
 FAN_MODES = ["low", "med", "high"]
 # Ground-truth model used to synthesize samples (cool): dT/dt = k*(Text-T) + u_fan
@@ -278,3 +279,106 @@ def test_envelope_power_sensor_tracks_learned_u_fan() -> None:
     assert sensor.native_value == pytest.approx(TRUE_U["low"], abs=0.03)
     assert sensor.extra_state_attributes["accepted"] is True
     assert sensor.extra_state_attributes["samples_for_this_fan"] == 60
+
+
+# Real rated airflow (m3/h) from the user's fan spec sheet, minus silent/superhigh.
+AIRFLOW_M3H = {"low": 300, "med": 378, "high": 468}
+
+
+def _seed_envelope_airflow_linear(learning: ThermalLearning, fans: list[str], *, n: int = 60) -> None:
+    """Feed samples from a ground truth that is exactly affine in rated airflow.
+
+    u_fan(flow) = AIRFLOW_A + AIRFLOW_B * flow, so the constrained fit should
+    recover AIRFLOW_A/AIRFLOW_B and, by construction, TRUE_U for every fan.
+    """
+    rng = random.Random(99)
+    for _ in range(n):
+        for fan in fans:
+            gap = rng.uniform(-2.0, 12.0)
+            u_fan = AIRFLOW_A + AIRFLOW_B * AIRFLOW_M3H[fan]
+            slope = TRUE_K * gap + u_fan
+            learning.add_envelope_sample(fan, gap, slope, "cool")
+
+
+AIRFLOW_A = 0.5  # intercept of the synthetic ground-truth u_fan(flow) relationship
+AIRFLOW_B = -0.003  # gain of the synthetic ground-truth u_fan(flow) relationship
+
+
+def test_airflow_constrained_fit_extrapolates_unsampled_fan() -> None:
+    """With rated airflow set for every fan, the fit uses u_fan = a + b*flow.
+
+    Samples only cover low/high; med has zero envelope samples of its own but
+    still gets an estimate because its airflow is known.
+    """
+    learning = ThermalLearning()
+    _seed_envelope_airflow_linear(learning, ["low", "high"])
+    for fan, flow in AIRFLOW_M3H.items():
+        learning.set_airflow(fan, flow)
+
+    diag = learning.get_envelope_fit_diagnostics("cool")
+    assert diag["accepted"] is True
+    assert diag["model"] == "airflow_constrained"
+    assert diag["airflow_intercept"] == pytest.approx(AIRFLOW_A, abs=0.05)
+    assert diag["airflow_gain"] == pytest.approx(AIRFLOW_B, abs=0.001)
+
+    assert learning.envelope_sample_count_for("med", "cool") == 0
+    expected_med = AIRFLOW_A + AIRFLOW_B * AIRFLOW_M3H["med"]
+    assert learning.get_mode_cooling_power("med", "cool") == pytest.approx(expected_med, abs=0.05)
+
+
+def test_airflow_partial_config_falls_back_to_per_fan_fit() -> None:
+    """Airflow missing for one sampled fan means the per-fan fit is used, unchanged."""
+    learning = ThermalLearning()
+    _seed_envelope(learning)  # samples for low/med/high (see TRUE_U)
+    learning.set_airflow("low", AIRFLOW_M3H["low"])
+    learning.set_airflow("high", AIRFLOW_M3H["high"])
+    # "med" left unset on purpose.
+
+    diag = learning.get_envelope_fit_diagnostics("cool")
+    assert diag["accepted"] is True
+    assert diag["model"] == "per_fan"
+    assert diag["airflow_missing_for"] == ["med"]
+    assert learning.get_mode_cooling_power("med", "cool") == pytest.approx(TRUE_U["med"], abs=0.03)
+
+
+def test_airflow_identical_values_falls_back_to_per_fan_fit() -> None:
+    """Identical rated airflow across fans can't identify the airflow gain."""
+    learning = ThermalLearning()
+    _seed_envelope(learning)
+    for fan in FAN_MODES:
+        learning.set_airflow(fan, 300)  # same value for every fan
+
+    diag = learning.get_envelope_fit_diagnostics("cool")
+    assert diag["accepted"] is True
+    assert diag["model"] == "per_fan"
+
+
+def test_airflow_number_reads_through_learning() -> None:
+    """The airflow number entity is a thin, live view over ThermalLearning's own storage.
+
+    (async_set_native_value's write path is exercised at the ThermalLearning
+    level above; it isn't re-tested here to avoid needing a full HA entity
+    registration just to call async_write_ha_state.)
+    """
+    learning = ThermalLearning()
+    mpc = MPCController(learning=learning, deadband=0.2, min_interval=10, fan_modes=FAN_MODES)
+    number = SmartFanAirflowNumber("entry-1", "climate.living_room", mpc, "low")
+
+    assert number.entity_id == "number.smart_fan_controller_living_room_low_airflow"
+    assert number.native_value is None
+
+    learning.set_airflow("low", 300.0)
+    assert number.native_value == 300.0
+
+
+def test_airflow_survives_serialization() -> None:
+    """Rated airflow round-trips through to_dict/from_dict and survives a reset."""
+    learning = ThermalLearning()
+    learning.set_airflow("low", 300.0)
+    _seed_envelope(learning)
+
+    restored = ThermalLearning.from_dict(learning.to_dict())
+    assert restored.get_airflow("low") == 300.0
+
+    restored.reset()
+    assert restored.get_airflow("low") == 300.0
