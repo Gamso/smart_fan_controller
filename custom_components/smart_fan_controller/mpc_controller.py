@@ -118,6 +118,12 @@ FEASIBILITY_HOLD_MARGIN = -0.05
 # warming the room back toward target and switches to them more often, which
 # open-loop replay penalises as extra churn. Kept as a gated, tested path for a
 # proper closed-loop A/B on-device; not enabled on replay evidence alone.
+#
+# This module constant is only the *initial* value for a new MPCController
+# instance (see __init__). Live toggling happens through the per-instance
+# `use_envelope_projection` attribute, exposed as the "Envelope Projection"
+# switch entity (switch.py) so it can be trialled on-device without a code
+# change or restart.
 USE_ENVELOPE_PROJECTION = False
 
 
@@ -153,6 +159,7 @@ class MPCController:
         self._cycle_minutes = cycle_minutes
         self._disturbance_bias = 0.0
         self._error_at_lock_start: float | None = None
+        self.use_envelope_projection: bool = USE_ENVELOPE_PROJECTION
 
     @property
     def fan_modes(self) -> list[str] | None:
@@ -717,7 +724,7 @@ class MPCController:
         envelope (conductance + this fan's own power). Otherwise the caller falls
         back to the gap-model projection.
         """
-        if not USE_ENVELOPE_PROJECTION or outdoor_temp is None:
+        if not self.use_envelope_projection or outdoor_temp is None:
             return None
         k_env = self._learning.get_envelope_conductance(hvac_mode)
         u_fan = self._learning.get_mode_cooling_power(fan_mode, hvac_mode)

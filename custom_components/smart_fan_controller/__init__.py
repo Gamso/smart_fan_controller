@@ -47,7 +47,7 @@ from .mpc_controller import MPCController
 from .thermal_learning import ThermalLearning
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = [Platform.SENSOR]
+PLATFORMS = [Platform.SENSOR, Platform.SWITCH]
 SERVICE_APPLY_LEARNED_SETTINGS = "apply_learned_settings"
 SERVICE_RESET_LEARNING = "reset_learning"
 SERVICE_SET_EFFECTIVE_SLOPE = "set_effective_slope"
