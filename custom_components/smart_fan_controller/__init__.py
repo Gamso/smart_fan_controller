@@ -19,6 +19,7 @@ from .const import (
     CONF_DATA_COLLECTION,
     CONF_DEADBAND,
     CONF_DEFROST_ENTITY,
+    CONF_FAN_AIRFLOW,
     CONF_MIN_INTERVAL,
     CONF_OPERATING_ENTITY,
     CONF_OUTDOOR_ENTITY,
@@ -47,7 +48,7 @@ from .mpc_controller import MPCController
 from .thermal_learning import ThermalLearning
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = [Platform.SENSOR, Platform.SWITCH, Platform.NUMBER]
+PLATFORMS = [Platform.SENSOR, Platform.SWITCH]
 SERVICE_APPLY_LEARNED_SETTINGS = "apply_learned_settings"
 SERVICE_RESET_LEARNING = "reset_learning"
 SERVICE_SET_EFFECTIVE_SLOPE = "set_effective_slope"
@@ -568,6 +569,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     learning = ThermalLearning.from_dict(learning_data) if learning_data else ThermalLearning()
 
+    # Rated airflow is config, not learned data (see config_flow.py); applied fresh
+    # from the entry on every setup/reload so editing it in the UI takes effect
+    # immediately, no matter what was last persisted to the learning store.
+    for fan_mode, airflow_m3h in conf.get(CONF_FAN_AIRFLOW, {}).items():
+        learning.set_airflow(fan_mode, airflow_m3h)
+
     mpc_controller = MPCController(
         learning=learning,
         deadband=conf.get(CONF_DEADBAND, DEFAULT_DEADBAND),
@@ -587,7 +594,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "climate_entity": climate_id,
         "sensors": [],
         "ensure_profile_sensors": None,
-        "ensure_airflow_numbers": None,
         "store": store,
         # Manual override set by the force_fan service: {"fan_mode": str, "until": float}
         "force": None,
@@ -602,14 +608,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     def _ensure_profile_sensors() -> None:
-        """Create late-discovered profile sensors and airflow numbers when fan modes become available."""
-        entry_data = hass.data[DOMAIN][entry.entry_id]
-        add_profile_entities = entry_data.get("ensure_profile_sensors")
+        """Create late-discovered profile sensors when fan modes become available."""
+        add_profile_entities = hass.data[DOMAIN][entry.entry_id].get("ensure_profile_sensors")
         if callable(add_profile_entities):
             add_profile_entities()
-        add_airflow_entities = entry_data.get("ensure_airflow_numbers")
-        if callable(add_airflow_entities):
-            add_airflow_entities()
 
     # Mutable state shared between control-loop callbacks (closure variables)
     ctrl_state: dict = {

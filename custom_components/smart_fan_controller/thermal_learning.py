@@ -827,7 +827,6 @@ class ThermalLearning:
             "slope_samples": self._slope_samples[-5000:],
             "response_events": self._response_events[-100:],
             "envelope_samples": self._envelope_samples[-5000:],
-            "airflow_m3h": self._airflow_m3h,
             "slope_count": self._slope_count,
             "slope_mean": self._slope_mean,
             "slope_m2": self._slope_m2,
@@ -894,10 +893,6 @@ class ThermalLearning:
         # Envelope samples are optional (only present when an outdoor sensor is
         # configured); default to empty for backward compatibility.
         instance._envelope_samples = [tuple(s) for s in data.get("envelope_samples", [])]
-
-        # Rated airflow per fan speed is optional user config, not learned data;
-        # default to empty for backward compatibility.
-        instance._airflow_m3h = dict(data.get("airflow_m3h", {}))
 
         # Apply sliding window cleanup on restore, keeping at least MIN_MODE_PROFILE_SAMPLES
         # per profile so learned modes survive a quiet week without new samples.

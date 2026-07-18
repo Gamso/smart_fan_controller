@@ -5,7 +5,21 @@
                 "title": "Configurer Smart Fan Controller",
                 "description": "Sélectionnez une entité climate avec des modes de ventilation. L'auto-calibration tourne 48 h pour optimiser les paramètres.",
                 "data": {
-                    "climate_entity": " ",
+                    "climate_entity": " "
+                },
+                "data_description": {
+                    "climate_entity": "Doit provenir de Versatile Thermostat."
+                },
+                "error": {
+                    "already_configured": "Cette entité climate est déjà configurée.",
+                    "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",
+                    "no_versatile_thermostat": "Aucune entité Versatile Thermostat trouvée."
+                }
+            },
+            "config": {
+                "title": "Paramètres Smart Fan Controller",
+                "description": "Vitesses détectées : {fan_modes}. Laissez un champ débit vide si inconnu — ça aide seulement les vitesses faibles à obtenir une estimation fiable plus vite.",
+                "data": {
                     "deadband": "Bande morte (°C)",
                     "min_interval": "Intervalle minimum (minutes)",
                     "data_collection": "Activer la collecte de données (bêta)",
@@ -14,18 +28,12 @@
                     "outdoor_entity": "Capteur de température extérieure (optionnel)"
                 },
                 "data_description": {
-                    "climate_entity": "Doit provenir de Versatile Thermostat.",
                     "deadband": "Plage : 0.0-5.0 °C. Défaut : 0.2 °C.",
                     "min_interval": "Plage : 1-60 min. Défaut : 10 min.",
                     "data_collection": "Enregistre une ligne CSV toutes les 2 minutes dans le dossier de configuration Home Assistant, à côté de configuration.yaml : smart_fan_controller_data_XXXXXXXX.csv (max 10 Mo, rotation automatique). Utile pour reproduire le comportement de l'algorithme et identifier des améliorations pendant la phase bêta.",
                     "defrost_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand la PAC est en dégivrage.",
                     "operating_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand le compresseur de la PAC est en marche. Utilisé pour éviter des changements de ventilation inutiles quand le compresseur est à l'arrêt.",
-                    "outdoor_entity": "Optionnel : un capteur de température extérieure. S'il est renseigné, un modèle thermique grey-box apprend la vraie puissance de refroidissement/chauffage de chaque vitesse et écarte les vitesses incapables de tenir la consigne à la température extérieure actuelle."
-                },
-                "error": {
-                    "already_configured": "Cette entité climate est déjà configurée.",
-                    "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",
-                    "no_versatile_thermostat": "Aucune entité Versatile Thermostat trouvée."
+                    "outdoor_entity": "Optionnel : un capteur de température extérieure. S'il est renseigné, un modèle thermique grey-box apprend la vraie puissance de refroidissement/chauffage de chaque vitesse et écarte les vitesses incapables de tenir la consigne à la température extérieure actuelle. Chaque champ ci-dessous nommé « Airflow <vitesse> » est le débit d'air nominal (m3/h) de cette vitesse selon la fiche constructeur — le renseigner pour toutes les vitesses détectées permet au modèle de mutualiser les données entre vitesses au lieu d'apprendre chacune isolément."
                 }
             }
         }
@@ -34,6 +42,7 @@
         "step": {
             "init": {
                 "title": "Modifier Smart Fan Controller",
+                "description": "Les champs nommés « Airflow <vitesse> » correspondent au débit d'air nominal (m3/h) de cette vitesse ; laissez vide si inconnu.",
                 "data": {
                     "climate_entity": " ",
                     "deadband": "Bande morte (°C)",

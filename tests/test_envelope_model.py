@@ -12,7 +12,6 @@ import pytest
 from custom_components.smart_fan_controller.thermal_learning import ThermalLearning
 from custom_components.smart_fan_controller.mpc_controller import MPCController
 from custom_components.smart_fan_controller.sensor import SmartFanProfileEnvelopePowerSensor
-from custom_components.smart_fan_controller.number import SmartFanAirflowNumber
 
 FAN_MODES = ["low", "med", "high"]
 # Ground-truth model used to synthesize samples (cool): dT/dt = k*(Text-T) + u_fan
@@ -353,32 +352,19 @@ def test_airflow_identical_values_falls_back_to_per_fan_fit() -> None:
     assert diag["model"] == "per_fan"
 
 
-def test_airflow_number_reads_through_learning() -> None:
-    """The airflow number entity is a thin, live view over ThermalLearning's own storage.
+def test_airflow_is_config_not_learned_data() -> None:
+    """Rated airflow comes from the config entry (see __init__.py), not the learning store.
 
-    (async_set_native_value's write path is exercised at the ThermalLearning
-    level above; it isn't re-tested here to avoid needing a full HA entity
-    registration just to call async_write_ha_state.)
+    It must survive a learning reset (it's hardware spec, not statistics) but
+    is deliberately absent from to_dict/from_dict: __init__.py re-applies it
+    from entry config on every setup/reload, so editing it in the options
+    flow takes effect immediately without a stale copy lingering in storage.
     """
-    learning = ThermalLearning()
-    mpc = MPCController(learning=learning, deadband=0.2, min_interval=10, fan_modes=FAN_MODES)
-    number = SmartFanAirflowNumber("entry-1", "climate.living_room", mpc, "low")
-
-    assert number.entity_id == "number.smart_fan_controller_living_room_low_airflow"
-    assert number.native_value is None
-
-    learning.set_airflow("low", 300.0)
-    assert number.native_value == 300.0
-
-
-def test_airflow_survives_serialization() -> None:
-    """Rated airflow round-trips through to_dict/from_dict and survives a reset."""
     learning = ThermalLearning()
     learning.set_airflow("low", 300.0)
     _seed_envelope(learning)
 
-    restored = ThermalLearning.from_dict(learning.to_dict())
-    assert restored.get_airflow("low") == 300.0
+    assert "airflow_m3h" not in learning.to_dict()
 
-    restored.reset()
-    assert restored.get_airflow("low") == 300.0
+    learning.reset()
+    assert learning.get_airflow("low") == 300.0

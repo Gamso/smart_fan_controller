@@ -5,7 +5,21 @@
                 "title": "Configure Smart Fan Controller",
                 "description": "Select a climate entity with fan modes. Auto-calibration will run for 48 h to optimize settings.",
                 "data": {
-                    "climate_entity": " ",
+                    "climate_entity": " "
+                },
+                "data_description": {
+                    "climate_entity": "Must come from a Versatile Thermostat."
+                },
+                "error": {
+                    "already_configured": "This climate entity is already configured.",
+                    "invalid_climate_entity": "This entity must come from Versatile Thermostat.",
+                    "no_versatile_thermostat": "No Versatile Thermostat entity found."
+                }
+            },
+            "config": {
+                "title": "Smart Fan Controller settings",
+                "description": "Detected fan speeds: {fan_modes}. Leave any airflow field empty if unknown — it only helps weak fan speeds get a reliable estimate sooner.",
+                "data": {
                     "deadband": "Deadband (°C)",
                     "min_interval": "Min Interval (minutes)",
                     "data_collection": "Enable Data Collection (beta)",
@@ -14,18 +28,12 @@
                     "outdoor_entity": "Outdoor Temperature Sensor (optional)"
                 },
                 "data_description": {
-                    "climate_entity": "Must come from a Versatile Thermostat.",
                     "deadband": "Range: 0.0-5.0 °C. Default: 0.2 °C.",
                     "min_interval": "Range: 1-60 min. Default: 10 min.",
                     "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
                     "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode.",
                     "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off.",
-                    "outdoor_entity": "Optional: an outdoor temperature sensor. When set, a grey-box thermal model learns each fan speed's real cooling/heating power and skips speeds that cannot hold the setpoint at the current outdoor temperature."
-                },
-                "error": {
-                    "already_configured": "This climate entity is already configured.",
-                    "invalid_climate_entity": "This entity must come from Versatile Thermostat.",
-                    "no_versatile_thermostat": "No Versatile Thermostat entity found."
+                    "outdoor_entity": "Optional: an outdoor temperature sensor. When set, a grey-box thermal model learns each fan speed's real cooling/heating power and skips speeds that cannot hold the setpoint at the current outdoor temperature. Each field below labelled \"Airflow <fan speed>\" is that speed's rated airflow (m3/h) from the manufacturer's spec sheet — filling in every detected speed lets the model share data across speeds instead of learning each one independently."
                 }
             }
         }
@@ -34,6 +42,7 @@
         "step": {
             "init": {
                 "title": "Edit Smart Fan Controller",
+                "description": "Fields named \"Airflow <fan speed>\" are that speed's rated airflow (m3/h); leave empty if unknown.",
                 "data": {
                     "climate_entity": " ",
                     "deadband": "Deadband (°C)",
