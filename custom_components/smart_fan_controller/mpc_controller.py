@@ -95,6 +95,26 @@ UNDER_TARGET_SHORTFALL_RESERVE = 0.1
 # blocks multi-rank plunges to a mode with no track record of holding.
 MIN_VIABLE_MULTI_RANK_STEPDOWN_SLOPE = 0.0
 
+# Capacity spacing between adjacent fan speeds, used when a profile's own
+# estimate is discarded for violating the strength order (see
+# build_monotone_slopes). Collapsing the rejected speed onto its neighbour's
+# value would leave the MPC unable to tell them apart thermally, so the only
+# remaining tie-breaker would be the energy term — which always prefers the
+# weaker rank. That starves the stronger speed of samples, which keeps its
+# profile thin, which keeps it being rejected: a self-reinforcing trap. Placing
+# it one geometric step away instead keeps the ladder ordered *and* separated.
+# Calibrated on the production ladder, whose measured ratios between adjacent
+# speeds are 2.08 (med->high) and 1.76 (high->superhigh), geometric mean ~1.9.
+# Deliberately a separate constant from MODE_POWER_RATIO: that one models
+# electrical draw (~RPM^3), this one thermal delivery (~airflow), and they
+# should be tunable independently even though they happen to sit close together.
+LADDER_CAPACITY_RATIO = 1.8
+
+# Multiplicative spacing collapses around zero (0 / anything is still 0), which
+# would reintroduce the very equality the ratio exists to avoid. Below this much
+# separation, fall back to an absolute step.
+MIN_LADDER_SEPARATION = 0.05  # degC/h
+
 
 @dataclass(slots=True)
 class ModeSimulation:
@@ -580,6 +600,27 @@ class MPCController:
             return PHASE_TRANSIENT
         return PHASE_ESTABLISHED
 
+    @staticmethod
+    def _one_rank_weaker(value: float) -> float:
+        """Return a slope one ladder step below *value*, strictly smaller than it.
+
+        Scaling is multiplicative so the step tracks the magnitude of the
+        neighbour, but a positive slope shrinks toward zero while a negative one
+        (a speed that loses ground) grows more negative — both mean "weaker".
+        """
+        scaled = value / LADDER_CAPACITY_RATIO if value > 0 else value * LADDER_CAPACITY_RATIO
+        if value - scaled < MIN_LADDER_SEPARATION:
+            scaled = value - MIN_LADDER_SEPARATION
+        return scaled
+
+    @staticmethod
+    def _one_rank_stronger(value: float) -> float:
+        """Return a slope one ladder step above *value*, strictly greater than it."""
+        scaled = value * LADDER_CAPACITY_RATIO if value > 0 else value / LADDER_CAPACITY_RATIO
+        if scaled - value < MIN_LADDER_SEPARATION:
+            scaled = value + MIN_LADDER_SEPARATION
+        return scaled
+
     def build_monotone_slopes(self, fan_modes: list[str], hvac_mode: str) -> dict[str, float]:
         """Return monotone-enforced slopes for all known profiles.
 
@@ -587,48 +628,76 @@ class MPCController:
         slopes must be non-decreasing along that order. Modes without a learned
         profile are omitted — the caller falls back to rank-scaled estimation.
 
-        Violations are resolved by **trusting the better-sampled profile**: for
-        each adjacent pair out of order, the side backed by fewer samples is
-        moved onto the other one, and the better-sampled value is never altered.
-        A plain forward ``max()`` pass cannot do this — it always resolves
-        upward, so a single noisy estimate on a rarely-used speed propagates
-        into every stronger speed above it, corrupting exactly the profiles that
-        have the most data behind them (e.g. a 10-sample ``med`` reading +1.6
-        would drag a 1656-sample ``superhigh`` from +0.9 up to +1.6).
+        Profiles are placed **best-sampled first**, each one clipped into the
+        window left by those already placed. So the most trusted estimate is
+        never overwritten, and a noisy estimate from a rarely-used speed cannot
+        propagate into the profiles that have the most data behind them — which
+        a plain forward ``max()`` pass does, since it always resolves upward
+        (a 10-sample ``med`` reading +1.6 would drag a 1656-sample ``superhigh``
+        from +0.9 up to +1.6).
 
-        On an equal sample count the weaker mode is clamped *down* rather than
-        the stronger one raised: over-estimating a weak fan is the dangerous
-        direction (it invites a step-down the fan cannot sustain), while
-        under-estimating it is merely conservative.
+        A profile whose own estimate falls outside that window is discarded and
+        **synthesised one ladder step from the neighbour that constrained it**
+        (see LADDER_CAPACITY_RATIO) rather than pinned onto it: two speeds
+        sharing an identical slope are thermally indistinguishable to the MPC,
+        so the energy term alone would arbitrate — always picking the weaker
+        rank, which then starves the stronger one of the samples it needs to
+        ever be trusted.
+
+        Placement is a single pass in trust order, so the result is monotone by
+        construction with no iteration to converge. A ladder that is already
+        consistent is returned untouched, whatever its own spacing: the ratio
+        only ever synthesises a replacement, it is never imposed as a minimum
+        gap between measured values.
         """
-        known = [fm for fm in fan_modes if self._learning.get_mode_effective_slope(fm, hvac_mode) is not None]
-        if not known:
+        measured = {
+            fm: slope
+            for fm in fan_modes
+            if (slope := self._learning.get_mode_effective_slope(fm, hvac_mode)) is not None
+        }
+        if not measured:
             return {}
 
-        enforced = {fm: self._learning.get_mode_effective_slope(fm, hvac_mode) for fm in known}
-        counts = {fm: self._learning.get_mode_sample_count(fm, hvac_mode) for fm in known}
-        original = dict(enforced)
+        rank = {fm: index for index, fm in enumerate(fan_modes)}
+        counts = {fm: self._learning.get_mode_sample_count(fm, hvac_mode) for fm in measured}
 
-        # Repeatedly repair adjacent violations. Each repair strictly reduces the
-        # number of distinct values, so this converges in at most len(known) passes.
-        for _ in range(len(known)):
-            violation = False
-            for weaker, stronger in zip(known, known[1:]):
-                if enforced[weaker] <= enforced[stronger]:
-                    continue
-                violation = True
-                if counts[weaker] > counts[stronger]:
-                    enforced[stronger] = enforced[weaker]  # weaker profile is better backed
-                else:
-                    enforced[weaker] = enforced[stronger]  # trust the stronger (or tie -> clamp down)
-            if not violation:
-                break
+        # Place profiles best-sampled first, so every later profile is constrained
+        # by evidence at least as strong as its own and the most trusted estimate
+        # is never overwritten. On an equal sample count the stronger rank is
+        # placed first, which makes a tied violation resolve by weakening the
+        # lower speed rather than strengthening the higher one.
+        placement_order = sorted(measured, key=lambda fm: (counts[fm], rank[fm]), reverse=True)
 
-        if enforced != original:
+        placed: dict[str, float] = {}
+        for fm in placement_order:
+            below = [v for f, v in placed.items() if rank[f] < rank[fm]]
+            above = [v for f, v in placed.items() if rank[f] > rank[fm]]
+            floor = max(below, default=float("-inf"))
+            ceiling = min(above, default=float("inf"))
+
+            value = measured[fm]
+            if value > ceiling:
+                # Own estimate claims more capacity than an already-placed stronger
+                # speed. Discard it and synthesise one ladder step below that speed
+                # rather than pinning it onto the ceiling: identical slopes are
+                # thermally indistinguishable to the MPC, so the energy term alone
+                # would arbitrate and would always pick the weaker rank.
+                value = self._one_rank_weaker(ceiling)
+            elif value < floor:
+                value = self._one_rank_stronger(floor)
+            # A synthesised value can overshoot the opposite bound when the two
+            # placed neighbours sit close together; the window wins, since ordering
+            # is the invariant the rest of the MPC depends on and separation is
+            # only a preference. Collapses to a bound only when there is genuinely
+            # no room left between the neighbours.
+            placed[fm] = min(max(value, floor), ceiling)
+
+        enforced = {fm: placed[fm] for fm in fan_modes if fm in placed}
+        if enforced != measured:
             _LOGGER.debug(
-                "Monotone enforcement applied for %s: %s -> %s (samples: %s)",
+                "Slope ordering enforced for %s: %s -> %s (samples: %s)",
                 hvac_mode,
-                {fm: round(v, 3) for fm, v in original.items()},
+                {fm: round(v, 3) for fm, v in measured.items()},
                 {fm: round(v, 3) for fm, v in enforced.items()},
                 counts,
             )

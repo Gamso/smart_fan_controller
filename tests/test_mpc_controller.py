@@ -1,6 +1,7 @@
 """Tests for the MPC diagnostics and guardrails."""
 
 import csv
+import random
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -543,11 +544,14 @@ def test_monotone_constraint_enforces_ordering() -> None:
     monotone = mpc.build_monotone_slopes(["silent", "low", "med", "high", "superhigh"], "heat")
     assert isinstance(monotone, dict)
 
-    # Equal sample counts, so the violation resolves downward: silent (0.53) is
-    # clamped onto low (0.0) rather than dragging low up to silent's value.
-    assert monotone["silent"] == pytest.approx(0.0, abs=0.001)
-    assert monotone["low"] == pytest.approx(0.0, abs=0.001)
+    # Equal sample counts, so the violation resolves downward: silent's estimate is
+    # discarded and re-synthesised strictly below low rather than dragging low up.
+    assert monotone["silent"] < monotone["low"]
+    # low sits at exactly 0.0, where multiplicative spacing would collapse, so the
+    # absolute fallback separation applies.
+    assert monotone["silent"] == pytest.approx(-0.05, abs=0.001)
     # Profiles that were already ordered keep their learned values exactly.
+    assert monotone["low"] == pytest.approx(0.0, abs=0.001)
     assert monotone["med"] == pytest.approx(0.45, abs=0.001)
     assert monotone["high"] == pytest.approx(0.96, abs=0.001)
     assert monotone["superhigh"] == pytest.approx(1.35, abs=0.001)
@@ -593,10 +597,12 @@ def test_monotone_constraint_partial_profiles_enforces_known_pairs() -> None:
     assert "med" not in result
     assert "high" in result
     assert "superhigh" in result
-    # Equal sample counts: the weaker mode is clamped down onto the stronger one,
-    # so superhigh keeps its own learned value instead of being inflated to high's.
-    assert result["high"] == pytest.approx(1.075, abs=0.001)
+    # Equal sample counts: the weaker mode is the one rewritten, so superhigh keeps
+    # its own learned value instead of being inflated to high's, and high lands one
+    # ladder step below it rather than tied with it.
     assert result["superhigh"] == pytest.approx(1.075, abs=0.001)
+    assert result["high"] == pytest.approx(1.075 / mpc_module.LADDER_CAPACITY_RATIO, abs=0.001)
+    assert result["high"] < result["superhigh"]
 
 
 def test_monotone_constraint_trusts_the_better_sampled_profile() -> None:
@@ -625,8 +631,11 @@ def test_monotone_constraint_trusts_the_better_sampled_profile() -> None:
     # The two well-sampled profiles keep their learned values...
     assert result["high"] == pytest.approx(0.5, abs=0.001)
     assert result["superhigh"] == pytest.approx(0.9, abs=0.001)
-    # ...and the 10-sample outlier is the one that gets clamped.
-    assert result["med"] == pytest.approx(0.5, abs=0.001)
+    # ...and the 10-sample outlier is rewritten one ladder step below high, not
+    # pinned onto it: an exact tie would leave the MPC unable to tell med from
+    # high thermally, so the energy term would always pick med.
+    assert result["med"] == pytest.approx(0.5 / mpc_module.LADDER_CAPACITY_RATIO, abs=0.001)
+    assert result["med"] < result["high"]
 
 
 def test_monotone_constraint_raises_a_poorly_sampled_stronger_mode() -> None:
@@ -646,7 +655,66 @@ def test_monotone_constraint_raises_a_poorly_sampled_stronger_mode() -> None:
     result = mpc.build_monotone_slopes(["silent", "low", "med", "high", "superhigh"], "cool")
 
     assert result["high"] == pytest.approx(0.9, abs=0.001)  # 800 samples: untouched
-    assert result["superhigh"] == pytest.approx(0.9, abs=0.001)  # 10 samples: raised onto high
+    # Lifted a ladder step *above* high, not tied with it: tying them would make the
+    # energy term always prefer high, so superhigh would never run again and its
+    # profile could never recover from being thin.
+    assert result["superhigh"] == pytest.approx(0.9 * mpc_module.LADDER_CAPACITY_RATIO, abs=0.001)
+    assert result["superhigh"] > result["high"]
+
+
+def test_monotone_constraint_keeps_a_consistent_ladder_untouched() -> None:
+    """A ladder that is already ordered is returned verbatim, whatever its spacing.
+
+    The ladder ratio only ever synthesises a replacement for a rejected estimate;
+    it must never be imposed as a minimum gap between measured values, or a real
+    ladder spaced more tightly than the ratio would be silently rewritten.
+    """
+    learning = ThermalLearning()
+    # The production ladder: adjacent ratios are 2.08 and 1.76, i.e. both sides of
+    # LADDER_CAPACITY_RATIO, and the bottom two speeds are negative.
+    real = {"silent": -0.56, "low": -0.1, "med": 0.24, "high": 0.5, "superhigh": 0.879}
+    for fan_mode, slope in real.items():
+        learning.set_mode_effective_slope(fan_mode, "cool", slope)
+
+    mpc = MPCController(
+        learning=learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=["silent", "low", "med", "high", "superhigh"],
+    )
+    result = mpc.build_monotone_slopes(["silent", "low", "med", "high", "superhigh"], "cool")
+
+    for fan_mode, slope in real.items():
+        assert result[fan_mode] == pytest.approx(slope, abs=0.001)
+
+
+def test_monotone_constraint_always_returns_an_ordered_ladder() -> None:
+    """Fuzz the invariant the rest of the MPC relies on: the result is never inverted.
+
+    Covers ladders with missing profiles, wildly inconsistent estimates, sign
+    changes and lopsided sample counts — including the case that broke an earlier
+    pairwise implementation, where a thin profile sat between two better-sampled
+    ones that were themselves inverted.
+    """
+    fan_modes = ["silent", "low", "med", "high", "superhigh"]
+    rng = random.Random(7)
+
+    for _ in range(300):
+        learning = ThermalLearning()
+        for fan_mode in fan_modes:
+            if rng.random() < 0.25:
+                continue  # profile never learned
+            slope = rng.uniform(-1.5, 2.0)
+            # Only the *relative* sample counts steer placement order, so modest
+            # spreads exercise the same branches without a slow suite.
+            for _ in range(rng.choice([10, 10, 14, 40])):
+                learning.add_slope_sample(fan_mode, -slope, 1.0, "cool")
+
+        mpc = MPCController(learning=learning, deadband=0.3, min_interval=10, fan_modes=fan_modes)
+        result = mpc.build_monotone_slopes(fan_modes, "cool")
+
+        values = [result[fan_mode] for fan_mode in fan_modes if fan_mode in result]
+        assert values == sorted(values), f"inverted ladder produced: {result}"
 
 
 def test_monotone_constraint_noop_when_already_ordered() -> None:
