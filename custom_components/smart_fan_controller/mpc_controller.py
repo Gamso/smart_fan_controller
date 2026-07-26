@@ -11,6 +11,7 @@ from .const import (
     PHASE_DEAD_TIME,
     PHASE_ESTABLISHED,
     PHASE_TRANSIENT,
+    PROFILE_HVAC_MODES,
     REFERENCE_SLOPE_ERROR,
     THRESHOLD_TARGET_DROP,
 )
@@ -146,21 +147,33 @@ class MPCController:
             self._warn_if_unordered(modes)
 
     def _warn_if_unordered(self, modes: list[str]) -> None:
-        """Log a warning when learned slopes don't match the assumed mode ordering."""
-        prev_slope = None
-        for mode in modes:
-            slope = self._learning.get_mode_effective_slope(mode, "heat")
-            if slope is None:
-                return  # Not all profiles learned yet; skip check
-            if prev_slope is not None and slope < prev_slope:
-                _LOGGER.warning(
-                    "Fan modes may not be ordered weakest-to-strongest: "
-                    "learned slopes violate monotonicity at '%s'. "
-                    "Check the fan_modes list in your climate entity",
-                    mode,
-                )
-                return
-            prev_slope = slope
+        """Log a warning when learned slopes don't match the assumed mode ordering.
+
+        Checks every hvac mode (not just heating — a cooling-only install would
+        otherwise never be checked) and skips profiles that aren't learned yet
+        instead of giving up at the first one, so a partially-learned ladder is
+        still validated on the profiles that do exist.
+        """
+        for hvac_mode in PROFILE_HVAC_MODES:
+            prev_mode: str | None = None
+            prev_slope: float | None = None
+            for mode in modes:
+                slope = self._learning.get_mode_effective_slope(mode, hvac_mode)
+                if slope is None:
+                    continue  # not learned yet — skip, keep checking the others
+                if prev_slope is not None and slope < prev_slope:
+                    _LOGGER.warning(
+                        "Fan modes may not be ordered weakest-to-strongest for %s: "
+                        "'%s' (%.2f C/h) is learned as weaker than '%s' (%.2f C/h). "
+                        "If the order is wrong, set it explicitly in the integration options",
+                        hvac_mode,
+                        mode,
+                        slope,
+                        prev_mode,
+                        prev_slope,
+                    )
+                    break
+                prev_mode, prev_slope = mode, slope
 
     @property
     def learning(self) -> ThermalLearning:
@@ -570,34 +583,54 @@ class MPCController:
     def build_monotone_slopes(self, fan_modes: list[str], hvac_mode: str) -> dict[str, float]:
         """Return monotone-enforced slopes for all known profiles.
 
-        Fan modes are assumed ordered from weakest to strongest.  For each mode
-        with a learned profile, the slope is clamped to be >= the slope of the
-        last known lower mode (isotonic forward pass).  Modes without a learned
-        profile are omitted from the result — the caller falls back to rank-scaled
-        estimation for those.
+        Fan modes are assumed ordered from weakest to strongest, so learned
+        slopes must be non-decreasing along that order. Modes without a learned
+        profile are omitted — the caller falls back to rank-scaled estimation.
 
-        Previously returned None when any profile was missing.  Now always
-        returns a (possibly empty) dict so known adjacent profiles are always
-        monotone-enforced even during partial learning.
+        Violations are resolved by **trusting the better-sampled profile**: for
+        each adjacent pair out of order, the side backed by fewer samples is
+        moved onto the other one, and the better-sampled value is never altered.
+        A plain forward ``max()`` pass cannot do this — it always resolves
+        upward, so a single noisy estimate on a rarely-used speed propagates
+        into every stronger speed above it, corrupting exactly the profiles that
+        have the most data behind them (e.g. a 10-sample ``med`` reading +1.6
+        would drag a 1656-sample ``superhigh`` from +0.9 up to +1.6).
+
+        On an equal sample count the weaker mode is clamped *down* rather than
+        the stronger one raised: over-estimating a weak fan is the dangerous
+        direction (it invites a step-down the fan cannot sustain), while
+        under-estimating it is merely conservative.
         """
-        enforced: dict[str, float] = {}
-        prev = float("-inf")
-        changed = False
-        for fm in fan_modes:
-            slope = self._learning.get_mode_effective_slope(fm, hvac_mode)
-            if slope is None:
-                continue  # unknown profile — skip, caller uses rank-scaling fallback
-            clamped = max(slope, prev)
-            if clamped != slope:
-                changed = True
-            enforced[fm] = clamped
-            prev = clamped
+        known = [fm for fm in fan_modes if self._learning.get_mode_effective_slope(fm, hvac_mode) is not None]
+        if not known:
+            return {}
 
-        if changed:
+        enforced = {fm: self._learning.get_mode_effective_slope(fm, hvac_mode) for fm in known}
+        counts = {fm: self._learning.get_mode_sample_count(fm, hvac_mode) for fm in known}
+        original = dict(enforced)
+
+        # Repeatedly repair adjacent violations. Each repair strictly reduces the
+        # number of distinct values, so this converges in at most len(known) passes.
+        for _ in range(len(known)):
+            violation = False
+            for weaker, stronger in zip(known, known[1:]):
+                if enforced[weaker] <= enforced[stronger]:
+                    continue
+                violation = True
+                if counts[weaker] > counts[stronger]:
+                    enforced[stronger] = enforced[weaker]  # weaker profile is better backed
+                else:
+                    enforced[weaker] = enforced[stronger]  # trust the stronger (or tie -> clamp down)
+            if not violation:
+                break
+
+        if enforced != original:
             _LOGGER.debug(
-                "Monotone enforcement applied for %s: %s",
+                "Monotone enforcement applied for %s: %s -> %s (samples: %s)",
                 hvac_mode,
+                {fm: round(v, 3) for fm, v in original.items()},
                 {fm: round(v, 3) for fm, v in enforced.items()},
+                counts,
             )
         return enforced
 

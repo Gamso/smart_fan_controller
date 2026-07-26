@@ -523,10 +523,10 @@ def test_mpc_disturbance_bias_decays_during_defrost() -> None:
 
 
 def test_monotone_constraint_enforces_ordering() -> None:
-    """Monotone constraint should clamp a lower mode's slope up to its neighbor when all profiles are ready."""
+    """An inverted weak profile is clamped down, leaving the stronger ones untouched."""
     learning = ThermalLearning()
 
-    # Create inverted profiles: silent > med (the real-world bug)
+    # Create inverted profiles: silent reads stronger than low (the real-world bug)
     learning.set_mode_effective_slope("silent", "heat", 0.53)
     learning.set_mode_effective_slope("low", "heat", 0.0)
     learning.set_mode_effective_slope("med", "heat", 0.45)
@@ -543,12 +543,14 @@ def test_monotone_constraint_enforces_ordering() -> None:
     monotone = mpc.build_monotone_slopes(["silent", "low", "med", "high", "superhigh"], "heat")
     assert isinstance(monotone, dict)
 
-    # silent (0.53) should stay, low (0.0 → clamped to 0.53), med (0.45 → clamped to 0.53)
-    assert monotone["silent"] == pytest.approx(0.53, abs=0.001)
-    assert monotone["low"] >= monotone["silent"]
-    assert monotone["med"] >= monotone["low"]
-    assert monotone["high"] >= monotone["med"]
-    assert monotone["superhigh"] >= monotone["high"]
+    # Equal sample counts, so the violation resolves downward: silent (0.53) is
+    # clamped onto low (0.0) rather than dragging low up to silent's value.
+    assert monotone["silent"] == pytest.approx(0.0, abs=0.001)
+    assert monotone["low"] == pytest.approx(0.0, abs=0.001)
+    # Profiles that were already ordered keep their learned values exactly.
+    assert monotone["med"] == pytest.approx(0.45, abs=0.001)
+    assert monotone["high"] == pytest.approx(0.96, abs=0.001)
+    assert monotone["superhigh"] == pytest.approx(1.35, abs=0.001)
 
 
 def test_monotone_constraint_returns_partial_dict_for_partial_profiles() -> None:
@@ -591,8 +593,60 @@ def test_monotone_constraint_partial_profiles_enforces_known_pairs() -> None:
     assert "med" not in result
     assert "high" in result
     assert "superhigh" in result
-    assert result["high"] == pytest.approx(1.59, abs=0.001)
-    assert result["superhigh"] == pytest.approx(1.59, abs=0.001)
+    # Equal sample counts: the weaker mode is clamped down onto the stronger one,
+    # so superhigh keeps its own learned value instead of being inflated to high's.
+    assert result["high"] == pytest.approx(1.075, abs=0.001)
+    assert result["superhigh"] == pytest.approx(1.075, abs=0.001)
+
+
+def test_monotone_constraint_trusts_the_better_sampled_profile() -> None:
+    """A noisy estimate from a rarely-used speed must not corrupt well-sampled ones.
+
+    Mirrors the real deployment: superhigh runs constantly (thousands of
+    samples), high often, med almost never. A plain forward max() pass would
+    propagate med's noisy high reading into both stronger profiles.
+    """
+    learning = ThermalLearning()
+    for _ in range(1656):
+        learning.add_slope_sample("superhigh", -0.9, 1.0, "cool")
+    for _ in range(145):
+        learning.add_slope_sample("high", -0.5, 1.0, "cool")
+    for _ in range(10):
+        learning.add_slope_sample("med", -1.6, 1.0, "cool")  # noisy: looks stronger than superhigh
+
+    mpc = MPCController(
+        learning=learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=["silent", "low", "med", "high", "superhigh"],
+    )
+    result = mpc.build_monotone_slopes(["silent", "low", "med", "high", "superhigh"], "cool")
+
+    # The two well-sampled profiles keep their learned values...
+    assert result["high"] == pytest.approx(0.5, abs=0.001)
+    assert result["superhigh"] == pytest.approx(0.9, abs=0.001)
+    # ...and the 10-sample outlier is the one that gets clamped.
+    assert result["med"] == pytest.approx(0.5, abs=0.001)
+
+
+def test_monotone_constraint_raises_a_poorly_sampled_stronger_mode() -> None:
+    """The trust rule is symmetric: a thin *stronger* profile is raised, not trusted."""
+    learning = ThermalLearning()
+    for _ in range(800):
+        learning.add_slope_sample("high", -0.9, 1.0, "cool")
+    for _ in range(10):
+        learning.add_slope_sample("superhigh", -0.3, 1.0, "cool")  # thin, reads weaker than high
+
+    mpc = MPCController(
+        learning=learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=["silent", "low", "med", "high", "superhigh"],
+    )
+    result = mpc.build_monotone_slopes(["silent", "low", "med", "high", "superhigh"], "cool")
+
+    assert result["high"] == pytest.approx(0.9, abs=0.001)  # 800 samples: untouched
+    assert result["superhigh"] == pytest.approx(0.9, abs=0.001)  # 10 samples: raised onto high
 
 
 def test_monotone_constraint_noop_when_already_ordered() -> None:
