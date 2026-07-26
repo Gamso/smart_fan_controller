@@ -16,6 +16,7 @@ from .const import (
     CONF_DATA_COLLECTION,
     CONF_DEFROST_ENTITY,
     CONF_OPERATING_ENTITY,
+    CONF_OUTDOOR_ENTITY,
     DEFAULT_DEADBAND,
     DEFAULT_MIN_INTERVAL,
     DEFAULT_DATA_COLLECTION,
@@ -106,6 +107,7 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_DATA_COLLECTION, default=DEFAULT_DATA_COLLECTION): selector.BooleanSelector(),
                 vol.Optional(CONF_DEFROST_ENTITY): selector.EntitySelector(selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])),
                 vol.Optional(CONF_OPERATING_ENTITY): selector.EntitySelector(selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])),
+                vol.Optional(CONF_OUTDOOR_ENTITY): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="temperature")),
             }
         )
 
@@ -125,6 +127,7 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
         available_climates = _get_climates_with_fan_modes_and_slope(self.hass)
         errors: dict[str, str] = {}
         current_data = {**self.config_entry.data, **self.config_entry.options}
+        current_climate = current_data.get(CONF_CLIMATE_ENTITY)
 
         if user_input is not None:
             climate_id = user_input[CONF_CLIMATE_ENTITY]
@@ -148,7 +151,6 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
 
         # Build selector config for options flow
         # Always include the current climate entity even if it's not in the filtered list
-        current_climate = current_data.get(CONF_CLIMATE_ENTITY)
         selector_config_kwargs: dict[str, Any] = {"domain": CLIMATE_DOMAIN}
         if available_climates:
             selector_config_kwargs["include_entities"] = available_climates
@@ -174,6 +176,9 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
                 ),
                 vol.Optional(CONF_OPERATING_ENTITY, default=current_data.get(CONF_OPERATING_ENTITY, vol.UNDEFINED)): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])
+                ),
+                vol.Optional(CONF_OUTDOOR_ENTITY, default=current_data.get(CONF_OUTDOOR_ENTITY, vol.UNDEFINED)): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
                 ),
             }
         )

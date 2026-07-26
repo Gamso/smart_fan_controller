@@ -21,6 +21,7 @@ from .const import (
     CONF_DEFROST_ENTITY,
     CONF_MIN_INTERVAL,
     CONF_OPERATING_ENTITY,
+    CONF_OUTDOOR_ENTITY,
     DEAD_TIME_SAFETY_FACTOR,
     DEFAULT_DATA_COLLECTION,
     DEFAULT_DEAD_TIME,
@@ -478,6 +479,25 @@ def _detect_disturbances(hass, conf: dict, defrost_state: dict) -> tuple[bool, b
     return is_defrost, is_hvac_idle
 
 
+def _read_outdoor_temp(hass, conf: dict) -> float | None:
+    """Return the configured outdoor temperature (°C), or None when unavailable.
+
+    Optional, telemetry only: logged to the data-collection CSV so the trace can
+    be correlated with outdoor conditions offline. No control decision reads it.
+    A missing, non-numeric, or unavailable sensor simply leaves the column empty.
+    """
+    outdoor_entity_id = conf.get(CONF_OUTDOOR_ENTITY)
+    if not outdoor_entity_id:
+        return None
+    state = hass.states.get(outdoor_entity_id)
+    if state is None or state.state in ("unknown", "unavailable", "", None):
+        return None
+    try:
+        return float(state.state)
+    except (TypeError, ValueError):
+        return None
+
+
 async def _async_apply_fan_change(
     hass,
     climate_id: str,
@@ -625,6 +645,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
         vtherm_slope, current_temp, target_temp, hvac_mode, current_fan, is_window_open = cycle_data
         is_defrost_active, is_hvac_idle = _detect_disturbances(hass, conf, ctrl_state["defrost"])
+        outdoor_temp = _read_outdoor_temp(hass, conf)
 
         now = time.time()
         minutes_since_change = (now - ctrl_state["last_change_time"]) / 60.0
@@ -760,6 +781,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 mpc_decision=mpc_decision,
                 defrost_active=is_defrost_active,
                 is_hvac_idle=is_hvac_idle,
+                outdoor_temp=outdoor_temp,
             )
 
         _update_sensors(hass, entry.entry_id, {

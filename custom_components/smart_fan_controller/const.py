@@ -15,6 +15,7 @@ CONF_MIN_INTERVAL = "min_interval"
 CONF_DATA_COLLECTION = "data_collection"
 CONF_DEFROST_ENTITY = "defrost_entity"
 CONF_OPERATING_ENTITY = "operating_entity"
+CONF_OUTDOOR_ENTITY = "outdoor_entity"
 
 # Default values
 DEFAULT_DEADBAND = 0.2

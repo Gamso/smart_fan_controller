@@ -382,8 +382,10 @@ class MPCController:
 
         def _stepdown_capable(sim: ModeSimulation) -> bool:
             candidate_index = fan_modes.index(sim.fan_mode)
+            if candidate_index >= current_index:
+                return True  # upward / same rank is always allowed
             if current_index - candidate_index <= 1:
-                return True  # adjacent (or upward) switches are unrestricted
+                return True
             raw_slope = self._learning.get_mode_effective_slope(sim.fan_mode, hvac_mode)
             return raw_slope is None or raw_slope > MIN_VIABLE_MULTI_RANK_STEPDOWN_SLOPE
 
@@ -394,9 +396,10 @@ class MPCController:
 
         if unfiltered_best.fan_mode != best.fan_mode:
             blocked_index = fan_modes.index(unfiltered_best.fan_mode)
+            ranks = current_index - blocked_index
             blocked_slope = self._learning.get_mode_effective_slope(unfiltered_best.fan_mode, hvac_mode)
             blocked_note = (
-                f"Blocked {current_index - blocked_index}-rank drop to {unfiltered_best.fan_mode}: "
+                f"Blocked {ranks}-rank drop to {unfiltered_best.fan_mode}: "
                 f"its own profile ({blocked_slope:.2f}C/h) can't sustain progress"
             )
 

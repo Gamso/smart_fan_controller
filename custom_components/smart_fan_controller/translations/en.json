@@ -10,15 +10,17 @@
                     "min_interval": "Min Interval (minutes)",
                     "data_collection": "Enable Data Collection (beta)",
                     "defrost_entity": "Defrost Entity (optional)",
-                    "operating_entity": "Heat Pump Operating Entity (optional)"
+                    "operating_entity": "Heat Pump Operating Entity (optional)",
+                    "outdoor_entity": "Outdoor Temperature Sensor (optional)"
                 },
                 "data_description": {
                     "climate_entity": "Must come from a Versatile Thermostat.",
                     "deadband": "Range: 0.0-5.0 °C. Default: 0.2 °C.",
-                    "min_interval": "Range: 1-60 min. Default: 10 min.",
+                    "min_interval": "Range: 1-60 min. Default: 10 min. Acts as both the floor and (x3) the cap on the adaptive interval derived from the learned dead time.",
                     "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
                     "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode.",
-                    "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off."
+                    "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off.",
+                    "outdoor_entity": "Optional, telemetry only: an outdoor temperature sensor. Its value is logged to the data-collection CSV so the trace can be correlated with outdoor conditions offline. No control decision reads it."
                 },
                 "error": {
                     "already_configured": "This climate entity is already configured.",
@@ -38,15 +40,17 @@
                     "min_interval": "Min Interval (minutes)",
                     "data_collection": "Enable Data Collection (beta)",
                     "defrost_entity": "Defrost Entity (optional)",
-                    "operating_entity": "Heat Pump Operating Entity (optional)"
+                    "operating_entity": "Heat Pump Operating Entity (optional)",
+                    "outdoor_entity": "Outdoor Temperature Sensor (optional)"
                 },
                 "data_description": {
                     "climate_entity": "Must come from a Versatile Thermostat.",
                     "deadband": "Range: 0.0-5.0 °C. Default: 0.2 °C.",
-                    "min_interval": "Range: 1-60 min. Default: 10 min.",
+                    "min_interval": "Range: 1-60 min. Default: 10 min. Acts as both the floor and (x3) the cap on the adaptive interval derived from the learned dead time.",
                     "data_collection": "Records one CSV row every 2 minutes in the Home Assistant config folder, alongside configuration.yaml: smart_fan_controller_data_XXXXXXXX.csv (max 10 MB, auto-rotated). Useful for reproducing algorithm behaviour and identifying improvements during the beta phase.",
                     "defrost_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump is in defrost mode.",
-                    "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off."
+                    "operating_entity": "Optional: binary sensor, sensor or input_boolean that indicates when the heat pump compressor is actively running. Used to prevent useless fan changes while the compressor is off.",
+                    "outdoor_entity": "Optional, telemetry only: an outdoor temperature sensor. Its value is logged to the data-collection CSV so the trace can be correlated with outdoor conditions offline. No control decision reads it."
                 },
                 "error": {
                     "already_configured": "This climate entity is already configured.",
