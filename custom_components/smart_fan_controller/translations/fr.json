@@ -41,7 +41,8 @@
                     "data_collection": "Activer la collecte de données (bêta)",
                     "defrost_entity": "Entité dégivrage (optionnel)",
                     "operating_entity": "Entité fonctionnement PAC (optionnel)",
-                    "outdoor_entity": "Capteur de température extérieure (optionnel)"
+                    "outdoor_entity": "Capteur de température extérieure (optionnel)",
+                    "fan_mode_order": "Ordre des vitesses (la plus faible en premier)"
                 },
                 "data_description": {
                     "climate_entity": "Doit provenir de Versatile Thermostat.",
@@ -50,12 +51,14 @@
                     "data_collection": "Enregistre une ligne CSV toutes les 2 minutes dans le dossier de configuration Home Assistant, à côté de configuration.yaml : smart_fan_controller_data_XXXXXXXX.csv (max 10 Mo, rotation automatique). Utile pour reproduire le comportement de l'algorithme et identifier des améliorations pendant la phase bêta.",
                     "defrost_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand la PAC est en dégivrage.",
                     "operating_entity": "Optionnel : binary sensor, sensor ou input_boolean indiquant quand le compresseur de la PAC est en marche. Utilisé pour éviter des changements de ventilation inutiles quand le compresseur est à l'arrêt.",
-                    "outdoor_entity": "Optionnel, télémétrie uniquement : un capteur de température extérieure. Sa valeur est enregistrée dans le CSV de collecte pour pouvoir corréler la trace aux conditions extérieures hors-ligne. Aucune décision de contrôle ne le lit."
+                    "outdoor_entity": "Optionnel, télémétrie uniquement : un capteur de température extérieure. Sa valeur est enregistrée dans le CSV de collecte pour pouvoir corréler la trace aux conditions extérieures hors-ligne. Aucune décision de contrôle ne le lit.",
+                    "fan_mode_order": "Le contrôleur considère la position d'une vitesse dans cette liste comme sa puissance : elle pilote le coût énergétique, la garde de sécurité sur les baisses de régime, et l'estimation utilisée pour les vitesses pas encore apprises. Par défaut, l'ordre remonté par votre entité climate est utilisé, et il est généralement correct — ne le modifiez que si une vitesse est mal placée. Sélectionnez toutes les vitesses, la plus faible en premier."
                 },
                 "error": {
                     "already_configured": "Cette entité climate est déjà configurée.",
                     "invalid_climate_entity": "Cette entité doit provenir de Versatile Thermostat.",
-                    "no_versatile_thermostat": "Aucune entité Versatile Thermostat trouvée."
+                    "no_versatile_thermostat": "Aucune entité Versatile Thermostat trouvée.",
+                    "fan_order_incomplete": "Sélectionnez chaque vitesse exactement une fois, ou laissez le champ vide pour conserver l'ordre remonté par l'entité climate."
                 }
             }
         }

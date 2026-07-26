@@ -19,6 +19,7 @@ from .const import (
     CONF_DATA_COLLECTION,
     CONF_DEADBAND,
     CONF_DEFROST_ENTITY,
+    CONF_FAN_MODE_ORDER,
     CONF_MIN_INTERVAL,
     CONF_OPERATING_ENTITY,
     CONF_OUTDOOR_ENTITY,
@@ -66,6 +67,29 @@ def _extract_supported_fan_modes(state) -> list[str]:
     if state is None:
         return []
     return _filter_supported_fan_modes(state.attributes.get("fan_modes"))
+
+
+def _apply_configured_fan_order(detected: list[str], configured: list[str] | None) -> list[str]:
+    """Reorder *detected* fan modes to follow the user's explicit weakest-to-strongest order.
+
+    The whole controller treats a fan mode's index as its strength: the energy
+    term (MODE_POWER_RATIO ** index), the step-down guard, the monotone slope
+    enforcement and the rank-scaling fallback for unlearned profiles all read
+    it. The climate entity's own ``fan_modes`` order is normally correct but is
+    trusted blindly, so the options flow lets it be overridden.
+
+    Modes present in *configured* keep that order; anything detected but not
+    listed (a mode added by the climate entity after configuration) is appended
+    so it stays usable rather than silently disappearing. Entries in
+    *configured* that no longer exist are dropped.
+    """
+    if not configured:
+        return detected
+    ordered = [mode for mode in configured if mode in detected]
+    ordered += [mode for mode in detected if mode not in ordered]
+    if ordered != detected:
+        _LOGGER.debug("Applied configured fan-mode order: %s -> %s", detected, ordered)
+    return ordered
 
 
 def _iter_loaded_entries(hass: HomeAssistant) -> list[tuple[str, dict]]:
@@ -539,7 +563,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     domain_data = hass.data.setdefault(DOMAIN, {})
     climate_id = conf[CONF_CLIMATE_ENTITY]
     current_state = hass.states.get(climate_id)
-    initial_fan_modes = _extract_supported_fan_modes(current_state)
+    configured_fan_order = conf.get(CONF_FAN_MODE_ORDER)
+    initial_fan_modes = _apply_configured_fan_order(
+        _extract_supported_fan_modes(current_state), configured_fan_order
+    )
 
     _LOGGER.info(
         "Setting up Smart Fan Controller for %s (data_collection=%s)",
@@ -632,7 +659,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
 
         if not mpc_controller.fan_modes:
-            detected_modes = _extract_supported_fan_modes(current_state)
+            detected_modes = _apply_configured_fan_order(
+                _extract_supported_fan_modes(current_state), configured_fan_order
+            )
             if detected_modes:
                 mpc_controller.fan_modes = detected_modes
                 _LOGGER.info("Detected fan modes for %s during runtime: %s", climate_id, detected_modes)

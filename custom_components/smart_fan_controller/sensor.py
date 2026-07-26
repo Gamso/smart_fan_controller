@@ -438,6 +438,19 @@ class SmartFanMpcProfilesSensor(_SmartFanEntity):
             "fan_modes_total": len(profiles),
             "known_profiles": sum(1 for profile in profiles.values() if profile["ready"]),
             "min_samples_required_per_profile": MIN_MODE_PROFILE_SAMPLES,
+            # Strength order actually in use (weakest first). Load-bearing: it drives
+            # the energy cost, the step-down guard and the unlearned-profile fallback,
+            # so it is surfaced here to be verifiable without reading the logs.
+            "fan_mode_order": list(self._controller.fan_modes or []),
+            # Learned slopes after ordering violations are resolved in favour of the
+            # better-sampled profile; differs from each profile's raw value when a
+            # thin estimate had to be clamped.
+            "effective_slopes_used": {
+                fan_mode: round(value, 3)
+                for fan_mode, value in self._controller.build_monotone_slopes(
+                    self._controller.fan_modes or [], self._hvac_mode
+                ).items()
+            },
             "profile_effective_slope_sensors": {
                 fan_mode: build_scoped_entity_id(
                     "sensor",

@@ -16,6 +16,7 @@ CONF_DATA_COLLECTION = "data_collection"
 CONF_DEFROST_ENTITY = "defrost_entity"
 CONF_OPERATING_ENTITY = "operating_entity"
 CONF_OUTDOOR_ENTITY = "outdoor_entity"
+CONF_FAN_MODE_ORDER = "fan_mode_order"  # explicit weakest-to-strongest order, overrides the climate entity's
 
 # Default values
 DEFAULT_DEADBAND = 0.2
