@@ -19,14 +19,14 @@ from .const import (
     CONF_DATA_COLLECTION,
     CONF_DEADBAND,
     CONF_DEFROST_ENTITY,
-    CONF_LIMIT_TIMEOUT,
+    CONF_FAN_MODE_ORDER,
     CONF_MIN_INTERVAL,
     CONF_OPERATING_ENTITY,
+    CONF_OUTDOOR_ENTITY,
     DEAD_TIME_SAFETY_FACTOR,
     DEFAULT_DATA_COLLECTION,
     DEFAULT_DEAD_TIME,
     DEFAULT_DEADBAND,
-    DEFAULT_LIMIT_TIMEOUT,
     DEFAULT_MIN_INTERVAL,
     DELTA_TIME_CONTROL_LOOP,
     DOMAIN,
@@ -67,6 +67,29 @@ def _extract_supported_fan_modes(state) -> list[str]:
     if state is None:
         return []
     return _filter_supported_fan_modes(state.attributes.get("fan_modes"))
+
+
+def _apply_configured_fan_order(detected: list[str], configured: list[str] | None) -> list[str]:
+    """Reorder *detected* fan modes to follow the user's explicit weakest-to-strongest order.
+
+    The whole controller treats a fan mode's index as its strength: the energy
+    term (MODE_POWER_RATIO ** index), the step-down guard, the monotone slope
+    enforcement and the rank-scaling fallback for unlearned profiles all read
+    it. The climate entity's own ``fan_modes`` order is normally correct but is
+    trusted blindly, so the options flow lets it be overridden.
+
+    Modes present in *configured* keep that order; anything detected but not
+    listed (a mode added by the climate entity after configuration) is appended
+    so it stays usable rather than silently disappearing. Entries in
+    *configured* that no longer exist are dropped.
+    """
+    if not configured:
+        return detected
+    ordered = [mode for mode in configured if mode in detected]
+    ordered += [mode for mode in detected if mode not in ordered]
+    if ordered != detected:
+        _LOGGER.debug("Applied configured fan-mode order: %s -> %s", detected, ordered)
+    return ordered
 
 
 def _iter_loaded_entries(hass: HomeAssistant) -> list[tuple[str, dict]]:
@@ -233,16 +256,13 @@ async def _apply_optimal_parameters(
     new_data = {**entry.data}
     new_data["learning_auto_applied"] = True
     new_data[CONF_DEADBAND] = optimal["deadband"]
-    new_data[CONF_LIMIT_TIMEOUT] = optimal["limit_timeout"]
     new_options = {**entry.options}
     new_options[CONF_DEADBAND] = optimal["deadband"]
-    new_options[CONF_LIMIT_TIMEOUT] = optimal["limit_timeout"]
 
     _LOGGER.info(
-        "Applying learned settings for %s: deadband=%.2f limit_timeout=%d",
+        "Applying learned settings for %s: deadband=%.2f",
         entry.entry_id,
         optimal["deadband"],
-        optimal["limit_timeout"],
     )
 
     hass.config_entries.async_update_entry(entry, data=new_data, options=new_options)
@@ -483,6 +503,25 @@ def _detect_disturbances(hass, conf: dict, defrost_state: dict) -> tuple[bool, b
     return is_defrost, is_hvac_idle
 
 
+def _read_outdoor_temp(hass, conf: dict) -> float | None:
+    """Return the configured outdoor temperature (°C), or None when unavailable.
+
+    Optional, telemetry only: logged to the data-collection CSV so the trace can
+    be correlated with outdoor conditions offline. No control decision reads it.
+    A missing, non-numeric, or unavailable sensor simply leaves the column empty.
+    """
+    outdoor_entity_id = conf.get(CONF_OUTDOOR_ENTITY)
+    if not outdoor_entity_id:
+        return None
+    state = hass.states.get(outdoor_entity_id)
+    if state is None or state.state in ("unknown", "unavailable", "", None):
+        return None
+    try:
+        return float(state.state)
+    except (TypeError, ValueError):
+        return None
+
+
 async def _async_apply_fan_change(
     hass,
     climate_id: str,
@@ -524,7 +563,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     domain_data = hass.data.setdefault(DOMAIN, {})
     climate_id = conf[CONF_CLIMATE_ENTITY]
     current_state = hass.states.get(climate_id)
-    initial_fan_modes = _extract_supported_fan_modes(current_state)
+    configured_fan_order = conf.get(CONF_FAN_MODE_ORDER)
+    initial_fan_modes = _apply_configured_fan_order(
+        _extract_supported_fan_modes(current_state), configured_fan_order
+    )
 
     _LOGGER.info(
         "Setting up Smart Fan Controller for %s (data_collection=%s)",
@@ -558,7 +600,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         learning=learning,
         deadband=conf.get(CONF_DEADBAND, DEFAULT_DEADBAND),
         min_interval=conf.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL),
-        limit_timeout=conf.get(CONF_LIMIT_TIMEOUT, DEFAULT_LIMIT_TIMEOUT),
         fan_modes=initial_fan_modes or None,
     )
 
@@ -595,7 +636,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Mutable state shared between control-loop callbacks (closure variables)
     ctrl_state: dict = {
-        "last_change_time": time.time() - (conf.get(CONF_LIMIT_TIMEOUT, DEFAULT_LIMIT_TIMEOUT) * 60),
+        # Seed as if the min interval had just elapsed so the first cycle can act
+        # immediately instead of waiting out a fresh cooldown.
+        "last_change_time": time.time() - (conf.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL) * 60),
         "last_setpoint_drop_time": 0.0,
         "previous_slope": None,
         "last_hvac_mode": None,
@@ -616,7 +659,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
 
         if not mpc_controller.fan_modes:
-            detected_modes = _extract_supported_fan_modes(current_state)
+            detected_modes = _apply_configured_fan_order(
+                _extract_supported_fan_modes(current_state), configured_fan_order
+            )
             if detected_modes:
                 mpc_controller.fan_modes = detected_modes
                 _LOGGER.info("Detected fan modes for %s during runtime: %s", climate_id, detected_modes)
@@ -629,6 +674,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
         vtherm_slope, current_temp, target_temp, hvac_mode, current_fan, is_window_open = cycle_data
         is_defrost_active, is_hvac_idle = _detect_disturbances(hass, conf, ctrl_state["defrost"])
+        outdoor_temp = _read_outdoor_temp(hass, conf)
 
         now = time.time()
         minutes_since_change = (now - ctrl_state["last_change_time"]) / 60.0
@@ -764,6 +810,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 mpc_decision=mpc_decision,
                 defrost_active=is_defrost_active,
                 is_hvac_idle=is_hvac_idle,
+                outdoor_temp=outdoor_temp,
             )
 
         _update_sensors(hass, entry.entry_id, {

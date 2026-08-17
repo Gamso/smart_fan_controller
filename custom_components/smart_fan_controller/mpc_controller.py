@@ -11,6 +11,7 @@ from .const import (
     PHASE_DEAD_TIME,
     PHASE_ESTABLISHED,
     PHASE_TRANSIENT,
+    PROFILE_HVAC_MODES,
     REFERENCE_SLOPE_ERROR,
     THRESHOLD_TARGET_DROP,
 )
@@ -32,6 +33,42 @@ MODE_POWER_RATIO = 1.82
 MIN_INTERVAL_CHANGE_PENALTY = 25.0
 URGENCY_SENSITIVITY = 2.0
 
+# The configured min_interval is a floor; once learning is ready the effective
+# dwell before a fan change is raised toward the learned dead time (you cannot
+# observe a change's effect faster than the dead time, so changing sooner just
+# invites oscillation). The rise is capped at this factor x the configured floor
+# so a spuriously large learned dead time cannot stall the controller.
+MAX_ADAPTIVE_INTERVAL_FACTOR = 3.0
+
+# The dead-time lock above has no visibility into whether the current fan mode
+# is actually holding comfort — a misjudged step (e.g. a multi-rank drop) can
+# leave the room drifting away from target for the full adaptive interval with
+# no escape. A static error threshold does not fit every deadband/system, so
+# instead this tracks how much the comfort error has *grown* since the fan
+# last changed (comparing against the error at that moment) — a direct read of
+# the room's actual trajectory rather than an arbitrary absolute cutoff. Past
+# this much growth, an *escalation only* (never a step-down) is allowed to
+# bypass the lock.
+DEAD_TIME_ESCALATION_GROWTH = 0.15  # degC comfort error allowed to worsen since the change
+
+# --- Hold-equilibrium (economic) mode -------------------------------------
+# When enabled, near the setpoint the controller matches fan output to the
+# system's steady thermal production instead of collapsing to the lowest speed.
+# Rationale: on a running heat pump the compressor draws the dominant power and
+# keeps producing cold/heat regardless of fan speed, so the fan-rank penalty
+# (which models fan watts) optimises the wrong term there. Holding the room flat
+# with a steady speed avoids the drift-then-blast cycle and lets an inverter
+# compressor modulate at high COP instead of short-cycling. A small, bounded cold
+# undershoot is tolerated so the holding speed can slightly lead the load rather
+# than lag it — this is what lets a discrete speed ladder actually hold.
+# Enabled by default: on the 899 h production trace it shifted ~14% of time from
+# `low` to a steady `med` hold and cut fan changes 357->313 with no change in
+# predicted comfort (MAE T+10) or average cost. The feature is dormant whenever
+# the error exceeds the deadband, so far-from-setpoint escalation is untouched.
+HOLD_EQUILIBRIUM = True
+HOLD_UNDERSHOOT_TOLERANCE = 0.3  # °C of free wrong-side undershoot inside the hold zone
+HOLD_RANK_SCALE = 0.15  # shrink the fan-rank (energy) penalty to a tie-breaker in the zone
+
 # Disturbance bias tracker
 DISTURBANCE_EMA_ALPHA = 0.2
 DISTURBANCE_DECAY = 0.85
@@ -46,6 +83,37 @@ STEP_SWITCH_MARGIN = 0.05
 UNDER_TARGET_STEPDOWN_GAIN_MARGIN = 0.2
 UNDER_TARGET_STEPDOWN_GAIN_PER_DEG = 0.5
 UNDER_TARGET_SHORTFALL_RESERVE = 0.1
+
+# Guard against jumping straight to a fan mode more than one rank below the
+# current one when that candidate's own learned profile shows it cannot
+# sustain progress (net effective slope <= 0 at the reference error). The
+# cost-based forecast cannot be trusted for this: during the dead-time-blind
+# window (see sim_horizon below) every candidate's near-term trajectory is
+# dominated by the *current* mode's momentum, not the candidate's own
+# behaviour, so a weak mode can look deceptively good right up until the
+# switch is committed. Adjacent-rank switches are left untouched — this only
+# blocks multi-rank plunges to a mode with no track record of holding.
+MIN_VIABLE_MULTI_RANK_STEPDOWN_SLOPE = 0.0
+
+# Capacity spacing between adjacent fan speeds, used when a profile's own
+# estimate is discarded for violating the strength order (see
+# build_monotone_slopes). Collapsing the rejected speed onto its neighbour's
+# value would leave the MPC unable to tell them apart thermally, so the only
+# remaining tie-breaker would be the energy term — which always prefers the
+# weaker rank. That starves the stronger speed of samples, which keeps its
+# profile thin, which keeps it being rejected: a self-reinforcing trap. Placing
+# it one geometric step away instead keeps the ladder ordered *and* separated.
+# Calibrated on the production ladder, whose measured ratios between adjacent
+# speeds are 2.08 (med->high) and 1.76 (high->superhigh), geometric mean ~1.9.
+# Deliberately a separate constant from MODE_POWER_RATIO: that one models
+# electrical draw (~RPM^3), this one thermal delivery (~airflow), and they
+# should be tunable independently even though they happen to sit close together.
+LADDER_CAPACITY_RATIO = 1.8
+
+# Multiplicative spacing collapses around zero (0 / anything is still 0), which
+# would reintroduce the very equality the ratio exists to avoid. Below this much
+# separation, fall back to an absolute step.
+MIN_LADDER_SEPARATION = 0.05  # degC/h
 
 
 @dataclass(slots=True)
@@ -68,7 +136,6 @@ class MPCController:
         learning: ThermalLearning,
         deadband: float,
         min_interval: int,
-        limit_timeout: int = 15,
         fan_modes: list[str] | None = None,
         horizon_minutes: int = 30,
         cycle_minutes: int = DELTA_TIME_CONTROL_LOOP,
@@ -76,11 +143,11 @@ class MPCController:
         self._learning = learning
         self._deadband = deadband
         self._min_interval = min_interval
-        self._limit_timeout = limit_timeout
         self._fan_modes = fan_modes
         self._horizon_minutes = horizon_minutes
         self._cycle_minutes = cycle_minutes
         self._disturbance_bias = 0.0
+        self._error_at_lock_start: float | None = None
 
     @property
     def fan_modes(self) -> list[str] | None:
@@ -100,38 +167,69 @@ class MPCController:
             self._warn_if_unordered(modes)
 
     def _warn_if_unordered(self, modes: list[str]) -> None:
-        """Log a warning when learned slopes don't match the assumed mode ordering."""
-        prev_slope = None
-        for mode in modes:
-            slope = self._learning.get_mode_effective_slope(mode, "heat")
-            if slope is None:
-                return  # Not all profiles learned yet; skip check
-            if prev_slope is not None and slope < prev_slope:
-                _LOGGER.warning(
-                    "Fan modes may not be ordered weakest-to-strongest: "
-                    "learned slopes violate monotonicity at '%s'. "
-                    "Check the fan_modes list in your climate entity",
-                    mode,
-                )
-                return
-            prev_slope = slope
+        """Log a warning when learned slopes don't match the assumed mode ordering.
+
+        Checks every hvac mode (not just heating — a cooling-only install would
+        otherwise never be checked) and skips profiles that aren't learned yet
+        instead of giving up at the first one, so a partially-learned ladder is
+        still validated on the profiles that do exist.
+        """
+        for hvac_mode in PROFILE_HVAC_MODES:
+            prev_mode: str | None = None
+            prev_slope: float | None = None
+            for mode in modes:
+                slope = self._learning.get_mode_effective_slope(mode, hvac_mode)
+                if slope is None:
+                    continue  # not learned yet — skip, keep checking the others
+                if prev_slope is not None and slope < prev_slope:
+                    _LOGGER.warning(
+                        "Fan modes may not be ordered weakest-to-strongest for %s: "
+                        "'%s' (%.2f C/h) is learned as weaker than '%s' (%.2f C/h). "
+                        "If the order is wrong, set it explicitly in the integration options",
+                        hvac_mode,
+                        mode,
+                        slope,
+                        prev_mode,
+                        prev_slope,
+                    )
+                    break
+                prev_mode, prev_slope = mode, slope
 
     @property
     def learning(self) -> ThermalLearning:
         """Return the ThermalLearning instance used by this controller."""
         return self._learning
 
-    @property
-    def limit_timeout(self) -> int:
-        """Return the configured static limit timeout (minutes)."""
-        return self._limit_timeout
-
     def get_effective_timeout(self, hvac_mode: str = "unknown") -> float:
-        """Return the adaptive timeout based on learned dead time, or static fallback."""
+        """Return the adaptive advisory timeout (diagnostic only).
+
+        This value is surfaced in sensors and the data-collection CSV to show how
+        long the controller would wait before forcing a re-evaluation; it does not
+        gate any control decision (that is the job of ``min_interval``). Before
+        learning is ready it falls back to the default dead time scaled by the
+        safety factor.
+        """
         if self._learning.is_ready():
             learned_dead_time = self._learning.get_dead_time(hvac_mode)
             return max(self._min_interval, learned_dead_time * DEAD_TIME_SAFETY_FACTOR)
-        return self._limit_timeout
+        return DEFAULT_DEAD_TIME * DEAD_TIME_SAFETY_FACTOR
+
+    def _effective_min_interval(self, dead_time: float) -> float:
+        """Return the minimum dwell (minutes) before a fan change is allowed.
+
+        The configured ``min_interval`` is a floor. Once learning is ready the
+        effective dwell is raised toward the learned ``dead_time`` — changing the
+        fan faster than the dead time means acting before the previous change's
+        effect can be observed, a guaranteed source of oscillation. The rise is
+        capped at ``MAX_ADAPTIVE_INTERVAL_FACTOR`` × the configured floor so a
+        spuriously large learned dead time cannot make the controller sluggish.
+        Urgent overrides (setpoint drop, window/defrost/idle) are handled before
+        this gate, so they are never blocked by a long adaptive interval.
+        """
+        if not self._learning.is_ready():
+            return float(self._min_interval)
+        capped = min(dead_time, self._min_interval * MAX_ADAPTIVE_INTERVAL_FACTOR)
+        return max(float(self._min_interval), capped)
 
     @property
     def disturbance_bias(self) -> float:
@@ -184,7 +282,13 @@ class MPCController:
         current_effective_slope = -vtherm_slope if hvac_mode == "cool" else vtherm_slope
         current_error = self._temperature_error(current_temp, target_temp, hvac_mode)
         dead_time = self._learning.get_dead_time()
-        change_allowed = minutes_since_change >= self._min_interval
+        effective_min_interval = self._effective_min_interval(dead_time)
+        change_allowed = minutes_since_change >= effective_min_interval
+        # Snapshot the comfort error at the start of each hold so growth since
+        # the fan last changed can be measured (see DEAD_TIME_ESCALATION_GROWTH).
+        if minutes_since_change < self._cycle_minutes or self._error_at_lock_start is None:
+            self._error_at_lock_start = current_error
+        error_growth_since_change = current_error - self._error_at_lock_start
         phase = self._detect_phase(minutes_since_change, dead_time)
         current_mode_slope, current_known_profile = self._get_mode_slope(
             active_fan,
@@ -307,12 +411,42 @@ class MPCController:
                     worst_spread = max(worst_spread, spread)
 
         current_simulation = next(sim for sim in simulations if sim.fan_mode == active_fan)
-        best = min(simulations, key=lambda item: item.total_cost)
+        unfiltered_best = min(simulations, key=lambda item: item.total_cost)
+
+        def _stepdown_capable(sim: ModeSimulation) -> bool:
+            candidate_index = fan_modes.index(sim.fan_mode)
+            if candidate_index >= current_index:
+                return True  # upward / same rank is always allowed
+            if current_index - candidate_index <= 1:
+                return True
+            raw_slope = self._learning.get_mode_effective_slope(sim.fan_mode, hvac_mode)
+            return raw_slope is None or raw_slope > MIN_VIABLE_MULTI_RANK_STEPDOWN_SLOPE
+
+        eligible_simulations = [sim for sim in simulations if _stepdown_capable(sim)]
+        best = min(eligible_simulations, key=lambda item: item.total_cost)
         selection_note = ""
+        blocked_note = ""
+
+        if unfiltered_best.fan_mode != best.fan_mode:
+            blocked_index = fan_modes.index(unfiltered_best.fan_mode)
+            ranks = current_index - blocked_index
+            blocked_slope = self._learning.get_mode_effective_slope(unfiltered_best.fan_mode, hvac_mode)
+            blocked_note = (
+                f"Blocked {ranks}-rank drop to {unfiltered_best.fan_mode}: "
+                f"its own profile ({blocked_slope:.2f}C/h) can't sustain progress"
+            )
 
         if not change_allowed and best.fan_mode != active_fan:
-            selection_note = f"Min interval holds {active_fan} until a change is allowed"
-            best = current_simulation
+            best_index = fan_modes.index(best.fan_mode)
+            if best_index > current_index and error_growth_since_change > DEAD_TIME_ESCALATION_GROWTH:
+                selection_note = (
+                    f"Emergency escalation to {best.fan_mode}: comfort error worsened by "
+                    f"{error_growth_since_change:.2f}C since the change bypasses the min interval"
+                )
+                change_allowed = True
+            else:
+                selection_note = f"Min interval holds {active_fan} until a change is allowed"
+                best = current_simulation
         elif change_allowed and best.fan_mode != active_fan:
             best_index = fan_modes.index(best.fan_mode)
             required_gain = self._required_switch_gain(
@@ -363,6 +497,8 @@ class MPCController:
             f"MPC recommends {best.fan_mode}: cost={best.total_cost:.2f}, "
             f"T+10={best.predicted_temp_10m:.2f}C, T+30={best.predicted_temp_30m:.2f}C"
         )
+        if blocked_note:
+            reason += f" | {blocked_note}"
         if selection_note:
             reason += f" | {selection_note}"
         # Surface capacity saturation: strongest fan selected yet still well short
@@ -374,7 +510,7 @@ class MPCController:
         if not change_allowed:
             reason += (
                 f" | Min interval active ({minutes_since_change:.1f}/"
-                f"{self._min_interval:.1f} min)"
+                f"{effective_min_interval:.1f} min)"
             )
 
         _LOGGER.debug(
@@ -464,37 +600,106 @@ class MPCController:
             return PHASE_TRANSIENT
         return PHASE_ESTABLISHED
 
+    @staticmethod
+    def _one_rank_weaker(value: float) -> float:
+        """Return a slope one ladder step below *value*, strictly smaller than it.
+
+        Scaling is multiplicative so the step tracks the magnitude of the
+        neighbour, but a positive slope shrinks toward zero while a negative one
+        (a speed that loses ground) grows more negative — both mean "weaker".
+        """
+        scaled = value / LADDER_CAPACITY_RATIO if value > 0 else value * LADDER_CAPACITY_RATIO
+        if value - scaled < MIN_LADDER_SEPARATION:
+            scaled = value - MIN_LADDER_SEPARATION
+        return scaled
+
+    @staticmethod
+    def _one_rank_stronger(value: float) -> float:
+        """Return a slope one ladder step above *value*, strictly greater than it."""
+        scaled = value * LADDER_CAPACITY_RATIO if value > 0 else value / LADDER_CAPACITY_RATIO
+        if scaled - value < MIN_LADDER_SEPARATION:
+            scaled = value + MIN_LADDER_SEPARATION
+        return scaled
+
     def build_monotone_slopes(self, fan_modes: list[str], hvac_mode: str) -> dict[str, float]:
         """Return monotone-enforced slopes for all known profiles.
 
-        Fan modes are assumed ordered from weakest to strongest.  For each mode
-        with a learned profile, the slope is clamped to be >= the slope of the
-        last known lower mode (isotonic forward pass).  Modes without a learned
-        profile are omitted from the result — the caller falls back to rank-scaled
-        estimation for those.
+        Fan modes are assumed ordered from weakest to strongest, so learned
+        slopes must be non-decreasing along that order. Modes without a learned
+        profile are omitted — the caller falls back to rank-scaled estimation.
 
-        Previously returned None when any profile was missing.  Now always
-        returns a (possibly empty) dict so known adjacent profiles are always
-        monotone-enforced even during partial learning.
+        Profiles are placed **best-sampled first**, each one clipped into the
+        window left by those already placed. So the most trusted estimate is
+        never overwritten, and a noisy estimate from a rarely-used speed cannot
+        propagate into the profiles that have the most data behind them — which
+        a plain forward ``max()`` pass does, since it always resolves upward
+        (a 10-sample ``med`` reading +1.6 would drag a 1656-sample ``superhigh``
+        from +0.9 up to +1.6).
+
+        A profile whose own estimate falls outside that window is discarded and
+        **synthesised one ladder step from the neighbour that constrained it**
+        (see LADDER_CAPACITY_RATIO) rather than pinned onto it: two speeds
+        sharing an identical slope are thermally indistinguishable to the MPC,
+        so the energy term alone would arbitrate — always picking the weaker
+        rank, which then starves the stronger one of the samples it needs to
+        ever be trusted.
+
+        Placement is a single pass in trust order, so the result is monotone by
+        construction with no iteration to converge. A ladder that is already
+        consistent is returned untouched, whatever its own spacing: the ratio
+        only ever synthesises a replacement, it is never imposed as a minimum
+        gap between measured values.
         """
-        enforced: dict[str, float] = {}
-        prev = float("-inf")
-        changed = False
-        for fm in fan_modes:
-            slope = self._learning.get_mode_effective_slope(fm, hvac_mode)
-            if slope is None:
-                continue  # unknown profile — skip, caller uses rank-scaling fallback
-            clamped = max(slope, prev)
-            if clamped != slope:
-                changed = True
-            enforced[fm] = clamped
-            prev = clamped
+        measured = {
+            fm: slope
+            for fm in fan_modes
+            if (slope := self._learning.get_mode_effective_slope(fm, hvac_mode)) is not None
+        }
+        if not measured:
+            return {}
 
-        if changed:
+        rank = {fm: index for index, fm in enumerate(fan_modes)}
+        counts = {fm: self._learning.get_mode_sample_count(fm, hvac_mode) for fm in measured}
+
+        # Place profiles best-sampled first, so every later profile is constrained
+        # by evidence at least as strong as its own and the most trusted estimate
+        # is never overwritten. On an equal sample count the stronger rank is
+        # placed first, which makes a tied violation resolve by weakening the
+        # lower speed rather than strengthening the higher one.
+        placement_order = sorted(measured, key=lambda fm: (counts[fm], rank[fm]), reverse=True)
+
+        placed: dict[str, float] = {}
+        for fm in placement_order:
+            below = [v for f, v in placed.items() if rank[f] < rank[fm]]
+            above = [v for f, v in placed.items() if rank[f] > rank[fm]]
+            floor = max(below, default=float("-inf"))
+            ceiling = min(above, default=float("inf"))
+
+            value = measured[fm]
+            if value > ceiling:
+                # Own estimate claims more capacity than an already-placed stronger
+                # speed. Discard it and synthesise one ladder step below that speed
+                # rather than pinning it onto the ceiling: identical slopes are
+                # thermally indistinguishable to the MPC, so the energy term alone
+                # would arbitrate and would always pick the weaker rank.
+                value = self._one_rank_weaker(ceiling)
+            elif value < floor:
+                value = self._one_rank_stronger(floor)
+            # A synthesised value can overshoot the opposite bound when the two
+            # placed neighbours sit close together; the window wins, since ordering
+            # is the invariant the rest of the MPC depends on and separation is
+            # only a preference. Collapses to a bound only when there is genuinely
+            # no room left between the neighbours.
+            placed[fm] = min(max(value, floor), ceiling)
+
+        enforced = {fm: placed[fm] for fm in fan_modes if fm in placed}
+        if enforced != measured:
             _LOGGER.debug(
-                "Monotone enforcement applied for %s: %s",
+                "Slope ordering enforced for %s: %s -> %s (samples: %s)",
                 hvac_mode,
+                {fm: round(v, 3) for fm, v in measured.items()},
                 {fm: round(v, 3) for fm, v in enforced.items()},
+                counts,
             )
         return enforced
 
@@ -584,6 +789,14 @@ class MPCController:
         cost = 0.0
         thermal_power = current_effective_slope
         change_delay = 0.0 if candidate_fan == current_fan else dead_time
+        # Hold zone: within one deadband of the setpoint we optimise for holding
+        # equilibrium (match the compressor's steady output) rather than for the
+        # lowest fan rank. See the HOLD_EQUILIBRIUM constant block for rationale.
+        hold_active = (
+            HOLD_EQUILIBRIUM
+            and abs(self._temperature_error(current_temp, target_temp, hvac_mode)) <= self._deadband
+        )
+        undershoot_tolerance = HOLD_UNDERSHOOT_TOLERANCE if hold_active else 0.0
 
         for step in range(1, steps + 1):
             elapsed = step * self._cycle_minutes
@@ -607,7 +820,7 @@ class MPCController:
 
             error = self._temperature_error(sim_temp, target_temp, hvac_mode)
             comfort_error = max(abs(error) - self._deadband, 0.0)
-            overshoot = max(-error, 0.0)
+            overshoot = max(-error - undershoot_tolerance, 0.0)
             floor_violation = max(target_temp - sim_temp, 0.0) if hvac_mode == "heat" else max(sim_temp - target_temp, 0.0)
 
             # Step-by-step urgency weight calculated dynamically based on current simulated step comfort error
@@ -623,7 +836,8 @@ class MPCController:
         # mode is differentiated regardless of how many the climate entity exposes
         # (a 4-mode system reproduces the previous 1.0 / 1.8 / 3.3 / 6.0 ramp).
         relative_power = MODE_POWER_RATIO ** candidate_index
-        cost += MODE_RANK_COST * relative_power
+        rank_scale = HOLD_RANK_SCALE if hold_active else 1.0
+        cost += MODE_RANK_COST * relative_power * rank_scale
         if candidate_fan != current_fan and not change_allowed:
             cost += MIN_INTERVAL_CHANGE_PENALTY
 

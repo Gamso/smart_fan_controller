@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 from datetime import datetime
 from importlib import import_module
@@ -61,6 +62,9 @@ TUNABLE = [
     "MODE_RANK_COST",
     "MIN_INTERVAL_CHANGE_PENALTY",
     "URGENCY_SENSITIVITY",
+    "HOLD_EQUILIBRIUM",
+    "HOLD_UNDERSHOOT_TOLERANCE",
+    "HOLD_RANK_SCALE",
 ]
 _DEFAULTS = {k: getattr(_mpc_mod, k) for k in TUNABLE}
 _PROFILE_ENTITY_RE = re.compile(r"_(heat|cool)_([^_]+)_effective_slope$")
@@ -156,6 +160,10 @@ def load_csv(path: str) -> list[Row]:
     with open(path, newline="", encoding="utf-8") as fh:
         for r in csv.DictReader(fh):
             try:
+                # Guard against occasional corrupted export rows (e.g. embedded
+                # null bytes in the timestamp) so a single bad line can't abort
+                # an outdoor-temperature lookup mid-replay.
+                parse_timestamp(r["timestamp"])
                 rows.append(
                     Row(
                         timestamp=r["timestamp"],

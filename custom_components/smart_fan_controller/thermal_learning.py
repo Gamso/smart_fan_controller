@@ -4,7 +4,6 @@ import statistics
 
 from .const import (
     MIN_SAMPLES_LEARNING,
-    MIN_LIMIT_TIMEOUT,
     MIN_MODE_PROFILE_SAMPLES,
     DEFAULT_DEAD_TIME,
     REFERENCE_SLOPE_ERROR,
@@ -530,15 +529,10 @@ class ThermalLearning:
         slope_variance = self._slope_m2 / (self._slope_count - 1) if self._slope_count > 1 else 0.01
         slope_stdev = slope_variance**0.5  # Standard deviation
 
-        # Analyze response times
+        # Analyze response times (surfaced as response_samples/avg for diagnostics)
         response_times = [item[1] for item in self._response_events if item[1] > 0]
         # Use median instead of mean to be robust against outliers
         avg_response = statistics.median(response_times) if response_times else 10.0
-
-        # Compute optimal_limit_timeout based on observed response time.
-        # Apply a minimum floor (MIN_LIMIT_TIMEOUT) to prevent the timeout from
-        # being set so low that it causes continuous fan oscillations.
-        optimal_limit_timeout = max(MIN_LIMIT_TIMEOUT, int(round(avg_response)))
 
         # Adapt thresholds to slope characteristics
         # High volatility → larger deadbands to avoid oscillations
@@ -547,17 +541,16 @@ class ThermalLearning:
         optimal_deadband = 0.15 + (volatility_factor * 0.2)
 
         _LOGGER.info(
-            "Auto-calibration complete: avg_slope=%.2f std=%.2f max=%.2f | avg_response=%.1fmin | limit_timeout=%d",
+            "Auto-calibration complete: avg_slope=%.2f std=%.2f max=%.2f | avg_response=%.1fmin | deadband=%.2f",
             self._slope_mean,
             slope_stdev,
             self._slope_max,
             avg_response,
-            optimal_limit_timeout,
+            optimal_deadband,
         )
 
         result = {
             "deadband": round(optimal_deadband, 2),
-            "limit_timeout": optimal_limit_timeout,
             "samples_count": self._slope_count,
             "response_samples": len(response_times),
         }

@@ -11,15 +11,15 @@ from homeassistant.components.climate import DOMAIN as CLIMATE_DOMAIN
 from .const import (
     DOMAIN,
     CONF_CLIMATE_ENTITY,
+    CONF_FAN_MODE_ORDER,
     CONF_DEADBAND,
     CONF_MIN_INTERVAL,
-    CONF_LIMIT_TIMEOUT,
     CONF_DATA_COLLECTION,
     CONF_DEFROST_ENTITY,
     CONF_OPERATING_ENTITY,
+    CONF_OUTDOOR_ENTITY,
     DEFAULT_DEADBAND,
     DEFAULT_MIN_INTERVAL,
-    DEFAULT_LIMIT_TIMEOUT,
     DEFAULT_DATA_COLLECTION,
 )
 
@@ -39,6 +39,31 @@ def _validate_climate_state(state) -> str | None:
         return "invalid_climate_entity"
     if state.attributes.get("specific_states", {}).get("temperature_slope") is None:
         return "invalid_climate_entity"
+    return None
+
+
+def _extract_fan_modes(state) -> list[str]:
+    """Return the manual fan modes exposed by a climate state (excludes auto/off)."""
+    if state is None:
+        return []
+    raw_modes = state.attributes.get("fan_modes")
+    if not raw_modes:
+        return []
+    return [mode for mode in raw_modes if isinstance(mode, str) and mode.lower() not in {"auto", "off"}]
+
+
+def _validate_fan_order(selected: list[str] | None, detected: list[str]) -> str | None:
+    """Return an error key when the submitted fan order is unusable, else None.
+
+    An empty selection means "keep the climate entity's own order" and is valid.
+    A partial selection is rejected: a half-specified ladder is worse than none,
+    since the unlisted modes would be silently appended in detected order and
+    the user would believe they had set the strength order explicitly.
+    """
+    if not selected:
+        return None
+    if set(selected) != set(detected):
+        return "fan_order_incomplete"
     return None
 
 
@@ -105,12 +130,10 @@ class SmartFanControllerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_MIN_INTERVAL, default=DEFAULT_MIN_INTERVAL): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=1, max=60, step=1, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="min")
                 ),
-                vol.Optional(CONF_LIMIT_TIMEOUT, default=DEFAULT_LIMIT_TIMEOUT): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=10, max=120, step=5, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="min")
-                ),
                 vol.Optional(CONF_DATA_COLLECTION, default=DEFAULT_DATA_COLLECTION): selector.BooleanSelector(),
                 vol.Optional(CONF_DEFROST_ENTITY): selector.EntitySelector(selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])),
                 vol.Optional(CONF_OPERATING_ENTITY): selector.EntitySelector(selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])),
+                vol.Optional(CONF_OUTDOOR_ENTITY): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor", device_class="temperature")),
             }
         )
 
@@ -130,10 +153,16 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
         available_climates = _get_climates_with_fan_modes_and_slope(self.hass)
         errors: dict[str, str] = {}
         current_data = {**self.config_entry.data, **self.config_entry.options}
+        current_climate = current_data.get(CONF_CLIMATE_ENTITY)
+        detected_fan_modes = _extract_fan_modes(self.hass.states.get(current_climate)) if current_climate else []
 
         if user_input is not None:
             climate_id = user_input[CONF_CLIMATE_ENTITY]
             current_climate_id = current_data.get(CONF_CLIMATE_ENTITY)
+
+            order_error = _validate_fan_order(user_input.get(CONF_FAN_MODE_ORDER), detected_fan_modes)
+            if order_error:
+                errors[CONF_FAN_MODE_ORDER] = order_error
 
             # Only validate the climate entity if the user is changing it
             if climate_id != current_climate_id:
@@ -153,7 +182,6 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
 
         # Build selector config for options flow
         # Always include the current climate entity even if it's not in the filtered list
-        current_climate = current_data.get(CONF_CLIMATE_ENTITY)
         selector_config_kwargs: dict[str, Any] = {"domain": CLIMATE_DOMAIN}
         if available_climates:
             selector_config_kwargs["include_entities"] = available_climates
@@ -173,15 +201,28 @@ class SmartFanControllerOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(CONF_MIN_INTERVAL, default=current_data.get(CONF_MIN_INTERVAL, DEFAULT_MIN_INTERVAL)): selector.NumberSelector(
                     selector.NumberSelectorConfig(min=1, max=60, step=1, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="min")
                 ),
-                vol.Optional(CONF_LIMIT_TIMEOUT, default=current_data.get(CONF_LIMIT_TIMEOUT, DEFAULT_LIMIT_TIMEOUT)): selector.NumberSelector(
-                    selector.NumberSelectorConfig(min=10, max=120, step=5, mode=selector.NumberSelectorMode.BOX, unit_of_measurement="min")
-                ),
                 vol.Optional(CONF_DATA_COLLECTION, default=current_data.get(CONF_DATA_COLLECTION, DEFAULT_DATA_COLLECTION)): selector.BooleanSelector(),
                 vol.Optional(CONF_DEFROST_ENTITY, default=current_data.get(CONF_DEFROST_ENTITY, vol.UNDEFINED)): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])
                 ),
                 vol.Optional(CONF_OPERATING_ENTITY, default=current_data.get(CONF_OPERATING_ENTITY, vol.UNDEFINED)): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain=["binary_sensor", "sensor", "input_boolean"])
+                ),
+                vol.Optional(CONF_OUTDOOR_ENTITY, default=current_data.get(CONF_OUTDOOR_ENTITY, vol.UNDEFINED)): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
+                ),
+                # Pick every speed, weakest first. Left empty, the climate entity's
+                # own fan_modes order is used (see _apply_configured_fan_order).
+                vol.Optional(
+                    CONF_FAN_MODE_ORDER,
+                    default=current_data.get(CONF_FAN_MODE_ORDER, detected_fan_modes),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=detected_fan_modes,
+                        multiple=True,
+                        sort=False,
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
                 ),
             }
         )

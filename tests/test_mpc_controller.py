@@ -1,11 +1,13 @@
 """Tests for the MPC diagnostics and guardrails."""
 
 import csv
+import random
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from custom_components.smart_fan_controller import mpc_controller as mpc_module
 from custom_components.smart_fan_controller.data_collection import DataCollector
 from custom_components.smart_fan_controller.mpc_controller import MPCController
 from custom_components.smart_fan_controller.sensor import (
@@ -30,7 +32,6 @@ def _build_mpc(learning: ThermalLearning, *, fan_modes=None, min_interval: int =
         learning=learning,
         deadband=0.3,
         min_interval=min_interval,
-        limit_timeout=18,
         fan_modes=fan_modes or FAN_MODES,
     )
 
@@ -523,10 +524,10 @@ def test_mpc_disturbance_bias_decays_during_defrost() -> None:
 
 
 def test_monotone_constraint_enforces_ordering() -> None:
-    """Monotone constraint should clamp a lower mode's slope up to its neighbor when all profiles are ready."""
+    """An inverted weak profile is clamped down, leaving the stronger ones untouched."""
     learning = ThermalLearning()
 
-    # Create inverted profiles: silent > med (the real-world bug)
+    # Create inverted profiles: silent reads stronger than low (the real-world bug)
     learning.set_mode_effective_slope("silent", "heat", 0.53)
     learning.set_mode_effective_slope("low", "heat", 0.0)
     learning.set_mode_effective_slope("med", "heat", 0.45)
@@ -543,12 +544,17 @@ def test_monotone_constraint_enforces_ordering() -> None:
     monotone = mpc.build_monotone_slopes(["silent", "low", "med", "high", "superhigh"], "heat")
     assert isinstance(monotone, dict)
 
-    # silent (0.53) should stay, low (0.0 → clamped to 0.53), med (0.45 → clamped to 0.53)
-    assert monotone["silent"] == pytest.approx(0.53, abs=0.001)
-    assert monotone["low"] >= monotone["silent"]
-    assert monotone["med"] >= monotone["low"]
-    assert monotone["high"] >= monotone["med"]
-    assert monotone["superhigh"] >= monotone["high"]
+    # Equal sample counts, so the violation resolves downward: silent's estimate is
+    # discarded and re-synthesised strictly below low rather than dragging low up.
+    assert monotone["silent"] < monotone["low"]
+    # low sits at exactly 0.0, where multiplicative spacing would collapse, so the
+    # absolute fallback separation applies.
+    assert monotone["silent"] == pytest.approx(-0.05, abs=0.001)
+    # Profiles that were already ordered keep their learned values exactly.
+    assert monotone["low"] == pytest.approx(0.0, abs=0.001)
+    assert monotone["med"] == pytest.approx(0.45, abs=0.001)
+    assert monotone["high"] == pytest.approx(0.96, abs=0.001)
+    assert monotone["superhigh"] == pytest.approx(1.35, abs=0.001)
 
 
 def test_monotone_constraint_returns_partial_dict_for_partial_profiles() -> None:
@@ -591,8 +597,124 @@ def test_monotone_constraint_partial_profiles_enforces_known_pairs() -> None:
     assert "med" not in result
     assert "high" in result
     assert "superhigh" in result
-    assert result["high"] == pytest.approx(1.59, abs=0.001)
-    assert result["superhigh"] == pytest.approx(1.59, abs=0.001)
+    # Equal sample counts: the weaker mode is the one rewritten, so superhigh keeps
+    # its own learned value instead of being inflated to high's, and high lands one
+    # ladder step below it rather than tied with it.
+    assert result["superhigh"] == pytest.approx(1.075, abs=0.001)
+    assert result["high"] == pytest.approx(1.075 / mpc_module.LADDER_CAPACITY_RATIO, abs=0.001)
+    assert result["high"] < result["superhigh"]
+
+
+def test_monotone_constraint_trusts_the_better_sampled_profile() -> None:
+    """A noisy estimate from a rarely-used speed must not corrupt well-sampled ones.
+
+    Mirrors the real deployment: superhigh runs constantly (thousands of
+    samples), high often, med almost never. A plain forward max() pass would
+    propagate med's noisy high reading into both stronger profiles.
+    """
+    learning = ThermalLearning()
+    for _ in range(1656):
+        learning.add_slope_sample("superhigh", -0.9, 1.0, "cool")
+    for _ in range(145):
+        learning.add_slope_sample("high", -0.5, 1.0, "cool")
+    for _ in range(10):
+        learning.add_slope_sample("med", -1.6, 1.0, "cool")  # noisy: looks stronger than superhigh
+
+    mpc = MPCController(
+        learning=learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=["silent", "low", "med", "high", "superhigh"],
+    )
+    result = mpc.build_monotone_slopes(["silent", "low", "med", "high", "superhigh"], "cool")
+
+    # The two well-sampled profiles keep their learned values...
+    assert result["high"] == pytest.approx(0.5, abs=0.001)
+    assert result["superhigh"] == pytest.approx(0.9, abs=0.001)
+    # ...and the 10-sample outlier is rewritten one ladder step below high, not
+    # pinned onto it: an exact tie would leave the MPC unable to tell med from
+    # high thermally, so the energy term would always pick med.
+    assert result["med"] == pytest.approx(0.5 / mpc_module.LADDER_CAPACITY_RATIO, abs=0.001)
+    assert result["med"] < result["high"]
+
+
+def test_monotone_constraint_raises_a_poorly_sampled_stronger_mode() -> None:
+    """The trust rule is symmetric: a thin *stronger* profile is raised, not trusted."""
+    learning = ThermalLearning()
+    for _ in range(800):
+        learning.add_slope_sample("high", -0.9, 1.0, "cool")
+    for _ in range(10):
+        learning.add_slope_sample("superhigh", -0.3, 1.0, "cool")  # thin, reads weaker than high
+
+    mpc = MPCController(
+        learning=learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=["silent", "low", "med", "high", "superhigh"],
+    )
+    result = mpc.build_monotone_slopes(["silent", "low", "med", "high", "superhigh"], "cool")
+
+    assert result["high"] == pytest.approx(0.9, abs=0.001)  # 800 samples: untouched
+    # Lifted a ladder step *above* high, not tied with it: tying them would make the
+    # energy term always prefer high, so superhigh would never run again and its
+    # profile could never recover from being thin.
+    assert result["superhigh"] == pytest.approx(0.9 * mpc_module.LADDER_CAPACITY_RATIO, abs=0.001)
+    assert result["superhigh"] > result["high"]
+
+
+def test_monotone_constraint_keeps_a_consistent_ladder_untouched() -> None:
+    """A ladder that is already ordered is returned verbatim, whatever its spacing.
+
+    The ladder ratio only ever synthesises a replacement for a rejected estimate;
+    it must never be imposed as a minimum gap between measured values, or a real
+    ladder spaced more tightly than the ratio would be silently rewritten.
+    """
+    learning = ThermalLearning()
+    # The production ladder: adjacent ratios are 2.08 and 1.76, i.e. both sides of
+    # LADDER_CAPACITY_RATIO, and the bottom two speeds are negative.
+    real = {"silent": -0.56, "low": -0.1, "med": 0.24, "high": 0.5, "superhigh": 0.879}
+    for fan_mode, slope in real.items():
+        learning.set_mode_effective_slope(fan_mode, "cool", slope)
+
+    mpc = MPCController(
+        learning=learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=["silent", "low", "med", "high", "superhigh"],
+    )
+    result = mpc.build_monotone_slopes(["silent", "low", "med", "high", "superhigh"], "cool")
+
+    for fan_mode, slope in real.items():
+        assert result[fan_mode] == pytest.approx(slope, abs=0.001)
+
+
+def test_monotone_constraint_always_returns_an_ordered_ladder() -> None:
+    """Fuzz the invariant the rest of the MPC relies on: the result is never inverted.
+
+    Covers ladders with missing profiles, wildly inconsistent estimates, sign
+    changes and lopsided sample counts — including the case that broke an earlier
+    pairwise implementation, where a thin profile sat between two better-sampled
+    ones that were themselves inverted.
+    """
+    fan_modes = ["silent", "low", "med", "high", "superhigh"]
+    rng = random.Random(7)
+
+    for _ in range(300):
+        learning = ThermalLearning()
+        for fan_mode in fan_modes:
+            if rng.random() < 0.25:
+                continue  # profile never learned
+            slope = rng.uniform(-1.5, 2.0)
+            # Only the *relative* sample counts steer placement order, so modest
+            # spreads exercise the same branches without a slow suite.
+            for _ in range(rng.choice([10, 10, 14, 40])):
+                learning.add_slope_sample(fan_mode, -slope, 1.0, "cool")
+
+        mpc = MPCController(learning=learning, deadband=0.3, min_interval=10, fan_modes=fan_modes)
+        result = mpc.build_monotone_slopes(fan_modes, "cool")
+
+        values = [result[fan_mode] for fan_mode in fan_modes if fan_mode in result]
+        assert values == sorted(values), f"inverted ladder produced: {result}"
 
 
 def test_monotone_constraint_noop_when_already_ordered() -> None:
@@ -731,4 +853,272 @@ def test_learning_response_sensor_with_mixed_tuple_lengths() -> None:
     attrs = sensor.extra_state_attributes
     assert attrs["response_samples"] == 0         # because is_ready() is False, returns fallback 0
     assert attrs["avg_response_time_min"] == pytest.approx(13.5)
+
+
+# --- Hold-equilibrium (economic) mode ------------------------------------
+_HOLD_FAN_MODES = ["low", "medium", "high"]
+
+
+def _build_hold_cool_mpc() -> MPCController:
+    """Build an MPC with cool profiles where low barely conditions and med/high hold."""
+    learning = ThermalLearning()
+    learning.set_mode_effective_slope("low", "cool", 0.05)
+    learning.set_mode_effective_slope("medium", "cool", 0.9)
+    learning.set_mode_effective_slope("high", "cool", 1.8)
+    learning.add_response_event(10.0, "cool")
+    return MPCController(
+        learning=learning,
+        deadband=0.3,
+        min_interval=10,
+        fan_modes=_HOLD_FAN_MODES,
+    )
+
+
+def _evaluate_hold(current_temp: float) -> dict:
+    """Run a cool evaluation at ``current_temp`` against a 24.0 setpoint."""
+    return _build_hold_cool_mpc().evaluate(
+        current_temp=current_temp,
+        target_temp=24.0,
+        vtherm_slope=0.0,
+        hvac_mode="cool",
+        current_fan="low",
+        minutes_since_change=60.0,
+    )
+
+
+def test_hold_equilibrium_enabled_by_default() -> None:
+    """The economic hold mode ships enabled after validation on the production trace."""
+    assert mpc_module.HOLD_EQUILIBRIUM is True
+
+
+def test_hold_equilibrium_dormant_beyond_deadband(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Far from the setpoint (error > deadband) the flag must not change anything."""
+    # 25.0 vs 24.0 target => 1.0 C error, well outside the 0.3 deadband.
+    monkeypatch.setattr(mpc_module, "HOLD_EQUILIBRIUM", False)
+    off = _evaluate_hold(25.0)
+    monkeypatch.setattr(mpc_module, "HOLD_EQUILIBRIUM", True)
+    on = _evaluate_hold(25.0)
+
+    assert on["mpc_fan_mode"] == off["mpc_fan_mode"]
+    assert on["mpc_cost"] == pytest.approx(off["mpc_cost"])
+
+
+def test_hold_equilibrium_holds_steady_instead_of_coasting_near_setpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inside the hold zone the controller never coasts to a weaker mode and never
+    costs more; here it holds harder (medium -> high) rather than let the room drift."""
+    monkeypatch.setattr(mpc_module, "HOLD_EQUILIBRIUM", False)
+    off = _evaluate_hold(24.2)
+    monkeypatch.setattr(mpc_module, "HOLD_EQUILIBRIUM", True)
+    on = _evaluate_hold(24.2)
+
+    off_rank = _HOLD_FAN_MODES.index(off["mpc_fan_mode"])
+    on_rank = _HOLD_FAN_MODES.index(on["mpc_fan_mode"])
+
+    # Never weaker than baseline, and the relaxed penalties never raise the cost.
+    assert on_rank >= off_rank
+    assert on["mpc_cost"] <= off["mpc_cost"] + 1e-9
+    # On this trace the tolerance lets it commit to a firmer steady hold.
+    assert (off["mpc_fan_mode"], on["mpc_fan_mode"]) == ("medium", "high")
+
+
+# --- Adaptive min interval (coupled to learned dead time) -----------------
+def _ready_learning_with_dead_time(dead_time: float) -> ThermalLearning:
+    """Build a ready ThermalLearning whose learned dead time is ``dead_time``."""
+    learning = ThermalLearning()
+    for _ in range(90):  # 270 samples > MIN_SAMPLES_LEARNING (240) => is_ready()
+        learning.add_slope_sample("low", 0.3, 0.8, "heat")
+        learning.add_slope_sample("medium", 0.9, 0.8, "heat")
+        learning.add_slope_sample("high", 1.5, 0.8, "heat")
+    for _ in range(3):
+        learning.add_response_event(dead_time, "heat")
+    assert learning.is_ready()
+    return learning
+
+
+def test_effective_min_interval_rises_to_learned_dead_time() -> None:
+    """When the dead time exceeds the configured floor, the effective dwell follows it."""
+    learning = _ready_learning_with_dead_time(20.0)
+    mpc = _build_mpc(learning, min_interval=10)
+    assert mpc._effective_min_interval(learning.get_dead_time()) == pytest.approx(20.0)
+
+
+def test_effective_min_interval_is_floored_by_config() -> None:
+    """A short learned dead time never lowers the effective dwell below the config floor."""
+    learning = _ready_learning_with_dead_time(6.0)
+    mpc = _build_mpc(learning, min_interval=10)
+    assert mpc._effective_min_interval(learning.get_dead_time()) == pytest.approx(10.0)
+
+
+def test_effective_min_interval_is_capped() -> None:
+    """A spuriously large dead time is capped at MAX_ADAPTIVE_INTERVAL_FACTOR x floor."""
+    learning = _ready_learning_with_dead_time(40.0)
+    mpc = _build_mpc(learning, min_interval=10)
+    cap = 10 * mpc_module.MAX_ADAPTIVE_INTERVAL_FACTOR
+    assert mpc._effective_min_interval(learning.get_dead_time()) == pytest.approx(cap)
+
+
+def test_effective_min_interval_uses_config_before_learning_ready() -> None:
+    """Before learning is ready the fixed configured interval is used unchanged."""
+    learning = ThermalLearning()
+    learning.add_response_event(25.0, "heat")
+    mpc = _build_mpc(learning, min_interval=10)
+    assert not learning.is_ready()
+    assert mpc._effective_min_interval(learning.get_dead_time()) == pytest.approx(10.0)
+
+
+def test_adaptive_interval_holds_change_until_dead_time_elapses() -> None:
+    """A beneficial change is held until the dead-time-based interval elapses."""
+    learning = _ready_learning_with_dead_time(20.0)
+    mpc = _build_mpc(learning, min_interval=10)
+    # First call establishes the comfort-error baseline for this hold (small
+    # growth budget below).
+    mpc.evaluate(
+        current_temp=19.7,
+        target_temp=20.0,
+        vtherm_slope=0.25,
+        hvac_mode="heat",
+        current_fan="low",
+        minutes_since_change=1.0,
+    )
+    # 15 min since last change: allowed under the old fixed 10-min rule, but the
+    # learned 20-min dead time means the previous change is not observable yet.
+    # Error only grew 0.05C since the baseline, well under the 0.15C escalation
+    # budget, so the hold is not bypassed.
+    held = mpc.evaluate(
+        current_temp=19.65,
+        target_temp=20.0,
+        vtherm_slope=0.25,
+        hvac_mode="heat",
+        current_fan="low",
+        minutes_since_change=15.0,
+    )
+    assert held["mpc_would_change_now"] == "no"
+    assert "Min interval active" in held["mpc_reason"]
+
+    allowed = mpc.evaluate(
+        current_temp=19.65,
+        target_temp=20.0,
+        vtherm_slope=0.25,
+        hvac_mode="heat",
+        current_fan="low",
+        minutes_since_change=25.0,
+    )
+    assert allowed["mpc_would_change_now"] == "yes"
+
+
+def test_dead_time_lock_escalates_on_growing_error() -> None:
+    """Comfort error worsening since the change bypasses the dead-time lock.
+
+    Regression test: a misjudged step-down (e.g. hold-equilibrium picking a
+    fan mode that turns out too weak) used to leave the room drifting away
+    from target for the full ~20 min adaptive interval with no way out. The
+    escalation is trend-based (growth since the change) rather than a static
+    error threshold, so it fires however small the deadband is.
+    """
+    learning = _ready_learning_with_dead_time(20.0)
+    mpc = _build_mpc(learning, min_interval=10)
+    # First call establishes the baseline right after the change (small error).
+    mpc.evaluate(
+        current_temp=19.8,
+        target_temp=20.0,
+        vtherm_slope=0.25,
+        hvac_mode="heat",
+        current_fan="low",
+        minutes_since_change=1.0,
+    )
+    # 8 min later the room has drifted 0.2C further from target (> the 0.15C
+    # growth budget) while still inside the 20-min learned dead time.
+    escalated = mpc.evaluate(
+        current_temp=19.6,
+        target_temp=20.0,
+        vtherm_slope=0.25,
+        hvac_mode="heat",
+        current_fan="low",
+        minutes_since_change=8.0,
+    )
+    assert escalated["mpc_would_change_now"] == "yes"
+    assert escalated["mpc_fan_mode"] != "low"
+    assert "Emergency escalation" in escalated["mpc_reason"]
+
+
+def test_dead_time_lock_does_not_escalate_downward() -> None:
+    """The emergency escalation never lets the lock be bypassed to step down."""
+    learning = _ready_learning_with_dead_time(20.0)
+    mpc = _build_mpc(learning, min_interval=10)
+    # Overshoot past the setpoint in heat mode, still growing further past
+    # target - a large and worsening error, but the unconstrained candidate is
+    # weaker than the current fan, so this must stay held rather than treated
+    # as an emergency.
+    mpc.evaluate(
+        current_temp=20.9,
+        target_temp=20.0,
+        vtherm_slope=1.5,
+        hvac_mode="heat",
+        current_fan="high",
+        minutes_since_change=1.0,
+    )
+    held = mpc.evaluate(
+        current_temp=21.0,
+        target_temp=20.0,
+        vtherm_slope=1.5,
+        hvac_mode="heat",
+        current_fan="high",
+        minutes_since_change=8.0,
+    )
+    assert held["mpc_would_change_now"] == "no"
+    assert held["mpc_fan_mode"] == "high"
+    assert "Emergency escalation" not in held["mpc_reason"]
+    assert "Min interval active" in held["mpc_reason"]
+
+
+def test_multi_rank_stepdown_blocked_when_candidate_cannot_sustain_progress() -> None:
+    """A 2+ rank drop to a mode with a non-positive own profile is blocked.
+
+    Regression test for a real incident: with fan_modes ordered weakest to
+    strongest and learned profiles silent=-0.56, low=-0.1, med=0.24, high=0.5,
+    superhigh=1.05 C/h, the controller jumped straight from superhigh to low
+    near the deadband. Low's own profile shows it cannot cool this room at
+    all (negative slope even 1C from target) - the pick only looked good
+    because the forecast used for the switch-down check is dominated by
+    superhigh's momentum for the whole dead-time window, masking low's real
+    (in)capability. Once switched, the room drifted away from target.
+    """
+    fan_modes = ["silent", "low", "med", "high", "superhigh"]
+    slopes = {"silent": -0.56, "low": -0.1, "med": 0.24, "high": 0.5, "superhigh": 1.05}
+    learning = ThermalLearning()
+    for mode, slope in slopes.items():
+        learning.set_mode_effective_slope(mode, "cool", slope)
+    learning.add_response_event(20.0, "cool")
+
+    mpc = MPCController(learning=learning, deadband=0.2, min_interval=10, fan_modes=fan_modes)
+    decision = mpc.evaluate(
+        current_temp=24.2,
+        target_temp=24.0,
+        vtherm_slope=-1.02,
+        hvac_mode="cool",
+        current_fan="superhigh",
+        minutes_since_change=300.0,
+    )
+    assert decision["mpc_fan_mode"] not in ("low", "silent")
+    assert "Blocked 3-rank drop to low" in decision["mpc_reason"]
+
+    # Adjacent-rank switching stays untouched: high (1 rank down) is a
+    # legitimate cost-minimising pick when its own profile is sound.
+    slopes_adjacent_only = dict(slopes)
+    learning2 = ThermalLearning()
+    for mode, slope in slopes_adjacent_only.items():
+        learning2.set_mode_effective_slope(mode, "cool", slope)
+    learning2.add_response_event(20.0, "cool")
+    mpc2 = _build_mpc(learning2, fan_modes=fan_modes, min_interval=10)
+    decision2 = mpc2.evaluate(
+        current_temp=24.6,
+        target_temp=24.0,
+        vtherm_slope=-0.4,
+        hvac_mode="cool",
+        current_fan="superhigh",
+        minutes_since_change=300.0,
+    )
+    assert "Blocked" not in decision2["mpc_reason"]
 
